@@ -14,7 +14,7 @@ const CELL_SIZE      := BLOCK_SIZE + ROAD_WIDTH  # Distance from block edge to n
 const NUM_BLOCKS     := 5      # Number of blocks per axis (5×5 grid)
 
 # Palette for building colours (cartoon-ish desaturated tones)
-const BUILDING_COLORS := [
+const BUILDING_COLORS: Array[Color] = [
 	Color(0.80, 0.62, 0.50),  # warm brick
 	Color(0.68, 0.70, 0.82),  # cool blue-grey
 	Color(0.82, 0.80, 0.62),  # cream
