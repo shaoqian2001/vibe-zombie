@@ -1,0 +1,56 @@
+[gd_scene load_steps=8 format=3 uid="uid://cplayer000001"]
+
+[ext_resource type="Script" path="res://scripts/player.gd" id="1_player"]
+
+[sub_resource type="StandardMaterial3D" id="BodyMat"]
+albedo_color = Color(0.28, 0.42, 0.22, 1)
+
+[sub_resource type="CapsuleMesh" id="BodyMesh"]
+material = SubResource("BodyMat")
+radius = 0.32
+height = 1.6
+
+[sub_resource type="StandardMaterial3D" id="HeadMat"]
+albedo_color = Color(0.89, 0.73, 0.58, 1)
+
+[sub_resource type="SphereMesh" id="HeadMesh"]
+material = SubResource("HeadMat")
+radius = 0.26
+height = 0.52
+
+[sub_resource type="StandardMaterial3D" id="EyeMat"]
+albedo_color = Color(0.08, 0.08, 0.10, 1)
+
+[sub_resource type="SphereMesh" id="EyeMesh"]
+material = SubResource("EyeMat")
+radius = 0.06
+height = 0.12
+
+[sub_resource type="CapsuleShape3D" id="CollShape"]
+radius = 0.34
+height = 1.8
+
+[node name="Player" type="CharacterBody3D"]
+script = ExtResource("1_player")
+
+[node name="Body" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.8, 0)
+mesh = SubResource("BodyMesh")
+cast_shadow = 1
+
+[node name="Head" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.75, 0)
+mesh = SubResource("HeadMesh")
+cast_shadow = 1
+
+[node name="EyeLeft" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.10, 1.78, 0.20)
+mesh = SubResource("EyeMesh")
+
+[node name="EyeRight" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.10, 1.78, 0.20)
+mesh = SubResource("EyeMesh")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CollShape")

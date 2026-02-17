@@ -1,0 +1,20 @@
+# Godot 4 specific ignores
+.godot/
+*.uid
+
+# Exported project binaries
+/export/
+*.pck
+*.exe
+*.x86_64
+*.arm64
+*.apk
+*.aab
+*.ipa
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor temp files
+*.tmp
