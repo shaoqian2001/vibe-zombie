@@ -10,7 +10,7 @@ config_version=5
 config/name="Vibe Zombie"
 config/description="A 2.5D cartoon zombie survival game inspired by No More Room in Hell"
 run/main_scene="res://scenes/Main.tscn"
-config/features=PackedStringArray("4.2", "Forward Plus")
+config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
 
 [display]
