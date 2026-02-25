@@ -23,11 +23,27 @@ const BUILDING_COLORS: Array[Color] = [
 	Color(0.60, 0.75, 0.60),  # muted green
 ]
 
+const DOOR_COLOR     := Color(0.35, 0.22, 0.12)
+const AWNING_COLORS  := [
+	Color(0.75, 0.20, 0.15),  # red
+	Color(0.15, 0.45, 0.20),  # green
+	Color(0.20, 0.25, 0.60),  # blue
+	Color(0.70, 0.55, 0.15),  # gold
+]
+
 const ROAD_COLOR    := Color(0.18, 0.18, 0.20)
 const SIDEWALK_COLOR := Color(0.55, 0.55, 0.52)
 const GRASS_COLOR   := Color(0.32, 0.46, 0.24)
 
+const BuildingInterior = preload("res://scripts/building_interior.gd")
+
 var _rng := RandomNumberGenerator.new()
+
+## Array of dictionaries describing each building placed in the world.
+## Each entry: { node: MeshInstance3D, entrance_area: Area3D, type: int,
+##               width: float, depth: float, height: float,
+##               entrance_pos: Vector3, entrance_facing: Vector3 }
+var buildings: Array = []
 
 func _ready() -> void:
 	_rng.seed = 98765
@@ -134,9 +150,10 @@ func _populate_block(bx: float, bz: float) -> void:
 		if ok:
 			placed.append({cx = cx, cz = cz, hw = bw * 0.5, hd = bd * 0.5})
 			var color := BUILDING_COLORS[_rng.randi() % BUILDING_COLORS.size()]
-			_create_building(Vector3(cx, bh * 0.5, cz), bw, bh, bd, color)
+			var btype: int = _rng.randi() % BuildingInterior.BuildingType.size()
+			_create_building(Vector3(cx, bh * 0.5, cz), bw, bh, bd, color, btype, bx, bz)
 
-func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color) -> void:
+func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, btype: int, block_x: float, block_z: float) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 
@@ -158,6 +175,118 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color) 
 	mi.add_child(sb)
 
 	add_child(mi)
+
+	# --- Determine entrance side (face closest to nearest road) ---
+	var entrance_dir := _pick_entrance_side(pos, w, d, block_x, block_z)
+	var entrance_pos := _compute_entrance_position(pos, w, h, d, entrance_dir)
+
+	# --- Create visual door ---
+	_create_door(entrance_pos, entrance_dir, color)
+
+	# --- Create entrance trigger area ---
+	var entrance_area := _create_entrance_area(entrance_pos, entrance_dir)
+
+	# Store building info for the main scene to use
+	buildings.append({
+		node = mi,
+		entrance_area = entrance_area,
+		type = btype,
+		width = w,
+		depth = d,
+		height = h,
+		entrance_pos = entrance_pos,
+		entrance_facing = entrance_dir,
+	})
+
+## Pick the building face closest to the edge of the block (nearest road).
+func _pick_entrance_side(pos: Vector3, w: float, d: float, block_x: float, block_z: float) -> Vector3:
+	var dist_left  := abs(pos.x - w * 0.5 - block_x)
+	var dist_right := abs(pos.x + w * 0.5 - (block_x + BLOCK_SIZE))
+	var dist_front := abs(pos.z + d * 0.5 - (block_z + BLOCK_SIZE))
+	var dist_back  := abs(pos.z - d * 0.5 - block_z)
+
+	var min_dist := dist_left
+	var dir := Vector3(-1, 0, 0)  # left face
+
+	if dist_right < min_dist:
+		min_dist = dist_right
+		dir = Vector3(1, 0, 0)
+
+	if dist_front < min_dist:
+		min_dist = dist_front
+		dir = Vector3(0, 0, 1)
+
+	if dist_back < min_dist:
+		dir = Vector3(0, 0, -1)
+
+	return dir
+
+func _compute_entrance_position(pos: Vector3, w: float, h: float, d: float, facing: Vector3) -> Vector3:
+	var ground_y := pos.y - h * 0.5  # base of the building
+	if facing.x != 0:
+		return Vector3(pos.x + facing.x * w * 0.5, ground_y, pos.z)
+	else:
+		return Vector3(pos.x, ground_y, pos.z + facing.z * d * 0.5)
+
+func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color) -> void:
+	var door_w := 1.0
+	var door_h := 2.0
+
+	# Door panel (slightly in front of the wall)
+	var door_mat := StandardMaterial3D.new()
+	door_mat.albedo_color = DOOR_COLOR
+
+	var door_mesh := BoxMesh.new()
+	var door_mi := MeshInstance3D.new()
+
+	if facing.x != 0:
+		door_mesh.size = Vector3(0.08, door_h, door_w)
+	else:
+		door_mesh.size = Vector3(door_w, door_h, 0.08)
+
+	door_mesh.material = door_mat
+	door_mi.mesh = door_mesh
+	door_mi.position = entrance_pos + Vector3(facing.x * 0.05, door_h * 0.5, facing.z * 0.05)
+	add_child(door_mi)
+
+	# Awning / canopy above the door
+	var awning_color: Color = AWNING_COLORS[_rng.randi() % AWNING_COLORS.size()]
+	var awning_mat := StandardMaterial3D.new()
+	awning_mat.albedo_color = awning_color
+
+	var awning_mesh := BoxMesh.new()
+	var awning_mi := MeshInstance3D.new()
+
+	if facing.x != 0:
+		awning_mesh.size = Vector3(0.8, 0.08, door_w + 0.6)
+	else:
+		awning_mesh.size = Vector3(door_w + 0.6, 0.08, 0.8)
+
+	awning_mesh.material = awning_mat
+	awning_mi.mesh = awning_mesh
+	awning_mi.position = entrance_pos + Vector3(
+		facing.x * 0.4,
+		door_h + 0.15,
+		facing.z * 0.4
+	)
+	add_child(awning_mi)
+
+func _create_entrance_area(entrance_pos: Vector3, facing: Vector3) -> Area3D:
+	var area := Area3D.new()
+	area.name = "EntranceArea"
+	var cs := CollisionShape3D.new()
+	var shp := BoxShape3D.new()
+	shp.size = Vector3(1.8, 2.5, 1.8)
+	cs.shape = shp
+	area.add_child(cs)
+	# Position slightly in front of the door
+	area.position = entrance_pos + Vector3(
+		facing.x * 0.9,
+		1.25,
+		facing.z * 0.9
+	)
+	add_child(area)
+	return area
 
 # ------------------------------------------------------------------
 # Helper: flat coloured quad (for roads / sidewalks)
