@@ -200,10 +200,10 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 
 ## Pick the building face closest to the edge of the block (nearest road).
 func _pick_entrance_side(pos: Vector3, w: float, d: float, block_x: float, block_z: float) -> Vector3:
-	var dist_left  := abs(pos.x - w * 0.5 - block_x)
-	var dist_right := abs(pos.x + w * 0.5 - (block_x + BLOCK_SIZE))
-	var dist_front := abs(pos.z + d * 0.5 - (block_z + BLOCK_SIZE))
-	var dist_back  := abs(pos.z - d * 0.5 - block_z)
+	var dist_left  := absf(pos.x - w * 0.5 - block_x)
+	var dist_right := absf(pos.x + w * 0.5 - (block_x + BLOCK_SIZE))
+	var dist_front := absf(pos.z + d * 0.5 - (block_z + BLOCK_SIZE))
+	var dist_back  := absf(pos.z - d * 0.5 - block_z)
 
 	var min_dist := dist_left
 	var dir := Vector3(-1, 0, 0)  # left face
