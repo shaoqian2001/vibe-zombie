@@ -35,9 +35,9 @@ var exit_area: Area3D
 func setup(type: BuildingType, w: float, d: float, h: float,
 		building_center: Vector3, entrance_facing: Vector3) -> void:
 	building_type = type
-	interior_width = maxf(w, 4.0)
-	interior_depth = maxf(d, 4.0)
-	interior_height = clampf(h, 3.5, 4.5)  # cap height for indoor coziness
+	interior_width = w
+	interior_depth = d
+	interior_height = h
 
 	# Position at building centre (ground level)
 	global_position = building_center

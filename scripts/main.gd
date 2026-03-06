@@ -163,7 +163,7 @@ func _enter_building(binfo: Dictionary) -> void:
 	# Move player just inside the entrance (small step inward from door)
 	# The entrance is on the +Z side of the interior (in local space).
 	# Inward = -Z in local space. Transform to world space.
-	var inward_local := Vector3(0.0, 0.0, maxf(binfo.depth, 4.0) * 0.35)
+	var inward_local := Vector3(0.0, 0.0, binfo.depth * 0.35)
 	var inward_world := _current_interior.global_transform * inward_local
 	player.global_position = Vector3(inward_world.x, 0.1, inward_world.z)
 	player.velocity = Vector3.ZERO
