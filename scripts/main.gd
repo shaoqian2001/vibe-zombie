@@ -154,16 +154,23 @@ func _enter_building(binfo: Dictionary) -> void:
 	add_child(_current_interior)
 
 	var facing: Vector3 = binfo.entrance_facing
+	# When entrance faces ±X the interior rotates 90°, so local X↔Z swap.
+	# Swap width/depth so the interior walls align with the exterior box.
+	var iw := binfo.width
+	var id := binfo.depth
+	if absf(facing.x) > 0.5:
+		iw = binfo.depth
+		id = binfo.width
 	_current_interior.setup(
 		binfo.type as BuildingInterior.BuildingType,
-		binfo.width, binfo.depth, binfo.height,
-		building_ground, facing
+		iw, id, binfo.height,
+		building_ground, facing, binfo.color
 	)
 
 	# Move player just inside the entrance (small step inward from door)
 	# The entrance is on the +Z side of the interior (in local space).
 	# Inward = -Z in local space. Transform to world space.
-	var inward_local := Vector3(0.0, 0.0, binfo.depth * 0.35)
+	var inward_local := Vector3(0.0, 0.0, id * 0.35)
 	var inward_world := _current_interior.global_transform * inward_local
 	player.global_position = Vector3(inward_world.x, 0.1, inward_world.z)
 	player.velocity = Vector3.ZERO

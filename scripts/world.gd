@@ -194,6 +194,7 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 		width = w,
 		depth = d,
 		height = h,
+		color = color,
 		entrance_pos = entrance_pos,
 		entrance_facing = entrance_dir,
 	})

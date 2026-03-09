@@ -25,6 +25,7 @@ var building_type: BuildingType
 var interior_width: float
 var interior_depth: float
 var interior_height: float
+var wall_color: Color = WALL_COLOR
 
 # The exit door Area3D for detecting when player walks out
 var exit_area: Area3D
@@ -32,12 +33,16 @@ var exit_area: Area3D
 ## Set up and generate the interior.
 ## building_center: world position of the building centre (at ground level).
 ## entrance_facing: unit vector pointing outward from the entrance face.
+## exterior_color: the building's exterior colour, used for walls so the
+##                 interior matches the outside appearance.
 func setup(type: BuildingType, w: float, d: float, h: float,
-		building_center: Vector3, entrance_facing: Vector3) -> void:
+		building_center: Vector3, entrance_facing: Vector3,
+		exterior_color: Color = WALL_COLOR) -> void:
 	building_type = type
 	interior_width = w
 	interior_depth = d
 	interior_height = h
+	wall_color = exterior_color
 
 	# Position at building centre (ground level)
 	global_position = building_center
@@ -83,11 +88,11 @@ func _create_walls() -> void:
 	var thickness := 0.15
 
 	# Back wall (-Z side)
-	_add_box(Vector3(0.0, h * 0.5, -d * 0.5), Vector3(w, h, thickness), WALL_COLOR, true)
+	_add_box(Vector3(0.0, h * 0.5, -d * 0.5), Vector3(w, h, thickness), wall_color, true)
 	# Left wall (-X side)
-	_add_box(Vector3(-w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), WALL_COLOR, true)
+	_add_box(Vector3(-w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), wall_color, true)
 	# Right wall (+X side)
-	_add_box(Vector3(w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), WALL_COLOR, true)
+	_add_box(Vector3(w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), wall_color, true)
 
 	# Front wall with gap for exit door (+Z side)
 	var door_width := 1.2
@@ -97,12 +102,12 @@ func _create_walls() -> void:
 		_add_box(
 			Vector3(-door_width * 0.5 - left_w * 0.5, h * 0.5, d * 0.5),
 			Vector3(left_w, h, thickness),
-			WALL_COLOR, true
+			wall_color, true
 		)
 		_add_box(
 			Vector3(door_width * 0.5 + left_w * 0.5, h * 0.5, d * 0.5),
 			Vector3(left_w, h, thickness),
-			WALL_COLOR, true
+			wall_color, true
 		)
 	# Section above door
 	var above_h := h - door_height
@@ -110,7 +115,7 @@ func _create_walls() -> void:
 		_add_box(
 			Vector3(0.0, door_height + above_h * 0.5, d * 0.5),
 			Vector3(door_width, above_h, thickness),
-			WALL_COLOR, true
+			wall_color, true
 		)
 
 func _create_exit_door() -> void:
