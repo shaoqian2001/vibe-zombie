@@ -215,7 +215,7 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 	var entrance_pos := _compute_entrance_position(pos, w, h, d, entrance_dir)
 
 	# --- Create visual door ---
-	_create_door(entrance_pos, entrance_dir, color)
+	var door_mi := _create_door(entrance_pos, entrance_dir, color)
 
 	# --- Create entrance trigger area ---
 	var entrance_area := _create_entrance_area(entrance_pos, entrance_dir)
@@ -223,6 +223,7 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 	# Store building info for the main scene to use
 	buildings.append({
 		node = mi,
+		door_mesh = door_mi,
 		entrance_area = entrance_area,
 		type = btype,
 		width = w,
@@ -231,6 +232,7 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 		color = color,
 		entrance_pos = entrance_pos,
 		entrance_facing = entrance_dir,
+		door_open = false,
 	})
 
 ## Pick the building face closest to the edge of the block (nearest road).
@@ -263,7 +265,7 @@ func _compute_entrance_position(pos: Vector3, w: float, h: float, d: float, faci
 	else:
 		return Vector3(pos.x, ground_y, pos.z + facing.z * d * 0.5)
 
-func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color) -> void:
+func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color) -> MeshInstance3D:
 	var door_w := 1.0
 	var door_h := 2.0
 
@@ -281,6 +283,7 @@ func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color)
 
 	door_mesh.material = door_mat
 	door_mi.mesh = door_mesh
+	door_mi.name = "Door"
 	door_mi.position = entrance_pos + Vector3(facing.x * 0.05, door_h * 0.5, facing.z * 0.05)
 	add_child(door_mi)
 
@@ -305,6 +308,8 @@ func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color)
 		facing.z * 0.4
 	)
 	add_child(awning_mi)
+
+	return door_mi
 
 func _create_entrance_area(entrance_pos: Vector3, facing: Vector3) -> Area3D:
 	var area := Area3D.new()

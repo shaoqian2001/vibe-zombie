@@ -4,9 +4,8 @@ extends Node3D
 ## Wires up the camera → player link, handles player spawn,
 ## and manages seamless building enter / exit transitions.
 ##
-## Buildings are entered/exited by walking through the door — no key press.
-## The interior is spawned at the building's world position so the camera
-## and player position stay continuous (no jump).
+## Press F near a closed door to open it.  Once open the player can
+## walk freely in and out.  Press F near an open door to close it.
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 
@@ -33,14 +32,10 @@ const BUILDING_TYPE_NAMES := [
 var _prompt_label: Label = null
 
 # State
-var _nearby_building: Dictionary = {}
-var _inside_building: bool = false
-var _current_interior: Node3D = null
-var _current_building_info: Dictionary = {}
-
-# Cooldown to prevent instant re-enter after exiting
-var _transition_cooldown: float = 0.0
-const TRANSITION_COOLDOWN_TIME := 0.8
+var _nearby_building: Dictionary = {}   # building whose entrance area the player overlaps
+var _open_building: Dictionary = {}     # building whose door is currently open
+var _current_interior: Node3D = null    # interior node for the open building
+var _player_inside: bool = false        # whether the player is inside the open building
 
 func _ready() -> void:
 	var rng := RandomNumberGenerator.new()
@@ -54,12 +49,14 @@ func _ready() -> void:
 	await get_tree().process_frame
 	_connect_entrance_areas()
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
+	_update_player_inside()
 	_update_prompt()
 	_update_interior_wall_visibility()
 
-	if _transition_cooldown > 0.0:
-		_transition_cooldown -= delta
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("interact"):
+		_handle_interact()
 
 # ------------------------------------------------------------------
 # UI
@@ -79,29 +76,32 @@ func _create_ui() -> void:
 	_prompt_label.add_theme_constant_override("shadow_offset_x", 2)
 	_prompt_label.add_theme_constant_override("shadow_offset_y", 2)
 	_prompt_label.anchors_preset = Control.PRESET_CENTER_BOTTOM
-	_prompt_label.position = Vector2(-150, -60)
-	_prompt_label.size = Vector2(300, 40)
+	_prompt_label.position = Vector2(-200, -60)
+	_prompt_label.size = Vector2(400, 40)
 	_prompt_label.visible = false
 	canvas.add_child(_prompt_label)
 
 func _update_prompt() -> void:
 	if _prompt_label == null:
 		return
-	if _inside_building:
-		var btype: int = _current_building_info.get("type", 0)
+
+	if _player_inside and not _open_building.is_empty():
+		var btype: int = _open_building.get("type", 0)
 		var type_name: String = BUILDING_TYPE_NAMES[btype] if btype < BUILDING_TYPE_NAMES.size() else "Building"
-		_prompt_label.text = "Inside: " + type_name + "  (walk to door to exit)"
+		_prompt_label.text = "Inside: " + type_name
 		_prompt_label.visible = true
 	elif not _nearby_building.is_empty():
-		var btype: int = _nearby_building.type
-		var type_name: String = BUILDING_TYPE_NAMES[btype] if btype < BUILDING_TYPE_NAMES.size() else "Building"
-		_prompt_label.text = type_name
+		var is_open: bool = _nearby_building.get("door_open", false)
+		if is_open:
+			_prompt_label.text = "Press 'F' to close the door"
+		else:
+			_prompt_label.text = "Press 'F' to open the door"
 		_prompt_label.visible = true
 	else:
 		_prompt_label.visible = false
 
 # ------------------------------------------------------------------
-# Entrance / exit area connections
+# Entrance area connections (proximity detection only)
 # ------------------------------------------------------------------
 
 func _connect_entrance_areas() -> void:
@@ -109,9 +109,7 @@ func _connect_entrance_areas() -> void:
 		var area: Area3D = binfo.entrance_area
 		area.body_entered.connect(func(body: Node3D) -> void:
 			if body == player:
-				if not _inside_building and _transition_cooldown <= 0.0:
-					_nearby_building = binfo
-					_enter_building(binfo)
+				_nearby_building = binfo
 		)
 		area.body_exited.connect(func(body: Node3D) -> void:
 			if body == player and _nearby_building == binfo:
@@ -119,18 +117,43 @@ func _connect_entrance_areas() -> void:
 		)
 
 # ------------------------------------------------------------------
-# Enter building — seamless in-place transition
+# Interact (F key)
 # ------------------------------------------------------------------
 
-func _enter_building(binfo: Dictionary) -> void:
-	_inside_building = true
-	_current_building_info = binfo
-	_transition_cooldown = TRANSITION_COOLDOWN_TIME
+func _handle_interact() -> void:
+	if _nearby_building.is_empty():
+		return
 
-	# Hide the entered building's exterior completely
+	var is_open: bool = _nearby_building.get("door_open", false)
+	if is_open:
+		# Don't close while player is inside
+		if _player_inside:
+			return
+		_close_door()
+	else:
+		_open_door(_nearby_building)
+
+# ------------------------------------------------------------------
+# Open door
+# ------------------------------------------------------------------
+
+func _open_door(binfo: Dictionary) -> void:
+	# Close any previously open building first
+	if not _open_building.is_empty():
+		_close_door()
+
+	binfo.door_open = true
+	_open_building = binfo
+
+	# Hide exterior mesh
 	var building_node: MeshInstance3D = binfo.node
 	building_node.visible = false
-	# Disable exterior collision for this building
+
+	# Hide the door panel
+	var door_mi: MeshInstance3D = binfo.door_mesh
+	door_mi.visible = false
+
+	# Disable exterior collision so player can walk inside
 	for child in building_node.get_children():
 		if child is StaticBody3D:
 			child.process_mode = Node.PROCESS_MODE_DISABLED
@@ -138,17 +161,10 @@ func _enter_building(binfo: Dictionary) -> void:
 				if sub is CollisionShape3D:
 					(sub as CollisionShape3D).disabled = true
 
-	# Disable all entrance areas while inside
-	for bi in world.buildings:
-		var a: Area3D = bi.entrance_area
-		a.monitoring = false
-		a.monitorable = false
-
-	# Compute building centre at ground level
+	# Create interior at the building's world position
 	var bpos: Vector3 = building_node.position
 	var building_ground := Vector3(bpos.x, 0.0, bpos.z)
 
-	# Create interior at the building's world position
 	_current_interior = Node3D.new()
 	_current_interior.name = "BuildingInterior"
 	_current_interior.set_script(BuildingInterior)
@@ -156,7 +172,6 @@ func _enter_building(binfo: Dictionary) -> void:
 
 	var facing: Vector3 = binfo.entrance_facing
 	# When entrance faces ±X the interior rotates 90°, so local X↔Z swap.
-	# Swap width/depth so the interior walls align with the exterior box.
 	var iw: float = binfo.width
 	var id: float = binfo.depth
 	if absf(facing.x) > 0.5:
@@ -168,32 +183,25 @@ func _enter_building(binfo: Dictionary) -> void:
 		building_ground, facing, binfo.color
 	)
 
-	# Move player just inside the entrance (small step inward from door)
-	# The entrance is on the +Z side of the interior (in local space).
-	# Inward = -Z in local space. Transform to world space.
-	var inward_local := Vector3(0.0, 0.0, id * 0.35)
-	var inward_world := _current_interior.global_transform * inward_local
-	player.global_position = Vector3(inward_world.x, 0.1, inward_world.z)
-	player.velocity = Vector3.ZERO
-
-	# Connect exit area
-	if _current_interior.exit_area:
-		_current_interior.exit_area.body_entered.connect(func(body: Node3D) -> void:
-			if body == player and _inside_building and _transition_cooldown <= 0.0:
-				_exit_building()
-		)
-
 # ------------------------------------------------------------------
-# Exit building — seamless return to outdoor
+# Close door
 # ------------------------------------------------------------------
 
-func _exit_building() -> void:
-	_inside_building = false
-	_transition_cooldown = TRANSITION_COOLDOWN_TIME
+func _close_door() -> void:
+	if _open_building.is_empty():
+		return
 
-	# Restore the building's exterior mesh
-	var building_node: MeshInstance3D = _current_building_info.node
+	_open_building.door_open = false
+
+	# Restore exterior mesh
+	var building_node: MeshInstance3D = _open_building.node
 	building_node.visible = true
+
+	# Show the door panel again
+	var door_mi: MeshInstance3D = _open_building.door_mesh
+	door_mi.visible = true
+
+	# Re-enable exterior collision
 	for child in building_node.get_children():
 		if child is StaticBody3D:
 			child.process_mode = Node.PROCESS_MODE_INHERIT
@@ -201,32 +209,36 @@ func _exit_building() -> void:
 				if sub is CollisionShape3D:
 					(sub as CollisionShape3D).disabled = false
 
-	# Place player just outside the entrance
-	var facing: Vector3 = _current_building_info.entrance_facing
-	var entrance_pos: Vector3 = _current_building_info.entrance_pos
-	player.global_position = entrance_pos + facing * 1.2 + Vector3(0.0, 0.1, 0.0)
-	player.velocity = Vector3.ZERO
-
 	# Remove interior
 	if _current_interior:
 		_current_interior.queue_free()
 		_current_interior = null
 
-	# Re-enable entrance areas
-	for bi in world.buildings:
-		var a: Area3D = bi.entrance_area
-		a.monitoring = true
-		a.monitorable = true
+	_open_building = {}
+	_player_inside = false
 
-	_current_building_info = {}
-	_nearby_building = {}
+# ------------------------------------------------------------------
+# Position-based inside detection
+# ------------------------------------------------------------------
+
+func _update_player_inside() -> void:
+	if _open_building.is_empty():
+		_player_inside = false
+		return
+	var bpos: Vector3 = _open_building.node.position
+	var hw: float = _open_building.width * 0.5
+	var hd: float = _open_building.depth * 0.5
+	var px: float = player.global_position.x
+	var pz: float = player.global_position.z
+	_player_inside = (px > bpos.x - hw and px < bpos.x + hw
+		and pz > bpos.z - hd and pz < bpos.z + hd)
 
 # ------------------------------------------------------------------
 # Interior wall visibility based on camera angle
 # ------------------------------------------------------------------
 
 func _update_interior_wall_visibility() -> void:
-	if not _inside_building or _current_interior == null:
+	if not _player_inside or _current_interior == null:
 		return
 	# Camera direction in world space (from player toward camera)
 	var cam_dir := camera.global_position - player.global_position

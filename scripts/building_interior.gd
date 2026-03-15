@@ -27,9 +27,6 @@ var interior_depth: float
 var interior_height: float
 var wall_color: Color = WALL_COLOR
 
-# The exit door Area3D for detecting when player walks out
-var exit_area: Area3D
-
 # Wall tracking for camera-based transparency.
 # Each entry: { meshes: Array, normal: Vector3 }
 # normal is the outward-facing direction in local space.
@@ -60,7 +57,7 @@ func setup(type: BuildingType, w: float, d: float, h: float,
 func _generate_interior() -> void:
 	_create_floor()
 	_create_walls()
-	_create_exit_door()
+	_create_door_frame()
 	_create_interior_light()
 
 	match building_type:
@@ -127,25 +124,14 @@ func _create_walls() -> void:
 		))
 	wall_sides.append({ meshes = front_meshes, normal = Vector3(0.0, 0.0, 1.0) })
 
-func _create_exit_door() -> void:
+func _create_door_frame() -> void:
 	var d := interior_depth
-	# Visual door frame
+	# Visual door frame on the entrance side (+Z)
 	_add_box(
 		Vector3(0.0, 1.1, d * 0.5 + 0.1),
 		Vector3(1.2, 2.2, 0.08),
 		DOOR_COLOR, false
 	)
-
-	# Exit trigger area — player walks into this to leave
-	exit_area = Area3D.new()
-	exit_area.name = "ExitArea"
-	var cs := CollisionShape3D.new()
-	var shp := BoxShape3D.new()
-	shp.size = Vector3(1.4, 2.4, 1.2)
-	cs.shape = shp
-	exit_area.add_child(cs)
-	exit_area.position = Vector3(0.0, 1.2, d * 0.5 + 0.8)
-	add_child(exit_area)
 
 func _create_interior_light() -> void:
 	var light := OmniLight3D.new()
