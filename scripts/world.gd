@@ -316,15 +316,15 @@ func _create_entrance_area(entrance_pos: Vector3, facing: Vector3) -> Area3D:
 	area.name = "EntranceArea"
 	var cs := CollisionShape3D.new()
 	var shp := BoxShape3D.new()
-	shp.size = Vector3(1.8, 2.5, 1.8)
+	# Wide enough for the door, deep enough to cover both sides of the wall
+	if absf(facing.x) > 0.5:
+		shp.size = Vector3(3.0, 2.5, 2.0)
+	else:
+		shp.size = Vector3(2.0, 2.5, 3.0)
 	cs.shape = shp
 	area.add_child(cs)
-	# Position slightly in front of the door
-	area.position = entrance_pos + Vector3(
-		facing.x * 0.9,
-		1.25,
-		facing.z * 0.9
-	)
+	# Centered on the door position (straddles inside and outside)
+	area.position = entrance_pos + Vector3(0.0, 1.25, 0.0)
 	add_child(area)
 	return area
 
