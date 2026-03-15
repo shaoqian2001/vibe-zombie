@@ -156,8 +156,8 @@ func _enter_building(binfo: Dictionary) -> void:
 	var facing: Vector3 = binfo.entrance_facing
 	# When entrance faces ±X the interior rotates 90°, so local X↔Z swap.
 	# Swap width/depth so the interior walls align with the exterior box.
-	var iw := binfo.width
-	var id := binfo.depth
+	var iw: float = binfo.width
+	var id: float = binfo.depth
 	if absf(facing.x) > 0.5:
 		iw = binfo.depth
 		id = binfo.width
