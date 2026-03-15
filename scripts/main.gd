@@ -56,6 +56,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_update_prompt()
+	_update_interior_wall_visibility()
 
 	if _transition_cooldown > 0.0:
 		_transition_cooldown -= delta
@@ -126,9 +127,9 @@ func _enter_building(binfo: Dictionary) -> void:
 	_current_building_info = binfo
 	_transition_cooldown = TRANSITION_COOLDOWN_TIME
 
-	# Make the entered building's exterior semi-transparent
+	# Hide the entered building's exterior completely
 	var building_node: MeshInstance3D = binfo.node
-	_set_building_transparency(building_node, 0.2)
+	building_node.visible = false
 	# Disable exterior collision for this building
 	for child in building_node.get_children():
 		if child is StaticBody3D:
@@ -190,9 +191,9 @@ func _exit_building() -> void:
 	_inside_building = false
 	_transition_cooldown = TRANSITION_COOLDOWN_TIME
 
-	# Restore the building's exterior mesh to full opacity
+	# Restore the building's exterior mesh
 	var building_node: MeshInstance3D = _current_building_info.node
-	_set_building_transparency(building_node, 1.0)
+	building_node.visible = true
 	for child in building_node.get_children():
 		if child is StaticBody3D:
 			child.process_mode = Node.PROCESS_MODE_INHERIT
@@ -221,16 +222,18 @@ func _exit_building() -> void:
 	_nearby_building = {}
 
 # ------------------------------------------------------------------
-# Helpers
+# Interior wall visibility based on camera angle
 # ------------------------------------------------------------------
 
-func _set_building_transparency(mi: MeshInstance3D, alpha: float) -> void:
-	var mat: StandardMaterial3D = mi.mesh.material as StandardMaterial3D
-	if mat == null:
+func _update_interior_wall_visibility() -> void:
+	if not _inside_building or _current_interior == null:
 		return
-	if alpha >= 1.0:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-		mat.albedo_color.a = 1.0
-	else:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.albedo_color.a = alpha
+	# Camera direction in world space (from player toward camera)
+	var cam_dir := camera.global_position - player.global_position
+	cam_dir.y = 0.0
+	if cam_dir.length_squared() < 0.001:
+		return
+	cam_dir = cam_dir.normalized()
+	# Transform to interior local space
+	var local_dir := _current_interior.global_transform.basis.inverse() * cam_dir
+	_current_interior.update_wall_visibility(local_dir)

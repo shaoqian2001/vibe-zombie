@@ -30,6 +30,11 @@ var wall_color: Color = WALL_COLOR
 # The exit door Area3D for detecting when player walks out
 var exit_area: Area3D
 
+# Wall tracking for camera-based transparency.
+# Each entry: { meshes: Array, normal: Vector3 }
+# normal is the outward-facing direction in local space.
+var wall_sides: Array = []
+
 ## Set up and generate the interior.
 ## building_center: world position of the building centre (at ground level).
 ## entrance_facing: unit vector pointing outward from the entrance face.
@@ -88,35 +93,39 @@ func _create_walls() -> void:
 	var thickness := 0.15
 
 	# Back wall (-Z side)
-	_add_box(Vector3(0.0, h * 0.5, -d * 0.5), Vector3(w, h, thickness), wall_color, true)
+	var back := _add_wall(Vector3(0.0, h * 0.5, -d * 0.5), Vector3(w, h, thickness), wall_color)
+	wall_sides.append({ meshes = [back], normal = Vector3(0.0, 0.0, -1.0) })
+
 	# Left wall (-X side)
-	_add_box(Vector3(-w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), wall_color, true)
+	var left := _add_wall(Vector3(-w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), wall_color)
+	wall_sides.append({ meshes = [left], normal = Vector3(-1.0, 0.0, 0.0) })
+
 	# Right wall (+X side)
-	_add_box(Vector3(w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), wall_color, true)
+	var right := _add_wall(Vector3(w * 0.5, h * 0.5, 0.0), Vector3(thickness, h, d), wall_color)
+	wall_sides.append({ meshes = [right], normal = Vector3(1.0, 0.0, 0.0) })
 
 	# Front wall with gap for exit door (+Z side)
+	var front_meshes: Array = []
 	var door_width := 1.2
 	var door_height := 2.2
 	var left_w := (w - door_width) * 0.5
 	if left_w > 0.1:
-		_add_box(
+		front_meshes.append(_add_wall(
 			Vector3(-door_width * 0.5 - left_w * 0.5, h * 0.5, d * 0.5),
-			Vector3(left_w, h, thickness),
-			wall_color, true
-		)
-		_add_box(
+			Vector3(left_w, h, thickness), wall_color
+		))
+		front_meshes.append(_add_wall(
 			Vector3(door_width * 0.5 + left_w * 0.5, h * 0.5, d * 0.5),
-			Vector3(left_w, h, thickness),
-			wall_color, true
-		)
+			Vector3(left_w, h, thickness), wall_color
+		))
 	# Section above door
 	var above_h := h - door_height
 	if above_h > 0.1:
-		_add_box(
+		front_meshes.append(_add_wall(
 			Vector3(0.0, door_height + above_h * 0.5, d * 0.5),
-			Vector3(door_width, above_h, thickness),
-			wall_color, true
-		)
+			Vector3(door_width, above_h, thickness), wall_color
+		))
+	wall_sides.append({ meshes = front_meshes, normal = Vector3(0.0, 0.0, 1.0) })
 
 func _create_exit_door() -> void:
 	var d := interior_depth
@@ -252,6 +261,56 @@ func _furnish_diner() -> void:
 	_add_box(Vector3(w * 0.42, 0.4, d * 0.15), Vector3(0.4, 0.8, 1.2), BOOTH_COLOR, true)
 	_add_box(Vector3(w * 0.25, 0.4, d * 0.15), Vector3(0.6, 0.8, 0.9), TABLE_COLOR, true)
 	_add_box(Vector3(0.0, 1.5, -d * 0.48), Vector3(1.5, 0.8, 0.1), Color(0.15, 0.15, 0.18), false)
+
+# ------------------------------------------------------------------
+# Wall visibility (called by main.gd each frame while inside)
+# ------------------------------------------------------------------
+
+## Update wall transparency based on camera direction in local space.
+## Walls whose outward normal faces toward the camera become transparent.
+func update_wall_visibility(camera_dir_local: Vector3) -> void:
+	for side in wall_sides:
+		var dot: float = side.normal.dot(camera_dir_local)
+		# Wall faces toward camera → make transparent so player is visible
+		var alpha := 0.2 if dot > 0.0 else 1.0
+		for mi in side.meshes:
+			var mat: StandardMaterial3D = mi.mesh.material as StandardMaterial3D
+			if mat == null:
+				continue
+			if alpha >= 1.0:
+				mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+				mat.albedo_color.a = 1.0
+			else:
+				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				mat.albedo_color.a = alpha
+
+# ------------------------------------------------------------------
+# Helper: add a wall panel (with collision, returns MeshInstance3D)
+# ------------------------------------------------------------------
+
+func _add_wall(pos: Vector3, size: Vector3, color: Color) -> MeshInstance3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mesh.material = mat
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+
+	var sb := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shp := BoxShape3D.new()
+	shp.size = size
+	cs.shape = shp
+	sb.add_child(cs)
+	mi.add_child(sb)
+
+	add_child(mi)
+	return mi
 
 # ------------------------------------------------------------------
 # Helper: add a coloured box (optionally with collision)
