@@ -126,9 +126,9 @@ func _enter_building(binfo: Dictionary) -> void:
 	_current_building_info = binfo
 	_transition_cooldown = TRANSITION_COOLDOWN_TIME
 
-	# Hide only the entered building's exterior mesh
+	# Make the entered building's exterior semi-transparent
 	var building_node: MeshInstance3D = binfo.node
-	building_node.visible = false
+	_set_building_transparency(building_node, 0.2)
 	# Disable exterior collision for this building
 	for child in building_node.get_children():
 		if child is StaticBody3D:
@@ -190,9 +190,9 @@ func _exit_building() -> void:
 	_inside_building = false
 	_transition_cooldown = TRANSITION_COOLDOWN_TIME
 
-	# Restore the building's exterior mesh
+	# Restore the building's exterior mesh to full opacity
 	var building_node: MeshInstance3D = _current_building_info.node
-	building_node.visible = true
+	_set_building_transparency(building_node, 1.0)
 	for child in building_node.get_children():
 		if child is StaticBody3D:
 			child.process_mode = Node.PROCESS_MODE_INHERIT
@@ -219,3 +219,18 @@ func _exit_building() -> void:
 
 	_current_building_info = {}
 	_nearby_building = {}
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+func _set_building_transparency(mi: MeshInstance3D, alpha: float) -> void:
+	var mat: StandardMaterial3D = mi.mesh.material as StandardMaterial3D
+	if mat == null:
+		return
+	if alpha >= 1.0:
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+		mat.albedo_color.a = 1.0
+	else:
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color.a = alpha

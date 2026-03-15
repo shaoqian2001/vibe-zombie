@@ -6,12 +6,25 @@ extends Node3D
 ## Each block is filled with randomly-sized buildings.
 ## A ground plane (grass) underlies everything, and a sun + sky environment is created.
 
-const MAP_HALF       := 44.0   # Half-extent of the entire map (metres)
-const BLOCK_SIZE     := 14.0   # Width/depth of one city block
+const MAP_HALF       := 76.0   # Half-extent of the entire map (metres)
+const BLOCK_SIZE     := 26.0   # Width/depth of one city block
 const ROAD_WIDTH     := 4.0    # Width of a road between blocks
 const CELL_SIZE      := BLOCK_SIZE + ROAD_WIDTH  # Distance from block edge to next block edge
 
 const NUM_BLOCKS     := 5      # Number of blocks per axis (5×5 grid)
+
+# Building type → height category
+# Short types (single ground floor): Convenience Store, Warehouse, Diner
+# Tall types (potentially multi-floor): Apartment, Office
+const SHORT_TYPES: Array[int] = [
+	BuildingInterior.BuildingType.CONVENIENCE_STORE,
+	BuildingInterior.BuildingType.WAREHOUSE,
+	BuildingInterior.BuildingType.DINER,
+]
+const TALL_TYPES: Array[int] = [
+	BuildingInterior.BuildingType.APARTMENT,
+	BuildingInterior.BuildingType.OFFICE,
+]
 
 # Palette for building colours (cartoon-ish desaturated tones)
 const BUILDING_COLORS: Array[Color] = [
@@ -120,26 +133,48 @@ func _generate_city_grid() -> void:
 # ------------------------------------------------------------------
 
 func _populate_block(bx: float, bz: float) -> void:
-	var count := _rng.randi_range(3, 6)
+	var count := _rng.randi_range(2, 4)
 	var placed := []  # Array of {cx, cz, hw, hd}  (half-extents + centre)
 
 	var attempts := 0
 	while placed.size() < count and attempts < 40:
 		attempts += 1
 
-		var bw := _rng.randf_range(2.5, 5.5)
-		var bd := _rng.randf_range(2.5, 5.5)
-		var bh := _rng.randf_range(3.0, 12.0)
+		# Pick a building category: 50/50 tall vs short
+		var is_tall := _rng.randf() < 0.5
+		var btype: int
+		if is_tall:
+			btype = TALL_TYPES[_rng.randi() % TALL_TYPES.size()]
+		else:
+			btype = SHORT_TYPES[_rng.randi() % SHORT_TYPES.size()]
 
-		var margin := 0.6
-		var px := bx + _rng.randf_range(margin, BLOCK_SIZE - bw - margin)
-		var pz := bz + _rng.randf_range(margin, BLOCK_SIZE - bd - margin)
+		# Dimensions based on category
+		var bw: float
+		var bd: float
+		var bh: float
+		if is_tall:
+			bw = _rng.randf_range(7.0, 12.0)
+			bd = _rng.randf_range(7.0, 12.0)
+			bh = _rng.randf_range(8.0, 16.0)
+		else:
+			bw = _rng.randf_range(6.0, 10.0)
+			bd = _rng.randf_range(6.0, 10.0)
+			bh = _rng.randf_range(3.5, 5.5)
+
+		var margin := 0.8
+		var max_x := BLOCK_SIZE - bw - margin
+		var max_z := BLOCK_SIZE - bd - margin
+		if max_x < margin or max_z < margin:
+			continue
+
+		var px := bx + _rng.randf_range(margin, max_x)
+		var pz := bz + _rng.randf_range(margin, max_z)
 
 		# AABB overlap check
 		var cx := px + bw * 0.5
 		var cz := pz + bd * 0.5
-		var hw := bw * 0.5 + 0.3
-		var hd := bd * 0.5 + 0.3
+		var hw := bw * 0.5 + 0.4
+		var hd := bd * 0.5 + 0.4
 
 		var ok := true
 		for p in placed:
@@ -150,7 +185,6 @@ func _populate_block(bx: float, bz: float) -> void:
 		if ok:
 			placed.append({cx = cx, cz = cz, hw = bw * 0.5, hd = bd * 0.5})
 			var color := BUILDING_COLORS[_rng.randi() % BUILDING_COLORS.size()]
-			var btype: int = _rng.randi() % BuildingInterior.BuildingType.size()
 			_create_building(Vector3(cx, bh * 0.5, cz), bw, bh, bd, color, btype, bx, bz)
 
 func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, btype: int, block_x: float, block_z: float) -> void:

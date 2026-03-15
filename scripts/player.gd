@@ -2,6 +2,7 @@ extends CharacterBody3D
 
 # Movement constants
 const SPEED = 6.0
+const SPRINT_SPEED = 10.0
 const ACCELERATION = 18.0
 const GRAVITY = 24.0
 
@@ -66,7 +67,8 @@ func _get_world_movement_direction() -> Vector3:
 	return (cam_fwd * (-input.y) + cam_right * input.x)
 
 func _apply_movement(dir: Vector3, delta: float) -> void:
-	var target_xz := dir * SPEED
+	var speed := SPRINT_SPEED if Input.is_action_pressed("sprint") else SPEED
+	var target_xz := dir * speed
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
 
