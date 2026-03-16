@@ -215,7 +215,7 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 	var entrance_pos := _compute_entrance_position(pos, w, h, d, entrance_dir)
 
 	# --- Create visual door ---
-	var door_mi := _create_door(entrance_pos, entrance_dir, color)
+	var door_info := _create_door(entrance_pos, entrance_dir, color)
 
 	# --- Create entrance trigger area ---
 	var entrance_area := _create_entrance_area(entrance_pos, entrance_dir)
@@ -223,7 +223,8 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 	# Store building info for the main scene to use
 	buildings.append({
 		node = mi,
-		door_mesh = door_mi,
+		door_pivot = door_info.pivot,
+		door_base_angle = door_info.base_angle,
 		entrance_area = entrance_area,
 		type = btype,
 		width = w,
@@ -265,41 +266,52 @@ func _compute_entrance_position(pos: Vector3, w: float, h: float, d: float, faci
 	else:
 		return Vector3(pos.x, ground_y, pos.z + facing.z * d * 0.5)
 
-func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color) -> MeshInstance3D:
+func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color) -> Dictionary:
 	var door_w := 1.0
 	var door_h := 2.0
 
-	# Door panel (slightly in front of the wall)
+	# --- Pivot at hinge edge (right side when viewed from outside) ---
+	var hinge_offset := Vector3.UP.cross(facing) * (door_w * 0.5)
+	var pivot := Node3D.new()
+	pivot.name = "DoorPivot"
+	pivot.position = entrance_pos + hinge_offset + Vector3(facing.x * 0.05, 0.0, facing.z * 0.05)
+	var base_angle := atan2(facing.x, facing.z)
+	pivot.rotation.y = base_angle
+	add_child(pivot)
+
+	# --- Door mesh (child of pivot, offset so hinge edge aligns with pivot origin) ---
 	var door_mat := StandardMaterial3D.new()
 	door_mat.albedo_color = DOOR_COLOR
-
-	var door_mesh := BoxMesh.new()
+	var dmesh := BoxMesh.new()
+	dmesh.size = Vector3(door_w, door_h, 0.08)
+	dmesh.material = door_mat
 	var door_mi := MeshInstance3D.new()
-
-	if facing.x != 0:
-		door_mesh.size = Vector3(0.08, door_h, door_w)
-	else:
-		door_mesh.size = Vector3(door_w, door_h, 0.08)
-
-	door_mesh.material = door_mat
-	door_mi.mesh = door_mesh
+	door_mi.mesh = dmesh
 	door_mi.name = "Door"
-	door_mi.position = entrance_pos + Vector3(facing.x * 0.05, door_h * 0.5, facing.z * 0.05)
-	add_child(door_mi)
+	door_mi.position = Vector3(-door_w * 0.5, door_h * 0.5, 0.0)
+	pivot.add_child(door_mi)
 
-	# Awning / canopy above the door
+	# --- Door collision (child of pivot, moves with animation) ---
+	var door_body := StaticBody3D.new()
+	door_body.name = "DoorBody"
+	var door_col := CollisionShape3D.new()
+	var door_col_shape := BoxShape3D.new()
+	door_col_shape.size = Vector3(door_w, door_h, 0.15)
+	door_col.shape = door_col_shape
+	door_body.position = Vector3(-door_w * 0.5, door_h * 0.5, 0.0)
+	door_body.add_child(door_col)
+	pivot.add_child(door_body)
+
+	# --- Awning / canopy above the door (not part of pivot) ---
 	var awning_color: Color = AWNING_COLORS[_rng.randi() % AWNING_COLORS.size()]
 	var awning_mat := StandardMaterial3D.new()
 	awning_mat.albedo_color = awning_color
-
 	var awning_mesh := BoxMesh.new()
 	var awning_mi := MeshInstance3D.new()
-
 	if facing.x != 0:
 		awning_mesh.size = Vector3(0.8, 0.08, door_w + 0.6)
 	else:
 		awning_mesh.size = Vector3(door_w + 0.6, 0.08, 0.8)
-
 	awning_mesh.material = awning_mat
 	awning_mi.mesh = awning_mesh
 	awning_mi.position = entrance_pos + Vector3(
@@ -309,7 +321,7 @@ func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color)
 	)
 	add_child(awning_mi)
 
-	return door_mi
+	return {pivot = pivot, base_angle = base_angle}
 
 func _create_entrance_area(entrance_pos: Vector3, facing: Vector3) -> Area3D:
 	var area := Area3D.new()

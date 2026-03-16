@@ -4,10 +4,10 @@ extends Node3D
 ## Wires up the camera → player link, handles player spawn,
 ## and manages seamless building enter / exit transitions.
 ##
-## Press F near a door to open / close it.
+## Press F near a door to open / close it (works from both sides).
 ## When a door is open the player can walk freely in and out.
-## The view switches automatically between exterior and interior
-## based on whether the player is inside the building bounds.
+## Closing the door from inside keeps the player inside.
+## The view switches automatically between exterior and interior.
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 
@@ -26,6 +26,8 @@ const BUILDING_TYPE_NAMES := [
 	"Diner",
 ]
 
+const DOOR_ANIM_DURATION := 0.4
+
 @onready var player: CharacterBody3D = $Player
 @onready var camera: Camera3D        = $Camera3D
 @onready var world: Node3D           = $World
@@ -35,10 +37,11 @@ var _prompt_label: Label = null
 
 # State
 var _nearby_building: Dictionary = {}   # building whose door area the player overlaps
-var _open_building: Dictionary = {}     # building whose door is currently open
-var _current_interior: Node3D = null    # interior node for the open building
-var _player_inside: bool = false        # whether the player is inside the open building
-var _showing_interior: bool = false     # whether we are currently showing interior view
+var _active_building: Dictionary = {}   # building with active interior (door may be open or closed)
+var _current_interior: Node3D = null    # interior node for the active building
+var _player_inside: bool = false        # whether the player is inside the active building
+var _showing_interior: bool = false     # whether we are showing interior view
+var _door_tween: Tween = null           # active door animation tween
 
 func _ready() -> void:
 	var rng := RandomNumberGenerator.new()
@@ -78,7 +81,7 @@ func _create_ui() -> void:
 	_prompt_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
 	_prompt_label.add_theme_constant_override("shadow_offset_x", 2)
 	_prompt_label.add_theme_constant_override("shadow_offset_y", 2)
-	# True centre of the screen using full-rect anchors
+	# True centre of the screen
 	_prompt_label.anchor_left = 0.0
 	_prompt_label.anchor_top = 0.4
 	_prompt_label.anchor_right = 1.0
@@ -102,8 +105,8 @@ func _update_prompt() -> void:
 		else:
 			_prompt_label.text = "Press 'F' to open the door"
 		_prompt_label.visible = true
-	elif _player_inside and not _open_building.is_empty():
-		var btype: int = _open_building.get("type", 0)
+	elif _player_inside and not _active_building.is_empty():
+		var btype: int = _active_building.get("type", 0)
 		var type_name: String = BUILDING_TYPE_NAMES[btype] if btype < BUILDING_TYPE_NAMES.size() else "Building"
 		_prompt_label.text = "Inside: " + type_name
 		_prompt_label.visible = true
@@ -145,47 +148,24 @@ func _handle_interact() -> void:
 # ------------------------------------------------------------------
 
 func _open_door(binfo: Dictionary) -> void:
-	# Close any previously open building first
-	if not _open_building.is_empty():
-		_close_door()
+	var need_interior := (_active_building != binfo)
+
+	# Close/cleanup any other active building first
+	if not _active_building.is_empty() and _active_building != binfo:
+		_full_cleanup()
 
 	binfo.door_open = true
-	_open_building = binfo
+	_active_building = binfo
 
-	# Hide the door panel
-	var door_mi: MeshInstance3D = binfo.door_mesh
-	door_mi.visible = false
+	# Animate the door open
+	_animate_door(binfo, true)
 
 	# Disable exterior collision — interior walls provide collision instead
-	var building_node: MeshInstance3D = binfo.node
-	for child in building_node.get_children():
-		if child is StaticBody3D:
-			child.process_mode = Node.PROCESS_MODE_DISABLED
-			for sub in child.get_children():
-				if sub is CollisionShape3D:
-					(sub as CollisionShape3D).disabled = true
+	_set_exterior_collision(binfo.node, false)
 
-	# Create interior at the building's world position
-	var bpos: Vector3 = building_node.position
-	var building_ground := Vector3(bpos.x, 0.0, bpos.z)
-
-	_current_interior = Node3D.new()
-	_current_interior.name = "BuildingInterior"
-	_current_interior.set_script(BuildingInterior)
-	add_child(_current_interior)
-
-	var facing: Vector3 = binfo.entrance_facing
-	# When entrance faces ±X the interior rotates 90°, so local X↔Z swap.
-	var iw: float = binfo.width
-	var id: float = binfo.depth
-	if absf(facing.x) > 0.5:
-		iw = binfo.depth
-		id = binfo.width
-	_current_interior.setup(
-		binfo.type as BuildingInterior.BuildingType,
-		iw, id, binfo.height,
-		building_ground, facing, binfo.color
-	)
+	# Create interior if needed (skip if re-opening same building from inside)
+	if need_interior:
+		_create_interior(binfo)
 
 	# Set initial view based on player position
 	_update_player_inside()
@@ -199,33 +179,107 @@ func _open_door(binfo: Dictionary) -> void:
 # ------------------------------------------------------------------
 
 func _close_door() -> void:
-	if _open_building.is_empty():
+	if _active_building.is_empty():
 		return
 
-	_open_building.door_open = false
+	_active_building.door_open = false
 
-	# Show the door panel again
-	var door_mi: MeshInstance3D = _open_building.door_mesh
-	door_mi.visible = true
+	# Animate the door closed
+	_animate_door(_active_building, false)
 
 	# Re-enable exterior collision
-	var building_node: MeshInstance3D = _open_building.node
+	_set_exterior_collision(_active_building.node, true)
+
+	if _player_inside:
+		# Player is inside: keep interior, keep active building
+		# They can press F again to re-open and leave
+		pass
+	else:
+		# Player is outside: full cleanup
+		_destroy_interior()
+		var building_node: MeshInstance3D = _active_building.node
+		building_node.visible = true
+		_active_building = {}
+		_showing_interior = false
+
+# ------------------------------------------------------------------
+# Door animation
+# ------------------------------------------------------------------
+
+func _animate_door(binfo: Dictionary, opening: bool) -> void:
+	if _door_tween and _door_tween.is_valid():
+		_door_tween.kill()
+
+	var pivot: Node3D = binfo.door_pivot
+	var base_angle: float = binfo.door_base_angle
+	var target: float
+	if opening:
+		target = base_angle - PI * 0.5
+	else:
+		target = base_angle
+
+	_door_tween = create_tween()
+	_door_tween.tween_property(pivot, "rotation:y", target, DOOR_ANIM_DURATION) \
+		.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_QUAD)
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+func _set_exterior_collision(building_node: MeshInstance3D, enabled: bool) -> void:
 	for child in building_node.get_children():
 		if child is StaticBody3D:
-			child.process_mode = Node.PROCESS_MODE_INHERIT
+			child.process_mode = Node.PROCESS_MODE_INHERIT if enabled else Node.PROCESS_MODE_DISABLED
 			for sub in child.get_children():
 				if sub is CollisionShape3D:
-					(sub as CollisionShape3D).disabled = false
+					(sub as CollisionShape3D).disabled = not enabled
 
-	# Make sure exterior is visible
-	building_node.visible = true
+func _create_interior(binfo: Dictionary) -> void:
+	var building_node: MeshInstance3D = binfo.node
+	var bpos: Vector3 = building_node.position
+	var building_ground := Vector3(bpos.x, 0.0, bpos.z)
 
-	# Remove interior
+	_current_interior = Node3D.new()
+	_current_interior.name = "BuildingInterior"
+	_current_interior.set_script(BuildingInterior)
+	add_child(_current_interior)
+
+	var facing: Vector3 = binfo.entrance_facing
+	var iw: float = binfo.width
+	var id: float = binfo.depth
+	if absf(facing.x) > 0.5:
+		iw = binfo.depth
+		id = binfo.width
+	_current_interior.setup(
+		binfo.type as BuildingInterior.BuildingType,
+		iw, id, binfo.height,
+		building_ground, facing, binfo.color
+	)
+
+func _destroy_interior() -> void:
 	if _current_interior:
 		_current_interior.queue_free()
 		_current_interior = null
 
-	_open_building = {}
+func _full_cleanup() -> void:
+	if _active_building.is_empty():
+		return
+
+	# Close door if open
+	if _active_building.door_open:
+		_active_building.door_open = false
+		var pivot: Node3D = _active_building.door_pivot
+		var base_angle: float = _active_building.door_base_angle
+		pivot.rotation.y = base_angle
+
+	# Re-enable exterior collision
+	_set_exterior_collision(_active_building.node, true)
+
+	# Restore exterior visibility
+	_active_building.node.visible = true
+
+	_destroy_interior()
+	_active_building = {}
 	_player_inside = false
 	_showing_interior = false
 
@@ -234,27 +288,28 @@ func _close_door() -> void:
 # ------------------------------------------------------------------
 
 func _update_player_inside() -> void:
-	if _open_building.is_empty():
+	if _active_building.is_empty():
 		if _player_inside:
 			_player_inside = false
 			_showing_interior = false
 		return
 
-	var bpos: Vector3 = _open_building.node.position
-	var hw: float = _open_building.width * 0.5
-	var hd: float = _open_building.depth * 0.5
+	var bpos: Vector3 = _active_building.node.position
+	var hw: float = _active_building.width * 0.5
+	var hd: float = _active_building.depth * 0.5
 	var px: float = player.global_position.x
 	var pz: float = player.global_position.z
 	var now_inside := (px > bpos.x - hw and px < bpos.x + hw
 		and pz > bpos.z - hd and pz < bpos.z + hd)
 
-	# Detect transition
 	if now_inside and not _player_inside:
 		_player_inside = true
-		_switch_to_interior_view()
+		if _active_building.door_open:
+			_switch_to_interior_view()
 	elif not now_inside and _player_inside:
 		_player_inside = false
-		_switch_to_exterior_view()
+		if _active_building.door_open:
+			_switch_to_exterior_view()
 
 # ------------------------------------------------------------------
 # View switching
@@ -264,8 +319,7 @@ func _switch_to_interior_view() -> void:
 	if _showing_interior:
 		return
 	_showing_interior = true
-	# Hide exterior, show interior
-	var building_node: MeshInstance3D = _open_building.node
+	var building_node: MeshInstance3D = _active_building.node
 	building_node.visible = false
 	if _current_interior:
 		_current_interior.visible = true
@@ -274,12 +328,9 @@ func _switch_to_exterior_view() -> void:
 	if not _showing_interior:
 		return
 	_showing_interior = false
-	# Show exterior, hide interior (collision from interior walls stays active)
-	var building_node: MeshInstance3D = _open_building.node
+	var building_node: MeshInstance3D = _active_building.node
 	building_node.visible = true
-	# Keep door hidden since it's open
-	var door_mi: MeshInstance3D = _open_building.door_mesh
-	door_mi.visible = false
+	# Keep door mesh hidden (it's part of the pivot, not the exterior)
 	if _current_interior:
 		_current_interior.visible = false
 
@@ -290,12 +341,10 @@ func _switch_to_exterior_view() -> void:
 func _update_interior_wall_visibility() -> void:
 	if not _showing_interior or _current_interior == null:
 		return
-	# Camera direction in world space (from player toward camera)
 	var cam_dir := camera.global_position - player.global_position
 	cam_dir.y = 0.0
 	if cam_dir.length_squared() < 0.001:
 		return
 	cam_dir = cam_dir.normalized()
-	# Transform to interior local space
 	var local_dir := _current_interior.global_transform.basis.inverse() * cam_dir
 	_current_interior.update_wall_visibility(local_dir)
