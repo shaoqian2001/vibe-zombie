@@ -6,8 +6,21 @@ const SPRINT_SPEED = 10.0
 const ACCELERATION = 18.0
 const GRAVITY = 24.0
 
+# Stamina
+const STAMINA_MAX := 40.0
+const STAMINA_DRAIN := 15.0   # per second while sprinting
+const STAMINA_RECOVER := 10.0 # per second while not sprinting
+const STAMINA_RECOVER_DELAY := 2.0  # seconds after stop sprinting before recovery
+
+var stamina: float = STAMINA_MAX
+var _sprint_cooldown: float = 0.0  # time remaining before stamina recovers
+var _is_sprinting: bool = false
+
 # Reference to the isometric camera
 var _camera: Camera3D = null
+
+# Reference to the HUD (set by main.gd)
+var hud = null
 
 func _ready() -> void:
 	# Wait one frame so the scene tree is fully set up before finding the camera
@@ -17,9 +30,12 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	_apply_gravity(delta)
 	var move_dir := _get_world_movement_direction()
-	_apply_movement(move_dir, delta)
+	_update_sprint(move_dir, delta)
+	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
+	_apply_movement(move_dir, current_speed, delta)
 	_rotate_to_face(move_dir, delta)
 	move_and_slide()
+	_sync_hud()
 
 # ------------------------------------------------------------------
 # Private helpers
@@ -66,8 +82,21 @@ func _get_world_movement_direction() -> Vector3:
 
 	return (cam_fwd * (-input.y) + cam_right * input.x)
 
-func _apply_movement(dir: Vector3, delta: float) -> void:
-	var speed := SPRINT_SPEED if Input.is_action_pressed("sprint") else SPEED
+func _update_sprint(move_dir: Vector3, delta: float) -> void:
+	var wants_sprint := Input.is_action_pressed("sprint")
+	var is_moving := move_dir.length() > 0.1
+
+	if wants_sprint and is_moving and stamina > 0.0:
+		_is_sprinting = true
+		stamina = max(stamina - STAMINA_DRAIN * delta, 0.0)
+		_sprint_cooldown = STAMINA_RECOVER_DELAY
+	else:
+		_is_sprinting = false
+		_sprint_cooldown = max(_sprint_cooldown - delta, 0.0)
+		if _sprint_cooldown <= 0.0:
+			stamina = min(stamina + STAMINA_RECOVER * delta, STAMINA_MAX)
+
+func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	var target_xz := dir * speed
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
@@ -77,3 +106,7 @@ func _rotate_to_face(dir: Vector3, delta: float) -> void:
 		return
 	var target_angle := atan2(dir.x, dir.z)
 	rotation.y = lerp_angle(rotation.y, target_angle, 12.0 * delta)
+
+func _sync_hud() -> void:
+	if hud:
+		hud.set_stamina(stamina / STAMINA_MAX * 100.0)

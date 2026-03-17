@@ -2,6 +2,7 @@ extends Node3D
 
 ## Main scene controller.
 ## Wires up the camera → player link, handles player spawn,
+## spawns enemies, sets up the HUD,
 ## and manages seamless building enter / exit transitions.
 ##
 ## Press F near a door to open / close it (works from both sides).
@@ -28,12 +29,19 @@ const BUILDING_TYPE_NAMES := [
 
 const DOOR_ANIM_DURATION := 0.4
 
+# Enemy spawning constants (matching world.gd dimensions)
+const ENEMY_COUNT := 25
+const ENEMY_BLOCK_SIZE := 26.0
+const ENEMY_ROAD_WIDTH := 4.0
+const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
+
 @onready var player: CharacterBody3D = $Player
 @onready var camera: Camera3D        = $Camera3D
 @onready var world: Node3D           = $World
 
 # UI
 var _prompt_label: Label = null
+var _hud = null
 
 # State
 var _nearby_building: Dictionary = {}   # building whose door area the player overlaps
@@ -51,6 +59,8 @@ func _ready() -> void:
 
 	camera.set_target(player)
 	_create_ui()
+	_setup_hud()
+	_spawn_enemies(rng)
 
 	await get_tree().process_frame
 	_connect_entrance_areas()
@@ -65,7 +75,62 @@ func _unhandled_input(event: InputEvent) -> void:
 		_handle_interact()
 
 # ------------------------------------------------------------------
-# UI
+# HUD (armor / health / stamina bars)
+# ------------------------------------------------------------------
+
+func _setup_hud() -> void:
+	var hud_script := preload("res://scripts/hud.gd")
+	_hud = CanvasLayer.new()
+	_hud.set_script(hud_script)
+	_hud.name = "HUD"
+	add_child(_hud)
+	player.hud = _hud
+
+# ------------------------------------------------------------------
+# Enemy spawning
+# ------------------------------------------------------------------
+
+func _spawn_enemies(rng: RandomNumberGenerator) -> void:
+	var enemy_script := preload("res://scripts/enemy.gd")
+	var total := ENEMY_CELL_SIZE * 5  # NUM_BLOCKS = 5
+	var grid_origin := -total * 0.5
+
+	for i in range(ENEMY_COUNT):
+		var pos := _random_walkable_pos(rng, grid_origin)
+		# Avoid spawning too close to the player
+		if pos.distance_to(player.global_position) < 8.0:
+			pos = _random_walkable_pos(rng, grid_origin)
+
+		var enemy := CharacterBody3D.new()
+		enemy.set_script(enemy_script)
+		enemy.name = "Enemy_%d" % i
+		enemy.global_position = pos
+		add_child(enemy)
+
+func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vector3:
+	var block_col := rng.randi_range(0, 4)
+	var block_row := rng.randi_range(0, 4)
+	var bx := grid_origin + block_col * ENEMY_CELL_SIZE
+	var bz := grid_origin + block_row * ENEMY_CELL_SIZE
+
+	if rng.randf() < 0.5:
+		# On a road
+		if rng.randf() < 0.5:
+			var x := bx + ENEMY_BLOCK_SIZE + rng.randf_range(0.5, ENEMY_ROAD_WIDTH - 0.5)
+			var z := bz + rng.randf_range(0.0, ENEMY_CELL_SIZE)
+			return Vector3(x, 0.5, z)
+		else:
+			var x := bx + rng.randf_range(0.0, ENEMY_CELL_SIZE)
+			var z := bz + ENEMY_BLOCK_SIZE + rng.randf_range(0.5, ENEMY_ROAD_WIDTH - 0.5)
+			return Vector3(x, 0.5, z)
+	else:
+		# On sidewalk
+		var x := bx + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
+		var z := bz + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
+		return Vector3(x, 0.5, z)
+
+# ------------------------------------------------------------------
+# UI (interaction prompts)
 # ------------------------------------------------------------------
 
 func _create_ui() -> void:
