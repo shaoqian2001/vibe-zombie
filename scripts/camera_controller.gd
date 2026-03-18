@@ -4,6 +4,7 @@ extends Camera3D
 ##
 ## The camera stays at a fixed angular offset (yaw + pitch) relative to the
 ## target and smoothly interpolates position each frame.
+## Q / E rotate the viewing angle around the player.
 
 @export var follow_speed: float   = 7.0   ## Smoothing factor (higher = snappier)
 @export var distance: float       = 22.0  ## Distance from target
@@ -11,9 +12,11 @@ extends Camera3D
 @export var yaw_deg: float        = 45.0  ## Horizontal angle (degrees)
 @export var look_offset: Vector3  = Vector3(0.0, 1.0, 0.0)  ## Point to look at offset
 
+const YAW_SPEED := 90.0  # Degrees per second when holding Q/E
+
 var target: Node3D = null
 
-# Cached offset recalculated when exported vars change
+# Cached offset recalculated when yaw/pitch/distance change
 var _offset: Vector3
 
 func _ready() -> void:
@@ -27,6 +30,17 @@ func set_target(node: Node3D) -> void:
 		look_at(target.global_position + look_offset, Vector3.UP)
 
 func _process(delta: float) -> void:
+	# Handle Q/E yaw rotation
+	var yaw_input := 0.0
+	if Input.is_action_pressed("rotate_left"):
+		yaw_input -= 1.0
+	if Input.is_action_pressed("rotate_right"):
+		yaw_input += 1.0
+
+	if yaw_input != 0.0:
+		yaw_deg += yaw_input * YAW_SPEED * delta
+		_update_offset()
+
 	if not target:
 		return
 	var desired_pos := target.global_position + _offset
