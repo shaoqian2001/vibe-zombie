@@ -67,24 +67,14 @@ func _get_input_vector() -> Vector2:
 
 func _get_world_movement_direction() -> Vector3:
 	var input := _get_input_vector()
-	if input.length() < 0.05 or _camera == null:
+	if input.length() < 0.05:
 		return Vector3.ZERO
 
-	# Project camera axes onto the XZ plane so movement is always horizontal
-	var cam_basis := _camera.global_transform.basis
-	var cam_fwd   := -cam_basis.z
-	var cam_right := cam_basis.x
-	cam_fwd.y  = 0.0
-	cam_right.y = 0.0
+	# Movement is relative to the player's facing direction (mouse-controlled)
+	var fwd := Vector3(sin(rotation.y), 0.0, cos(rotation.y))
+	var right := Vector3(fwd.z, 0.0, -fwd.x)
 
-	# Guard against degenerate camera orientation
-	if cam_fwd.length_squared() < 0.001:
-		return Vector3.ZERO
-
-	cam_fwd   = cam_fwd.normalized()
-	cam_right = cam_right.normalized()
-
-	return (cam_fwd * (-input.y) + cam_right * input.x)
+	return (fwd * (-input.y) + right * input.x)
 
 func _update_sprint(move_dir: Vector3, delta: float) -> void:
 	var wants_sprint := Input.is_action_pressed("sprint")
