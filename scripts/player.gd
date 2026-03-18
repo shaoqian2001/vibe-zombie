@@ -5,6 +5,7 @@ const SPEED = 6.0
 const SPRINT_SPEED = 10.0
 const ACCELERATION = 18.0
 const GRAVITY = 24.0
+const ROTATION_SPEED = 14.0
 
 # Stamina
 const STAMINA_MAX := 40.0
@@ -22,6 +23,9 @@ var _camera: Camera3D = null
 # Reference to the HUD (set by main.gd)
 var hud = null
 
+# Mouse look target on the ground plane (set externally by main.gd)
+var look_target: Vector3 = Vector3.INF
+
 func _ready() -> void:
 	# Wait one frame so the scene tree is fully set up before finding the camera
 	await get_tree().process_frame
@@ -33,7 +37,7 @@ func _physics_process(delta: float) -> void:
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
 	_apply_movement(move_dir, current_speed, delta)
-	_rotate_to_face(move_dir, delta)
+	_rotate_to_face_target(delta)
 	move_and_slide()
 	_sync_hud()
 
@@ -101,11 +105,15 @@ func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
 
-func _rotate_to_face(dir: Vector3, delta: float) -> void:
-	if dir.length() < 0.1:
+func _rotate_to_face_target(delta: float) -> void:
+	if look_target == Vector3.INF:
+		return
+	var dir := look_target - global_position
+	dir.y = 0.0
+	if dir.length_squared() < 0.01:
 		return
 	var target_angle := atan2(dir.x, dir.z)
-	rotation.y = lerp_angle(rotation.y, target_angle, 12.0 * delta)
+	rotation.y = lerp_angle(rotation.y, target_angle, ROTATION_SPEED * delta)
 
 func _sync_hud() -> void:
 	if hud:
