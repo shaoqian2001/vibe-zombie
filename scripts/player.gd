@@ -160,9 +160,9 @@ func _fire_bullet() -> void:
 
 	var result := space.intersect_ray(query)
 	if result and result.collider is CharacterBody3D:
-		var target := result.collider
-		if target.has_method("take_damage"):
-			target.take_damage(BULLET_DAMAGE)
+		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
+		if hit_body.has_method("take_damage"):
+			hit_body.take_damage(BULLET_DAMAGE)
 
 	# Visual bullet tracer
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
