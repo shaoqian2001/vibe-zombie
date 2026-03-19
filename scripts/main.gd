@@ -67,7 +67,6 @@ func _ready() -> void:
 	_connect_entrance_areas()
 
 func _process(_delta: float) -> void:
-	_update_mouse_look()
 	_update_player_inside()
 	_update_prompt()
 	_update_interior_wall_visibility()
@@ -179,24 +178,6 @@ func _update_prompt() -> void:
 		_prompt_label.visible = true
 	else:
 		_prompt_label.visible = false
-
-# ------------------------------------------------------------------
-# Mouse look — raycast mouse to ground plane, set player facing
-# ------------------------------------------------------------------
-
-func _update_mouse_look() -> void:
-	var mouse_pos := get_viewport().get_mouse_position()
-	var ray_origin := camera.project_ray_origin(mouse_pos)
-	var ray_dir := camera.project_ray_normal(mouse_pos)
-
-	# Intersect with Y=0 ground plane
-	if absf(ray_dir.y) < 0.001:
-		return
-	var t := -ray_origin.y / ray_dir.y
-	if t < 0.0:
-		return
-	var ground_point := ray_origin + ray_dir * t
-	player.look_target = ground_point
 
 # ------------------------------------------------------------------
 # Entrance area connections (proximity detection only)
