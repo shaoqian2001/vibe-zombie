@@ -5,7 +5,6 @@ const SPEED = 6.0
 const SPRINT_SPEED = 10.0
 const ACCELERATION = 18.0
 const GRAVITY = 24.0
-const ROTATION_SPEED = 14.0
 
 # Stamina
 const STAMINA_MAX := 40.0
@@ -18,6 +17,7 @@ const MAGAZINE_SIZE := 8
 const BULLET_DAMAGE := 10.0
 const SHOOT_COOLDOWN := 0.25   # seconds between shots
 const RELOAD_TIME := 1.2       # seconds to reload
+const SHOOT_RANGE := 30.0      # max shooting distance
 
 var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0  # time remaining before stamina recovers
@@ -35,17 +35,18 @@ var _camera: Camera3D = null
 # Reference to the HUD (set by main.gd)
 var hud = null
 
-# Mouse look target on the ground plane (set externally by main.gd)
-var look_target: Vector3 = Vector3.INF
-
 # Pistol mesh (built in code, attached to right hand area)
 var _pistol_node: Node3D = null
+
+# Aim line (always visible, shows shooting direction + range)
+var _aim_line: MeshInstance3D = null
 
 func _ready() -> void:
 	# Wait one frame so the scene tree is fully set up before finding the camera
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
 	_build_pistol()
+	_build_aim_line()
 
 func _physics_process(delta: float) -> void:
 	_apply_gravity(delta)
@@ -53,12 +54,13 @@ func _physics_process(delta: float) -> void:
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
 	_apply_movement(move_dir, current_speed, delta)
-	_rotate_to_face_target(delta)
+	_rotate_to_face(move_dir, delta)
 	move_and_slide()
 	_update_gun(delta)
+	_update_aim_line()
 	_sync_hud()
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("shoot"):
 		_try_shoot()
 	elif event.is_action_pressed("reload"):
@@ -115,6 +117,43 @@ func _build_pistol() -> void:
 	_pistol_node.add_child(muzzle)
 
 # ------------------------------------------------------------------
+# Aim line (persistent laser-sight style indicator)
+# ------------------------------------------------------------------
+
+func _build_aim_line() -> void:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.2, 0.15, 0.35)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+	mat.render_priority = 5
+
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = 0.02
+	mesh.bottom_radius = 0.02
+	mesh.height = SHOOT_RANGE
+	mesh.material = mat
+
+	_aim_line = MeshInstance3D.new()
+	_aim_line.name = "AimLine"
+	_aim_line.mesh = mesh
+	_aim_line.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_aim_line)
+
+func _update_aim_line() -> void:
+	if _aim_line == null:
+		return
+	# The aim line extends forward from chest height along the player's facing direction
+	var forward := -global_transform.basis.z
+	var origin := Vector3(0, 1.0, 0)
+	var line_center := origin + forward * (SHOOT_RANGE * 0.5)
+
+	_aim_line.position = line_center
+	# Align the cylinder along the forward direction
+	_aim_line.look_at(global_position + origin + forward * SHOOT_RANGE, Vector3.UP)
+	_aim_line.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+
+# ------------------------------------------------------------------
 # Gun mechanics
 # ------------------------------------------------------------------
 
@@ -151,7 +190,7 @@ func _fire_bullet() -> void:
 	# Cast a ray from the player in the direction they're facing
 	var forward := -global_transform.basis.z
 	var ray_origin := global_position + Vector3(0, 1.0, 0)  # chest height
-	var ray_end := ray_origin + forward * 100.0
+	var ray_end := ray_origin + forward * SHOOT_RANGE
 
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
@@ -227,14 +266,24 @@ func _get_input_vector() -> Vector2:
 
 func _get_world_movement_direction() -> Vector3:
 	var input := _get_input_vector()
-	if input.length() < 0.05:
+	if input.length() < 0.05 or _camera == null:
 		return Vector3.ZERO
 
-	# Movement is relative to the player's facing direction (mouse-controlled)
-	var fwd := Vector3(sin(rotation.y), 0.0, cos(rotation.y))
-	var right := Vector3(fwd.z, 0.0, -fwd.x)
+	# Movement is relative to the camera orientation (fixed isometric view)
+	var cam_basis := _camera.global_transform.basis
+	var cam_fwd   := -cam_basis.z
+	var cam_right := cam_basis.x
+	cam_fwd.y  = 0.0
+	cam_right.y = 0.0
 
-	return (fwd * (-input.y) + right * input.x)
+	# Guard against degenerate camera orientation
+	if cam_fwd.length_squared() < 0.001:
+		return Vector3.ZERO
+
+	cam_fwd   = cam_fwd.normalized()
+	cam_right = cam_right.normalized()
+
+	return (cam_fwd * (-input.y) + cam_right * input.x)
 
 func _update_sprint(move_dir: Vector3, delta: float) -> void:
 	var wants_sprint := Input.is_action_pressed("sprint")
@@ -255,15 +304,11 @@ func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
 
-func _rotate_to_face_target(delta: float) -> void:
-	if look_target == Vector3.INF:
-		return
-	var dir := look_target - global_position
-	dir.y = 0.0
-	if dir.length_squared() < 0.01:
+func _rotate_to_face(dir: Vector3, delta: float) -> void:
+	if dir.length() < 0.1:
 		return
 	var target_angle := atan2(dir.x, dir.z)
-	rotation.y = lerp_angle(rotation.y, target_angle, ROTATION_SPEED * delta)
+	rotation.y = lerp_angle(rotation.y, target_angle, 12.0 * delta)
 
 func _sync_hud() -> void:
 	if hud:
