@@ -1,12 +1,19 @@
 extends CharacterBody3D
 
-## A zombie enemy that wanders pseudo-randomly and has an HP bar overhead.
+## A zombie enemy that wanders, chases and attacks the player.
 
 const SPEED := 2.0
+const CHASE_SPEED := 3.5
 const ACCELERATION := 8.0
 const GRAVITY := 24.0
 const WANDER_INTERVAL_MIN := 1.5
 const WANDER_INTERVAL_MAX := 4.0
+
+# Detection & attack
+const DETECT_RANGE := 12.0
+const ATTACK_RANGE := 1.8
+const ATTACK_DAMAGE := 8.0
+const ATTACK_COOLDOWN := 1.5
 
 # HP
 var max_hp := 30.0
@@ -17,6 +24,10 @@ var _wander_dir := Vector3.ZERO
 var _wander_timer := 0.0
 var _rng := RandomNumberGenerator.new()
 
+# Attack state
+var _attack_timer := 0.0
+var _player_ref: CharacterBody3D = null
+
 # HP bar references
 var _hp_bar_bg: MeshInstance3D
 var _hp_bar_fg: MeshInstance3D
@@ -26,6 +37,9 @@ func _ready() -> void:
 	_pick_new_wander()
 	_build_model()
 	_build_hp_bar()
+	# Find the player node (deferred so scene tree is ready)
+	await get_tree().process_frame
+	_player_ref = _find_player()
 
 func _physics_process(delta: float) -> void:
 	# Gravity
@@ -34,30 +48,79 @@ func _physics_process(delta: float) -> void:
 	else:
 		velocity.y -= GRAVITY * delta
 
-	# Wander timer
-	_wander_timer -= delta
-	if _wander_timer <= 0.0:
-		_pick_new_wander()
+	_attack_timer = max(_attack_timer - delta, 0.0)
+
+	var move_dir := Vector3.ZERO
+	var current_speed := SPEED
+
+	if _player_ref and is_instance_valid(_player_ref):
+		var dist := global_position.distance_to(_player_ref.global_position)
+
+		if dist < ATTACK_RANGE:
+			# In attack range — stop and attack
+			move_dir = Vector3.ZERO
+			_try_attack()
+		elif dist < DETECT_RANGE:
+			# Chase player
+			var to_player := _player_ref.global_position - global_position
+			to_player.y = 0.0
+			if to_player.length() > 0.1:
+				move_dir = to_player.normalized()
+			current_speed = CHASE_SPEED
+		else:
+			# Wander
+			_wander_timer -= delta
+			if _wander_timer <= 0.0:
+				_pick_new_wander()
+			move_dir = _wander_dir
+	else:
+		# No player found — just wander
+		_wander_timer -= delta
+		if _wander_timer <= 0.0:
+			_pick_new_wander()
+		move_dir = _wander_dir
 
 	# Movement
-	var target_xz := _wander_dir * SPEED
+	var target_xz := move_dir * current_speed
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
 
 	# Rotate to face movement
-	if _wander_dir.length() > 0.1:
-		var target_angle := atan2(_wander_dir.x, _wander_dir.z)
+	if move_dir.length() > 0.1:
+		var target_angle := atan2(move_dir.x, move_dir.z)
 		rotation.y = lerp_angle(rotation.y, target_angle, 6.0 * delta)
 
 	move_and_slide()
 
-	# Keep HP bar facing camera
+	# Keep HP bar updated
 	_update_hp_bar()
 
 func take_damage(amount: float) -> void:
 	hp = max(hp - amount, 0.0)
 	if hp <= 0.0:
 		queue_free()
+
+func _try_attack() -> void:
+	if _attack_timer > 0.0:
+		return
+	if _player_ref == null or not is_instance_valid(_player_ref):
+		return
+	_attack_timer = ATTACK_COOLDOWN
+	# Deal damage to the player if they have a hud (health system)
+	if _player_ref.hud:
+		var new_health: float = _player_ref.hud.health - ATTACK_DAMAGE
+		_player_ref.hud.set_health(new_health)
+
+func _find_player() -> CharacterBody3D:
+	var players := get_tree().get_nodes_in_group("player")
+	if players.size() > 0:
+		return players[0] as CharacterBody3D
+	# Fallback: search by name
+	var root := get_tree().root
+	var main := root.get_child(root.get_child_count() - 1) if root.get_child_count() > 0 else null
+	if main and main.has_node("Player"):
+		return main.get_node("Player") as CharacterBody3D
+	return null
 
 func _pick_new_wander() -> void:
 	# 30% chance to idle, 70% chance to walk in a random direction

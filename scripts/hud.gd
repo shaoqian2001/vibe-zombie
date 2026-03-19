@@ -1,14 +1,12 @@
 extends CanvasLayer
 
-## Bottom-left HUD showing Armor, Health, and Stamina bars.
-
-var _armor_bar: ColorRect
-var _health_bar: ColorRect
-var _stamina_bar: ColorRect
+## Bottom-left HUD showing Armor, Health, and Stamina bars + ammo counter above.
 
 var _armor_fill: ColorRect
 var _health_fill: ColorRect
 var _stamina_fill: ColorRect
+var _ammo_label: Label
+var _container: Control
 
 # Current values (0-100)
 var armor: float = 15.0
@@ -45,11 +43,24 @@ func set_health(value: float) -> void:
 func set_armor(value: float) -> void:
 	armor = clamp(value, 0.0, max_armor)
 
+func set_ammo(current: int, magazine: int) -> void:
+	if _ammo_label:
+		_ammo_label.text = "%d / %d" % [current, magazine]
+		if current == 0:
+			_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.25, 0.2, 1.0))
+		else:
+			_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7, 1.0))
+
+func set_reloading(is_reloading: bool) -> void:
+	if _ammo_label and is_reloading:
+		_ammo_label.text = "RELOADING..."
+		_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.7, 0.2, 1.0))
+
 func _build_hud() -> void:
-	var container := Control.new()
-	container.name = "HUDContainer"
-	container.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(container)
+	_container = Control.new()
+	_container.name = "HUDContainer"
+	_container.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(_container)
 
 	var viewport_h := 720.0  # match project viewport height
 
@@ -63,6 +74,19 @@ func _build_hud() -> void:
 	var total_height := bar_data.size() * BAR_HEIGHT + (bar_data.size() - 1) * BAR_GAP
 	var start_y := viewport_h - MARGIN_BOTTOM - total_height
 
+	# Ammo counter above the bars
+	_ammo_label = Label.new()
+	_ammo_label.name = "AmmoLabel"
+	_ammo_label.text = "8 / 8"
+	_ammo_label.position = Vector2(MARGIN_LEFT, start_y - 28)
+	_ammo_label.size = Vector2(LABEL_WIDTH + BAR_WIDTH, 24)
+	_ammo_label.add_theme_font_size_override("font_size", 16)
+	_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7, 1.0))
+	_ammo_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
+	_ammo_label.add_theme_constant_override("shadow_offset_x", 1)
+	_ammo_label.add_theme_constant_override("shadow_offset_y", 1)
+	_container.add_child(_ammo_label)
+
 	var fills := []
 	for i in range(bar_data.size()):
 		var data = bar_data[i]
@@ -75,21 +99,21 @@ func _build_hud() -> void:
 		label.size = Vector2(LABEL_WIDTH, BAR_HEIGHT)
 		label.add_theme_font_size_override("font_size", 11)
 		label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85, 0.95))
-		container.add_child(label)
+		_container.add_child(label)
 
 		# Background bar
 		var bg := ColorRect.new()
 		bg.color = BG_COLOR
 		bg.position = Vector2(MARGIN_LEFT + LABEL_WIDTH, y_pos)
 		bg.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
-		container.add_child(bg)
+		_container.add_child(bg)
 
 		# Fill bar
 		var fill := ColorRect.new()
 		fill.color = data["color"]
 		fill.position = Vector2(MARGIN_LEFT + LABEL_WIDTH, y_pos)
 		fill.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
-		container.add_child(fill)
+		_container.add_child(fill)
 
 		fills.append(fill)
 
