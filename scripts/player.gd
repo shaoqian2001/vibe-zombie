@@ -77,8 +77,8 @@ func _input(event: InputEvent) -> void:
 func _build_pistol() -> void:
 	_pistol_node = Node3D.new()
 	_pistol_node.name = "Pistol"
-	# Position at right hand area (offset from body centre)
-	_pistol_node.position = Vector3(0.35, 1.0, 0.30)
+	# Position at right hand area (-Z is forward in Godot)
+	_pistol_node.position = Vector3(0.35, 1.0, -0.30)
 	add_child(_pistol_node)
 
 	# Grip (handle)
@@ -93,7 +93,7 @@ func _build_pistol() -> void:
 	grip.position = Vector3(0.0, -0.06, 0.0)
 	_pistol_node.add_child(grip)
 
-	# Slide (barrel / top part)
+	# Slide (barrel / top part, extends forward = -Z)
 	var slide_mat := StandardMaterial3D.new()
 	slide_mat.albedo_color = Color(0.22, 0.22, 0.24, 1)
 	var slide_mesh := BoxMesh.new()
@@ -102,10 +102,10 @@ func _build_pistol() -> void:
 	var slide := MeshInstance3D.new()
 	slide.name = "Slide"
 	slide.mesh = slide_mesh
-	slide.position = Vector3(0.0, 0.06, 0.04)
+	slide.position = Vector3(0.0, 0.06, -0.04)
 	_pistol_node.add_child(slide)
 
-	# Muzzle (small cylinder at the front)
+	# Muzzle (small cylinder at the front tip)
 	var muzzle_mat := StandardMaterial3D.new()
 	muzzle_mat.albedo_color = Color(0.10, 0.10, 0.10, 1)
 	var muzzle_mesh := CylinderMesh.new()
@@ -116,7 +116,7 @@ func _build_pistol() -> void:
 	var muzzle := MeshInstance3D.new()
 	muzzle.name = "Muzzle"
 	muzzle.mesh = muzzle_mesh
-	muzzle.position = Vector3(0.0, 0.06, 0.14)
+	muzzle.position = Vector3(0.0, 0.06, -0.14)
 	muzzle.rotation_degrees = Vector3(90, 0, 0)
 	_pistol_node.add_child(muzzle)
 
@@ -148,8 +148,8 @@ func _build_aim_line() -> void:
 func _get_muzzle_world_pos() -> Vector3:
 	if _pistol_node == null:
 		return global_position + Vector3(0, 1.0, 0)
-	# Muzzle tip is at pistol local (0, 0.06, 0.16) — just past the muzzle mesh
-	return _pistol_node.global_transform * Vector3(0.0, 0.06, 0.16)
+	# Muzzle tip is just past the muzzle mesh (-Z = forward)
+	return _pistol_node.global_transform * Vector3(0.0, 0.06, -0.16)
 
 func _update_aim_line() -> void:
 	if _aim_line == null or not is_instance_valid(_aim_line):
@@ -157,18 +157,19 @@ func _update_aim_line() -> void:
 
 	var muzzle_pos := _get_muzzle_world_pos()
 	var forward := -global_transform.basis.z
+	forward.y = 0.0
+	if forward.length_squared() < 0.001:
+		return
+	forward = forward.normalized()
 	var aim_end := muzzle_pos + forward * SHOOT_RANGE
-
 	var mid := (muzzle_pos + aim_end) * 0.5
-	var length := SHOOT_RANGE
 
+	# Reset transform completely each frame to avoid rotation drift
+	_aim_line.global_transform = Transform3D.IDENTITY
 	_aim_line.global_position = mid
-	_aim_line.scale = Vector3(1, length, 1)
-
-	# Orient the cylinder along the aim direction
-	if forward.length() > 0.01:
-		_aim_line.look_at(aim_end, Vector3.UP)
-		_aim_line.rotation.x += PI * 0.5
+	_aim_line.scale = Vector3(1, SHOOT_RANGE, 1)
+	_aim_line.look_at(aim_end, Vector3.UP)
+	_aim_line.rotate_object_local(Vector3.RIGHT, PI * 0.5)
 
 # ------------------------------------------------------------------
 # Gun mechanics
@@ -205,6 +206,8 @@ func _try_reload() -> void:
 
 func _fire_bullet() -> void:
 	var forward := -global_transform.basis.z
+	forward.y = 0.0
+	forward = forward.normalized()
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * SHOOT_RANGE
 
