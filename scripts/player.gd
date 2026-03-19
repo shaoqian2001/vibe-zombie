@@ -5,6 +5,7 @@ const SPEED = 6.0
 const SPRINT_SPEED = 10.0
 const ACCELERATION = 18.0
 const GRAVITY = 24.0
+const ROTATION_SPEED = 14.0
 
 # Stamina
 const STAMINA_MAX := 40.0
@@ -35,10 +36,13 @@ var _camera: Camera3D = null
 # Reference to the HUD (set by main.gd)
 var hud = null
 
+# Mouse look target on the ground plane (set externally by main.gd)
+var look_target: Vector3 = Vector3.INF
+
 # Pistol mesh (built in code, attached to right hand area)
 var _pistol_node: Node3D = null
 
-# Aim line (always visible, shows shooting direction + range)
+# Aim line (always visible, attached to scene root so it stays flat)
 var _aim_line: MeshInstance3D = null
 
 func _ready() -> void:
@@ -54,7 +58,7 @@ func _physics_process(delta: float) -> void:
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
 	_apply_movement(move_dir, current_speed, delta)
-	_rotate_to_face(move_dir, delta)
+	_rotate_to_face_mouse(delta)
 	move_and_slide()
 	_update_gun(delta)
 	_update_aim_line()
@@ -117,7 +121,7 @@ func _build_pistol() -> void:
 	_pistol_node.add_child(muzzle)
 
 # ------------------------------------------------------------------
-# Aim line (persistent laser-sight style indicator)
+# Aim line (starts from pistol muzzle, extends forward)
 # ------------------------------------------------------------------
 
 func _build_aim_line() -> void:
@@ -131,27 +135,40 @@ func _build_aim_line() -> void:
 	var mesh := CylinderMesh.new()
 	mesh.top_radius = 0.02
 	mesh.bottom_radius = 0.02
-	mesh.height = SHOOT_RANGE
+	mesh.height = 1.0  # will be rescaled each frame
 	mesh.material = mat
 
 	_aim_line = MeshInstance3D.new()
 	_aim_line.name = "AimLine"
 	_aim_line.mesh = mesh
 	_aim_line.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(_aim_line)
+	# Add to scene root so it's not affected by player rotation
+	get_tree().root.add_child.call_deferred(_aim_line)
+
+func _get_muzzle_world_pos() -> Vector3:
+	if _pistol_node == null:
+		return global_position + Vector3(0, 1.0, 0)
+	# Muzzle tip is at pistol local (0, 0.06, 0.16) — just past the muzzle mesh
+	return _pistol_node.global_transform * Vector3(0.0, 0.06, 0.16)
 
 func _update_aim_line() -> void:
-	if _aim_line == null:
+	if _aim_line == null or not is_instance_valid(_aim_line):
 		return
-	# The aim line extends forward from chest height along the player's facing direction
-	var forward := -global_transform.basis.z
-	var origin := Vector3(0, 1.0, 0)
-	var line_center := origin + forward * (SHOOT_RANGE * 0.5)
 
-	_aim_line.position = line_center
-	# Align the cylinder along the forward direction
-	_aim_line.look_at(global_position + origin + forward * SHOOT_RANGE, Vector3.UP)
-	_aim_line.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+	var muzzle_pos := _get_muzzle_world_pos()
+	var forward := -global_transform.basis.z
+	var aim_end := muzzle_pos + forward * SHOOT_RANGE
+
+	var mid := (muzzle_pos + aim_end) * 0.5
+	var length := SHOOT_RANGE
+
+	_aim_line.global_position = mid
+	_aim_line.scale = Vector3(1, length, 1)
+
+	# Orient the cylinder along the aim direction
+	if forward.length() > 0.01:
+		_aim_line.look_at(aim_end, Vector3.UP)
+		_aim_line.rotation.x += PI * 0.5
 
 # ------------------------------------------------------------------
 # Gun mechanics
@@ -187,9 +204,8 @@ func _try_reload() -> void:
 	_reload_timer = RELOAD_TIME
 
 func _fire_bullet() -> void:
-	# Cast a ray from the player in the direction they're facing
 	var forward := -global_transform.basis.z
-	var ray_origin := global_position + Vector3(0, 1.0, 0)  # chest height
+	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * SHOOT_RANGE
 
 	var space := get_world_3d().direct_space_state
@@ -227,7 +243,6 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 	mi.mesh = mesh
 	mi.name = "Tracer"
 
-	# Position at midpoint, orient along the ray direction
 	mi.global_position = mid
 	if dir.length() > 0.01:
 		mi.look_at(to, Vector3.UP)
@@ -235,7 +250,6 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 
 	get_tree().root.add_child(mi)
 
-	# Fade out and remove after a short time
 	var tw := get_tree().create_tween()
 	tw.tween_interval(0.05)
 	tw.tween_callback(mi.queue_free)
@@ -246,7 +260,7 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 
 func _apply_gravity(delta: float) -> void:
 	if is_on_floor():
-		velocity.y = -0.5  # small value to keep floor detection happy
+		velocity.y = -0.5
 	else:
 		velocity.y -= GRAVITY * delta
 
@@ -276,7 +290,6 @@ func _get_world_movement_direction() -> Vector3:
 	cam_fwd.y  = 0.0
 	cam_right.y = 0.0
 
-	# Guard against degenerate camera orientation
 	if cam_fwd.length_squared() < 0.001:
 		return Vector3.ZERO
 
@@ -304,11 +317,15 @@ func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
 
-func _rotate_to_face(dir: Vector3, delta: float) -> void:
-	if dir.length() < 0.1:
+func _rotate_to_face_mouse(delta: float) -> void:
+	if look_target == Vector3.INF:
+		return
+	var dir := look_target - global_position
+	dir.y = 0.0
+	if dir.length_squared() < 0.01:
 		return
 	var target_angle := atan2(dir.x, dir.z)
-	rotation.y = lerp_angle(rotation.y, target_angle, 12.0 * delta)
+	rotation.y = lerp_angle(rotation.y, target_angle, ROTATION_SPEED * delta)
 
 func _sync_hud() -> void:
 	if hud:
