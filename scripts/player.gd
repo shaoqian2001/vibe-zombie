@@ -13,9 +13,21 @@ const STAMINA_DRAIN := 15.0   # per second while sprinting
 const STAMINA_RECOVER := 10.0 # per second while not sprinting
 const STAMINA_RECOVER_DELAY := 2.0  # seconds after stop sprinting before recovery
 
+# Gun
+const MAGAZINE_SIZE := 8
+const BULLET_DAMAGE := 10.0
+const SHOOT_COOLDOWN := 0.25   # seconds between shots
+const RELOAD_TIME := 1.2       # seconds to reload
+
 var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0  # time remaining before stamina recovers
 var _is_sprinting: bool = false
+
+# Gun state
+var ammo: int = MAGAZINE_SIZE
+var _shoot_timer: float = 0.0
+var _reload_timer: float = 0.0
+var _is_reloading: bool = false
 
 # Reference to the isometric camera
 var _camera: Camera3D = null
@@ -26,10 +38,14 @@ var hud = null
 # Mouse look target on the ground plane (set externally by main.gd)
 var look_target: Vector3 = Vector3.INF
 
+# Pistol mesh (built in code, attached to right hand area)
+var _pistol_node: Node3D = null
+
 func _ready() -> void:
 	# Wait one frame so the scene tree is fully set up before finding the camera
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
+	_build_pistol()
 
 func _physics_process(delta: float) -> void:
 	_apply_gravity(delta)
@@ -39,10 +55,154 @@ func _physics_process(delta: float) -> void:
 	_apply_movement(move_dir, current_speed, delta)
 	_rotate_to_face_target(delta)
 	move_and_slide()
+	_update_gun(delta)
 	_sync_hud()
 
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("shoot"):
+		_try_shoot()
+	elif event.is_action_pressed("reload"):
+		_try_reload()
+
 # ------------------------------------------------------------------
-# Private helpers
+# Pistol model
+# ------------------------------------------------------------------
+
+func _build_pistol() -> void:
+	_pistol_node = Node3D.new()
+	_pistol_node.name = "Pistol"
+	# Position at right hand area (offset from body centre)
+	_pistol_node.position = Vector3(0.35, 1.0, 0.30)
+	add_child(_pistol_node)
+
+	# Grip (handle)
+	var grip_mat := StandardMaterial3D.new()
+	grip_mat.albedo_color = Color(0.15, 0.15, 0.15, 1)
+	var grip_mesh := BoxMesh.new()
+	grip_mesh.size = Vector3(0.08, 0.18, 0.10)
+	grip_mesh.material = grip_mat
+	var grip := MeshInstance3D.new()
+	grip.name = "Grip"
+	grip.mesh = grip_mesh
+	grip.position = Vector3(0.0, -0.06, 0.0)
+	_pistol_node.add_child(grip)
+
+	# Slide (barrel / top part)
+	var slide_mat := StandardMaterial3D.new()
+	slide_mat.albedo_color = Color(0.22, 0.22, 0.24, 1)
+	var slide_mesh := BoxMesh.new()
+	slide_mesh.size = Vector3(0.07, 0.07, 0.22)
+	slide_mesh.material = slide_mat
+	var slide := MeshInstance3D.new()
+	slide.name = "Slide"
+	slide.mesh = slide_mesh
+	slide.position = Vector3(0.0, 0.06, 0.04)
+	_pistol_node.add_child(slide)
+
+	# Muzzle (small cylinder at the front)
+	var muzzle_mat := StandardMaterial3D.new()
+	muzzle_mat.albedo_color = Color(0.10, 0.10, 0.10, 1)
+	var muzzle_mesh := CylinderMesh.new()
+	muzzle_mesh.top_radius = 0.02
+	muzzle_mesh.bottom_radius = 0.02
+	muzzle_mesh.height = 0.04
+	muzzle_mesh.material = muzzle_mat
+	var muzzle := MeshInstance3D.new()
+	muzzle.name = "Muzzle"
+	muzzle.mesh = muzzle_mesh
+	muzzle.position = Vector3(0.0, 0.06, 0.14)
+	muzzle.rotation_degrees = Vector3(90, 0, 0)
+	_pistol_node.add_child(muzzle)
+
+# ------------------------------------------------------------------
+# Gun mechanics
+# ------------------------------------------------------------------
+
+func _update_gun(delta: float) -> void:
+	_shoot_timer = max(_shoot_timer - delta, 0.0)
+
+	if _is_reloading:
+		_reload_timer -= delta
+		if _reload_timer <= 0.0:
+			_is_reloading = false
+			ammo = MAGAZINE_SIZE
+
+func _try_shoot() -> void:
+	if _is_reloading:
+		return
+	if ammo <= 0:
+		return
+	if _shoot_timer > 0.0:
+		return
+
+	ammo -= 1
+	_shoot_timer = SHOOT_COOLDOWN
+	_fire_bullet()
+
+func _try_reload() -> void:
+	if _is_reloading:
+		return
+	if ammo == MAGAZINE_SIZE:
+		return
+	_is_reloading = true
+	_reload_timer = RELOAD_TIME
+
+func _fire_bullet() -> void:
+	# Cast a ray from the player in the direction they're facing
+	var forward := -global_transform.basis.z
+	var ray_origin := global_position + Vector3(0, 1.0, 0)  # chest height
+	var ray_end := ray_origin + forward * 100.0
+
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
+	query.exclude = [get_rid()]
+	query.collision_mask = 0xFFFFFFFF
+
+	var result := space.intersect_ray(query)
+	if result and result.collider is CharacterBody3D:
+		var target := result.collider
+		if target.has_method("take_damage"):
+			target.take_damage(BULLET_DAMAGE)
+
+	# Visual bullet tracer
+	_spawn_tracer(ray_origin, result.position if result else ray_end)
+
+func _spawn_tracer(from: Vector3, to: Vector3) -> void:
+	var mid := (from + to) * 0.5
+	var dir := to - from
+	var length := dir.length()
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.9, 0.3, 0.8)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = 0.015
+	mesh.bottom_radius = 0.015
+	mesh.height = length
+	mesh.material = mat
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "Tracer"
+
+	# Position at midpoint, orient along the ray direction
+	mi.global_position = mid
+	if dir.length() > 0.01:
+		mi.look_at(to, Vector3.UP)
+		mi.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+
+	get_tree().root.add_child(mi)
+
+	# Fade out and remove after a short time
+	var tw := get_tree().create_tween()
+	tw.tween_interval(0.05)
+	tw.tween_callback(mi.queue_free)
+
+# ------------------------------------------------------------------
+# Movement helpers
 # ------------------------------------------------------------------
 
 func _apply_gravity(delta: float) -> void:
@@ -108,3 +268,5 @@ func _rotate_to_face_target(delta: float) -> void:
 func _sync_hud() -> void:
 	if hud:
 		hud.set_stamina(stamina / STAMINA_MAX * 100.0)
+		hud.set_ammo(ammo, MAGAZINE_SIZE)
+		hud.set_reloading(_is_reloading)

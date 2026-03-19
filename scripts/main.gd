@@ -58,6 +58,7 @@ func _ready() -> void:
 	player.global_position = spawn_pos
 
 	camera.set_target(player)
+	player.add_to_group("player")
 	_create_ui()
 	_setup_hud()
 	_spawn_enemies(rng)
