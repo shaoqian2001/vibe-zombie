@@ -185,11 +185,7 @@ func _update_gun(delta: float) -> void:
 			ammo = MAGAZINE_SIZE
 
 func _try_shoot() -> void:
-	if _is_reloading:
-		return
-	if ammo <= 0:
-		return
-	if _shoot_timer > 0.0:
+	if _is_reloading or ammo <= 0 or _shoot_timer > 0.0:
 		return
 
 	ammo -= 1
@@ -197,23 +193,32 @@ func _try_shoot() -> void:
 	_fire_bullet()
 
 func _try_reload() -> void:
-	if _is_reloading:
-		return
-	if ammo == MAGAZINE_SIZE:
+	if _is_reloading or ammo == MAGAZINE_SIZE:
 		return
 	_is_reloading = true
 	_reload_timer = RELOAD_TIME
 
 func _fire_bullet() -> void:
+	# FIX 1: The Forward Vector. 
+	# If your pistol shoots backwards, change '-global_transform.basis.z' 
+	# to 'global_transform.basis.z' or 'global_transform.basis.x' (depending on your 2.5D axes).
 	var forward := -global_transform.basis.z
 	forward.y = 0.0
 	forward = forward.normalized()
+	
 	var ray_origin := _get_muzzle_world_pos()
-	var ray_end := ray_origin + forward * SHOOT_RANGE
+	var ray_end := ray_origin + (forward * SHOOT_RANGE)
 
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
-	query.exclude = [get_rid()]
+	
+	# FIX 2: Exclude properly. get_rid() only works if THIS script is attached 
+	# to a CollisionObject3D. If it's on a plain Node3D, it will fail. 
+	# Usually, you want to exclude the player holding the gun:
+	if self is CollisionObject3D:
+		query.exclude = [get_rid()]
+	# else: query.exclude = [owner.get_rid()] # Use this if the gun is a child of the player
+
 	query.collision_mask = 0xFFFFFFFF
 
 	var result := space.intersect_ray(query)
@@ -226,9 +231,14 @@ func _fire_bullet() -> void:
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
 
 func _spawn_tracer(from: Vector3, to: Vector3) -> void:
-	var mid := (from + to) * 0.5
 	var dir := to - from
 	var length := dir.length()
+	
+	# Prevent physics/math errors if the tracer is infinitely small
+	if length < 0.01:
+		return
+
+	var mid := (from + to) * 0.5
 
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(1.0, 0.9, 0.3, 0.8)
@@ -246,12 +256,15 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 	mi.mesh = mesh
 	mi.name = "Tracer"
 
-	mi.global_position = mid
-	if dir.length() > 0.01:
-		mi.look_at(to, Vector3.UP)
-		mi.rotate_object_local(Vector3.RIGHT, PI * 0.5)
-
+	# FIX 3: Add to the Scene Tree FIRST!
+	# Modifying global_position and look_at() on an orphaned node breaks the transform matrix.
 	get_tree().root.add_child(mi)
+
+	mi.global_position = mid
+	mi.look_at(to, Vector3.UP)
+	
+	# Rotate the cylinder so it lays flat along the Z axis instead of standing up
+	mi.rotate_object_local(Vector3.RIGHT, PI * 0.5)
 
 	var tw := get_tree().create_tween()
 	tw.tween_interval(0.05)
