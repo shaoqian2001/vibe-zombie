@@ -13,19 +13,16 @@ const STAMINA_DRAIN := 15.0   # per second while sprinting
 const STAMINA_RECOVER := 10.0 # per second while not sprinting
 const STAMINA_RECOVER_DELAY := 2.0  # seconds after stop sprinting before recovery
 
-# Gun
-const MAGAZINE_SIZE := 8
-const BULLET_DAMAGE := 10.0
-const SHOOT_COOLDOWN := 0.25   # seconds between shots
-const RELOAD_TIME := 1.2       # seconds to reload
-const SHOOT_RANGE := 30.0      # max shooting distance
-
 var stamina: float = STAMINA_MAX
-var _sprint_cooldown: float = 0.0  # time remaining before stamina recovers
+var _sprint_cooldown: float = 0.0
 var _is_sprinting: bool = false
 
+# Current weapon (key into WeaponData.WEAPONS)
+var _current_weapon: String = "pistol"
+var _weapon_stats: Dictionary = {}
+
 # Gun state
-var ammo: int = MAGAZINE_SIZE
+var ammo: int = 0
 var _shoot_timer: float = 0.0
 var _reload_timer: float = 0.0
 var _is_reloading: bool = false
@@ -42,13 +39,14 @@ var look_target: Vector3 = Vector3.INF
 # Pistol mesh (built in code, attached to right hand area)
 var _pistol_node: Node3D = null
 
-# Aim line (always visible, attached to scene root so it stays flat)
+# Aim line — togglable (will later be tied to accessories)
 var _aim_line: MeshInstance3D = null
+var aim_line_enabled: bool = true  # on by default for testing
 
 func _ready() -> void:
-	# Wait one frame so the scene tree is fully set up before finding the camera
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
+	_equip_weapon(_current_weapon)
 	_build_pistol()
 	_build_aim_line()
 
@@ -69,6 +67,20 @@ func _input(event: InputEvent) -> void:
 		_try_shoot()
 	elif event.is_action_pressed("reload"):
 		_try_reload()
+
+# ------------------------------------------------------------------
+# Weapon system
+# ------------------------------------------------------------------
+
+func _equip_weapon(weapon_name: String) -> void:
+	_current_weapon = weapon_name
+	_weapon_stats = WeaponData.get_weapon(weapon_name)
+	ammo = _weapon_stats.get("magazine_size", 8)
+
+func _get_forward() -> Vector3:
+	var fwd := global_transform.basis.z
+	fwd.y = 0.0
+	return fwd.normalized()
 
 # ------------------------------------------------------------------
 # Pistol model
@@ -121,12 +133,12 @@ func _build_pistol() -> void:
 	_pistol_node.add_child(muzzle)
 
 # ------------------------------------------------------------------
-# Aim line (starts from pistol muzzle, extends forward)
+# Aim line — raycast-based, stops at first obstacle
 # ------------------------------------------------------------------
 
 func _build_aim_line() -> void:
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.2, 0.15, 0.35)
+	mat.albedo_color = Color(1.0, 0.15, 0.1, 0.6)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.no_depth_test = true
@@ -135,14 +147,13 @@ func _build_aim_line() -> void:
 	var mesh := CylinderMesh.new()
 	mesh.top_radius = 0.02
 	mesh.bottom_radius = 0.02
-	mesh.height = 1.0  # will be rescaled each frame
+	mesh.height = 1.0  # rescaled each frame
 	mesh.material = mat
 
 	_aim_line = MeshInstance3D.new()
 	_aim_line.name = "AimLine"
 	_aim_line.mesh = mesh
 	_aim_line.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	# Add to scene root so it's not affected by player rotation
 	get_tree().root.add_child.call_deferred(_aim_line)
 
 func _get_muzzle_world_pos() -> Vector3:
@@ -151,23 +162,48 @@ func _get_muzzle_world_pos() -> Vector3:
 	# Muzzle tip is just past the muzzle mesh (+Z = visual forward)
 	return _pistol_node.global_transform * Vector3(0.0, 0.06, 0.16)
 
+func _aim_raycast() -> Dictionary:
+	# Cast a ray from the muzzle in the forward direction up to weapon range.
+	# Returns { "end": Vector3, "hit": bool }
+	var weapon_range: float = _weapon_stats.get("range", 30.0)
+	var forward := _get_forward()
+	var ray_origin := _get_muzzle_world_pos()
+	var ray_end := ray_origin + forward * weapon_range
+
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
+	if self is CollisionObject3D:
+		query.exclude = [get_rid()]
+	query.collision_mask = 0xFFFFFFFF
+
+	var result := space.intersect_ray(query)
+	if result:
+		return { "end": result.position, "hit": true }
+	return { "end": ray_end, "hit": false }
+
 func _update_aim_line() -> void:
 	if _aim_line == null or not is_instance_valid(_aim_line):
 		return
 
-	var muzzle_pos := _get_muzzle_world_pos()
-	var forward := global_transform.basis.z
-	forward.y = 0.0
-	if forward.length_squared() < 0.001:
+	# Toggle visibility
+	_aim_line.visible = aim_line_enabled
+	if not aim_line_enabled:
 		return
-	forward = forward.normalized()
-	var aim_end := muzzle_pos + forward * SHOOT_RANGE
+
+	var muzzle_pos := _get_muzzle_world_pos()
+	var aim := _aim_raycast()
+	var aim_end: Vector3 = aim["end"]
+	var aim_length := muzzle_pos.distance_to(aim_end)
+
+	if aim_length < 0.05:
+		_aim_line.visible = false
+		return
+
 	var mid := (muzzle_pos + aim_end) * 0.5
 
-	# Reset transform completely each frame to avoid rotation drift
 	_aim_line.global_transform = Transform3D.IDENTITY
 	_aim_line.global_position = mid
-	_aim_line.scale = Vector3(1, SHOOT_RANGE, 1)
+	_aim_line.scale = Vector3(1, aim_length, 1)
 	_aim_line.look_at(aim_end, Vector3.UP)
 	_aim_line.rotate_object_local(Vector3.RIGHT, PI * 0.5)
 
@@ -182,63 +218,56 @@ func _update_gun(delta: float) -> void:
 		_reload_timer -= delta
 		if _reload_timer <= 0.0:
 			_is_reloading = false
-			ammo = MAGAZINE_SIZE
+			ammo = _weapon_stats.get("magazine_size", 8)
 
 func _try_shoot() -> void:
 	if _is_reloading or ammo <= 0 or _shoot_timer > 0.0:
 		return
 
 	ammo -= 1
-	_shoot_timer = SHOOT_COOLDOWN
+	_shoot_timer = WeaponData.shoot_cooldown(_current_weapon)
 	_fire_bullet()
 
 func _try_reload() -> void:
-	if _is_reloading or ammo == MAGAZINE_SIZE:
+	if _is_reloading or ammo == _weapon_stats.get("magazine_size", 8):
 		return
 	_is_reloading = true
-	_reload_timer = RELOAD_TIME
+	_reload_timer = _weapon_stats.get("reload_time", 1.2)
 
 func _fire_bullet() -> void:
-	var forward := global_transform.basis.z
-	forward.y = 0.0
-	forward = forward.normalized()
-	
+	var forward := _get_forward()
+	var weapon_range: float = _weapon_stats.get("range", 30.0)
+	var damage: float = _weapon_stats.get("damage", 10.0)
+
 	var ray_origin := _get_muzzle_world_pos()
-	var ray_end := ray_origin + (forward * SHOOT_RANGE)
+	var ray_end := ray_origin + forward * weapon_range
 
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
-	
-	# FIX 2: Exclude properly. get_rid() only works if THIS script is attached 
-	# to a CollisionObject3D. If it's on a plain Node3D, it will fail. 
-	# Usually, you want to exclude the player holding the gun:
 	if self is CollisionObject3D:
 		query.exclude = [get_rid()]
-	# else: query.exclude = [owner.get_rid()] # Use this if the gun is a child of the player
-
 	query.collision_mask = 0xFFFFFFFF
 
 	var result := space.intersect_ray(query)
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
 		if hit_body.has_method("take_damage"):
-			hit_body.take_damage(BULLET_DAMAGE)
+			hit_body.take_damage(damage)
 
-	# Visual bullet tracer
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
 
 func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 	var dir := to - from
 	var length := dir.length()
-	
-	# Prevent physics/math errors if the tracer is infinitely small
+
 	if length < 0.01:
 		return
 
 	var mid := (from + to) * 0.5
+	var tracer_color: Color = _weapon_stats.get("tracer_color", Color(1.0, 0.9, 0.3, 0.8))
 
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.9, 0.3, 0.8)
+	mat.albedo_color = tracer_color
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.no_depth_test = true
@@ -253,14 +282,9 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 	mi.mesh = mesh
 	mi.name = "Tracer"
 
-	# FIX 3: Add to the Scene Tree FIRST!
-	# Modifying global_position and look_at() on an orphaned node breaks the transform matrix.
 	get_tree().root.add_child(mi)
-
 	mi.global_position = mid
 	mi.look_at(to, Vector3.UP)
-	
-	# Rotate the cylinder so it lays flat along the Z axis instead of standing up
 	mi.rotate_object_local(Vector3.RIGHT, PI * 0.5)
 
 	var tw := get_tree().create_tween()
@@ -296,7 +320,6 @@ func _get_world_movement_direction() -> Vector3:
 	if input.length() < 0.05 or _camera == null:
 		return Vector3.ZERO
 
-	# Movement is relative to the camera orientation (fixed isometric view)
 	var cam_basis := _camera.global_transform.basis
 	var cam_fwd   := -cam_basis.z
 	var cam_right := cam_basis.x
@@ -343,5 +366,5 @@ func _rotate_to_face_mouse(delta: float) -> void:
 func _sync_hud() -> void:
 	if hud:
 		hud.set_stamina(stamina / STAMINA_MAX * 100.0)
-		hud.set_ammo(ammo, MAGAZINE_SIZE)
+		hud.set_ammo(ammo, _weapon_stats.get("magazine_size", 8))
 		hud.set_reloading(_is_reloading)
