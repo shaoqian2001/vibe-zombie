@@ -77,8 +77,8 @@ func _input(event: InputEvent) -> void:
 func _build_pistol() -> void:
 	_pistol_node = Node3D.new()
 	_pistol_node.name = "Pistol"
-	# Position at right hand area (-Z is forward in Godot)
-	_pistol_node.position = Vector3(0.35, 1.0, -0.30)
+	# Position at right hand area (+Z is the model's visual front)
+	_pistol_node.position = Vector3(0.35, 1.0, 0.30)
 	add_child(_pistol_node)
 
 	# Grip (handle)
@@ -93,7 +93,7 @@ func _build_pistol() -> void:
 	grip.position = Vector3(0.0, -0.06, 0.0)
 	_pistol_node.add_child(grip)
 
-	# Slide (barrel / top part, extends forward = -Z)
+	# Slide (barrel / top part, extends forward = +Z)
 	var slide_mat := StandardMaterial3D.new()
 	slide_mat.albedo_color = Color(0.22, 0.22, 0.24, 1)
 	var slide_mesh := BoxMesh.new()
@@ -102,7 +102,7 @@ func _build_pistol() -> void:
 	var slide := MeshInstance3D.new()
 	slide.name = "Slide"
 	slide.mesh = slide_mesh
-	slide.position = Vector3(0.0, 0.06, -0.04)
+	slide.position = Vector3(0.0, 0.06, 0.04)
 	_pistol_node.add_child(slide)
 
 	# Muzzle (small cylinder at the front tip)
@@ -116,7 +116,7 @@ func _build_pistol() -> void:
 	var muzzle := MeshInstance3D.new()
 	muzzle.name = "Muzzle"
 	muzzle.mesh = muzzle_mesh
-	muzzle.position = Vector3(0.0, 0.06, -0.14)
+	muzzle.position = Vector3(0.0, 0.06, 0.14)
 	muzzle.rotation_degrees = Vector3(90, 0, 0)
 	_pistol_node.add_child(muzzle)
 
@@ -148,15 +148,15 @@ func _build_aim_line() -> void:
 func _get_muzzle_world_pos() -> Vector3:
 	if _pistol_node == null:
 		return global_position + Vector3(0, 1.0, 0)
-	# Muzzle tip is just past the muzzle mesh (-Z = forward)
-	return _pistol_node.global_transform * Vector3(0.0, 0.06, -0.16)
+	# Muzzle tip is just past the muzzle mesh (+Z = visual forward)
+	return _pistol_node.global_transform * Vector3(0.0, 0.06, 0.16)
 
 func _update_aim_line() -> void:
 	if _aim_line == null or not is_instance_valid(_aim_line):
 		return
 
 	var muzzle_pos := _get_muzzle_world_pos()
-	var forward := -global_transform.basis.z
+	var forward := global_transform.basis.z
 	forward.y = 0.0
 	if forward.length_squared() < 0.001:
 		return
@@ -199,10 +199,7 @@ func _try_reload() -> void:
 	_reload_timer = RELOAD_TIME
 
 func _fire_bullet() -> void:
-	# FIX 1: The Forward Vector. 
-	# If your pistol shoots backwards, change '-global_transform.basis.z' 
-	# to 'global_transform.basis.z' or 'global_transform.basis.x' (depending on your 2.5D axes).
-	var forward := -global_transform.basis.z
+	var forward := global_transform.basis.z
 	forward.y = 0.0
 	forward = forward.normalized()
 	
