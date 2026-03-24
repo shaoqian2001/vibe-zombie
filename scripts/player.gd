@@ -41,6 +41,7 @@ var _pistol_node: Node3D = null
 
 # Aim line — togglable (will later be tied to accessories)
 var _aim_line: MeshInstance3D = null
+var _aim_dot: MeshInstance3D = null  # solid red dot at hit point
 var aim_line_enabled: bool = true  # on by default for testing
 
 func _ready() -> void:
@@ -137,24 +138,40 @@ func _build_pistol() -> void:
 # ------------------------------------------------------------------
 
 func _build_aim_line() -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.15, 0.1, 0.6)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.no_depth_test = true
-	mat.render_priority = 5
-
-	var mesh := CylinderMesh.new()
-	mesh.top_radius = 0.02
-	mesh.bottom_radius = 0.02
-	mesh.height = 1.0  # rescaled each frame
-	mesh.material = mat
+	# Line mesh (ImmediateMesh redrawn each frame — always flat, no rotation)
+	var line_mat := StandardMaterial3D.new()
+	line_mat.albedo_color = Color(1.0, 0.1, 0.1, 0.6)
+	line_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	line_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	line_mat.no_depth_test = true
+	line_mat.render_priority = 5
 
 	_aim_line = MeshInstance3D.new()
 	_aim_line.name = "AimLine"
-	_aim_line.mesh = mesh
+	_aim_line.mesh = ImmediateMesh.new()
+	_aim_line.material_override = line_mat
 	_aim_line.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	get_tree().root.add_child.call_deferred(_aim_line)
+
+	# Hit-point dot (small sphere, solid red)
+	var dot_mat := StandardMaterial3D.new()
+	dot_mat.albedo_color = Color(1.0, 0.05, 0.05, 0.9)
+	dot_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dot_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dot_mat.no_depth_test = true
+	dot_mat.render_priority = 6
+
+	var dot_mesh := SphereMesh.new()
+	dot_mesh.radius = 0.07
+	dot_mesh.height = 0.14
+	dot_mesh.material = dot_mat
+
+	_aim_dot = MeshInstance3D.new()
+	_aim_dot.name = "AimDot"
+	_aim_dot.mesh = dot_mesh
+	_aim_dot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_aim_dot.visible = false
+	get_tree().root.add_child.call_deferred(_aim_dot)
 
 func _get_muzzle_world_pos() -> Vector3:
 	if _pistol_node == null:
@@ -185,27 +202,33 @@ func _update_aim_line() -> void:
 	if _aim_line == null or not is_instance_valid(_aim_line):
 		return
 
-	# Toggle visibility
 	_aim_line.visible = aim_line_enabled
+	if _aim_dot and is_instance_valid(_aim_dot):
+		_aim_dot.visible = false
 	if not aim_line_enabled:
 		return
 
 	var muzzle_pos := _get_muzzle_world_pos()
 	var aim := _aim_raycast()
 	var aim_end: Vector3 = aim["end"]
-	var aim_length := muzzle_pos.distance_to(aim_end)
+	var did_hit: bool = aim["hit"]
 
-	if aim_length < 0.05:
+	if muzzle_pos.distance_to(aim_end) < 0.05:
 		_aim_line.visible = false
 		return
 
-	var mid := (muzzle_pos + aim_end) * 0.5
+	# Redraw the line as two vertices (flat, no rotation needed)
+	var im: ImmediateMesh = _aim_line.mesh as ImmediateMesh
+	im.clear_surfaces()
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	im.surface_add_vertex(muzzle_pos)
+	im.surface_add_vertex(aim_end)
+	im.surface_end()
 
-	_aim_line.global_transform = Transform3D.IDENTITY
-	_aim_line.global_position = mid
-	_aim_line.scale = Vector3(1, aim_length, 1)
-	_aim_line.look_at(aim_end, Vector3.UP)
-	_aim_line.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+	# Show red dot at hit point
+	if did_hit and _aim_dot and is_instance_valid(_aim_dot):
+		_aim_dot.visible = true
+		_aim_dot.global_position = aim_end
 
 # ------------------------------------------------------------------
 # Gun mechanics
