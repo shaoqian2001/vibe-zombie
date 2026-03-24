@@ -28,6 +28,7 @@ const BUILDING_TYPE_NAMES := [
 ]
 
 const DOOR_ANIM_DURATION := 0.4
+const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 
 # Enemy spawning constants (matching world.gd dimensions)
 const ENEMY_COUNT := 25
@@ -54,6 +55,7 @@ var _current_interior: Node3D = null    # interior node for the active building
 var _player_inside: bool = false        # whether the player is inside the active building
 var _showing_interior: bool = false     # whether we are showing interior view
 var _door_tween: Tween = null           # active door animation tween
+var _occluded_buildings: Array = []     # buildings currently made transparent
 
 func _ready() -> void:
 	var rng := RandomNumberGenerator.new()
@@ -62,6 +64,7 @@ func _ready() -> void:
 	player.global_position = spawn_pos
 
 	camera.set_target(player)
+	player.add_to_group("player")
 	_create_ui()
 	_setup_hud()
 	_spawn_enemies(rng)
@@ -70,9 +73,11 @@ func _ready() -> void:
 	_connect_entrance_areas()
 
 func _process(_delta: float) -> void:
+	_update_mouse_look()
 	_update_player_inside()
 	_update_prompt()
 	_update_interior_wall_visibility()
+	_update_building_occlusion()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("game_manual"):
@@ -238,6 +243,24 @@ func _update_prompt() -> void:
 		_prompt_label.visible = true
 	else:
 		_prompt_label.visible = false
+
+# ------------------------------------------------------------------
+# Mouse look — raycast mouse to ground plane, set player facing
+# ------------------------------------------------------------------
+
+func _update_mouse_look() -> void:
+	var mouse_pos := get_viewport().get_mouse_position()
+	var ray_origin := camera.project_ray_origin(mouse_pos)
+	var ray_dir := camera.project_ray_normal(mouse_pos)
+
+	# Intersect with Y=0 ground plane
+	if absf(ray_dir.y) < 0.001:
+		return
+	var t := -ray_origin.y / ray_dir.y
+	if t < 0.0:
+		return
+	var ground_point := ray_origin + ray_dir * t
+	player.look_target = ground_point
 
 # ------------------------------------------------------------------
 # Entrance area connections (proximity detection only)
@@ -474,3 +497,80 @@ func _update_interior_wall_visibility() -> void:
 	cam_dir = cam_dir.normalized()
 	var local_dir := _current_interior.global_transform.basis.inverse() * cam_dir
 	_current_interior.update_wall_visibility(local_dir)
+
+# ------------------------------------------------------------------
+# Building occlusion — make buildings between camera and player transparent
+# ------------------------------------------------------------------
+
+func _update_building_occlusion() -> void:
+	var cam_pos := camera.global_position
+	var player_pos := player.global_position
+
+	# Find buildings that occlude the player
+	var now_occluded: Array = []
+	for binfo in world.buildings:
+		var node: MeshInstance3D = binfo.node
+		if not node.visible:
+			continue
+		# Check if the building's AABB intersects the line from camera to player
+		if _building_occludes(binfo, cam_pos, player_pos):
+			now_occluded.append(binfo)
+
+	# Restore buildings that are no longer occluding
+	for binfo in _occluded_buildings:
+		if binfo not in now_occluded:
+			_set_building_alpha(binfo, 1.0)
+
+	# Make newly occluding buildings transparent
+	for binfo in now_occluded:
+		_set_building_alpha(binfo, OCCLUDE_ALPHA)
+
+	_occluded_buildings = now_occluded
+
+func _building_occludes(binfo: Dictionary, cam_pos: Vector3, player_pos: Vector3) -> bool:
+	var bpos: Vector3 = binfo.node.position
+	var hw: float = binfo.width * 0.5
+	var hh: float = binfo.height * 0.5
+	var hd: float = binfo.depth * 0.5
+
+	# AABB min/max
+	var aabb_min := Vector3(bpos.x - hw, bpos.y - hh, bpos.z - hd)
+	var aabb_max := Vector3(bpos.x + hw, bpos.y + hh, bpos.z + hd)
+
+	# Ray-AABB intersection (slab method)
+	var dir := player_pos - cam_pos
+	var inv_dir := Vector3(
+		1.0 / dir.x if absf(dir.x) > 0.0001 else 1e10,
+		1.0 / dir.y if absf(dir.y) > 0.0001 else 1e10,
+		1.0 / dir.z if absf(dir.z) > 0.0001 else 1e10,
+	)
+
+	var t1 := (aabb_min.x - cam_pos.x) * inv_dir.x
+	var t2 := (aabb_max.x - cam_pos.x) * inv_dir.x
+	var tmin := minf(t1, t2)
+	var tmax := maxf(t1, t2)
+
+	t1 = (aabb_min.y - cam_pos.y) * inv_dir.y
+	t2 = (aabb_max.y - cam_pos.y) * inv_dir.y
+	tmin = maxf(tmin, minf(t1, t2))
+	tmax = minf(tmax, maxf(t1, t2))
+
+	t1 = (aabb_min.z - cam_pos.z) * inv_dir.z
+	t2 = (aabb_max.z - cam_pos.z) * inv_dir.z
+	tmin = maxf(tmin, minf(t1, t2))
+	tmax = minf(tmax, maxf(t1, t2))
+
+	# Hit if slab overlap is valid AND the intersection is between camera and player
+	return tmax >= tmin and tmax > 0.0 and tmin < 1.0
+
+func _set_building_alpha(binfo: Dictionary, alpha: float) -> void:
+	var node: MeshInstance3D = binfo.node
+	var mat: StandardMaterial3D = node.mesh.material
+	if mat == null:
+		return
+	if alpha < 1.0:
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color.a = alpha
+	else:
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+		mat.albedo_color.a = 1.0
