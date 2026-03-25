@@ -25,9 +25,19 @@ func set_target(node: Node3D) -> void:
 		global_position = target.global_position + _offset
 		look_at(target.global_position + look_offset, Vector3.UP)
 
+const ROTATE_SPEED := 90.0  # degrees per second
+
 func _process(delta: float) -> void:
 	if not target:
 		return
+
+	if Input.is_action_pressed("rotate_left"):
+		yaw_deg += ROTATE_SPEED * delta
+		_update_offset()
+	if Input.is_action_pressed("rotate_right"):
+		yaw_deg -= ROTATE_SPEED * delta
+		_update_offset()
+
 	var desired_pos := target.global_position + _offset
 	global_position = global_position.lerp(desired_pos, follow_speed * delta)
 	look_at(target.global_position + look_offset, Vector3.UP)
