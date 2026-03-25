@@ -8,7 +8,7 @@ const WEAPONS := {
 		"damage": 10.0,
 		"range": 30.0,          # max shooting / aim-line distance
 		"magazine_size": 8,
-		"fire_rate": 4.0,       # rounds per second  (1 / cooldown)
+		"fire_rate": 2.0,       # rounds per second  (1 / cooldown = 0.5s)
 		"reload_time": 1.2,     # seconds to reload
 		"spread": 0.0,          # accuracy cone half-angle in degrees (0 = perfect)
 		"bullet_speed": INF,    # hitscan (instant)
