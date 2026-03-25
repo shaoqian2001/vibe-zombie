@@ -43,6 +43,10 @@ const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
 # UI
 var _prompt_label: Label = null
 var _hud = null
+var _game_manual: CanvasLayer = null
+var _inventory: CanvasLayer = null
+var _manual_open: bool = false
+var _inventory_open: bool = false
 
 # State
 var _nearby_building: Dictionary = {}   # building whose door area the player overlaps
@@ -76,6 +80,14 @@ func _process(_delta: float) -> void:
 	_update_building_occlusion()
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("game_manual"):
+		_toggle_game_manual()
+		return
+	if event.is_action_pressed("inventory"):
+		_toggle_inventory()
+		return
+	if _manual_open or _inventory_open:
+		return  # block other input while overlay is open
 	if event.is_action_pressed("interact"):
 		_handle_interact()
 
@@ -90,6 +102,55 @@ func _setup_hud() -> void:
 	_hud.name = "HUD"
 	add_child(_hud)
 	player.hud = _hud
+
+# ------------------------------------------------------------------
+# Game Manual (ESC) & Inventory (I)
+# ------------------------------------------------------------------
+
+func _toggle_game_manual() -> void:
+	if _inventory_open:
+		_close_inventory()
+	if _manual_open:
+		_close_game_manual()
+	else:
+		_open_game_manual()
+
+func _open_game_manual() -> void:
+	_manual_open = true
+	var manual_script := preload("res://scripts/game_manual.gd")
+	_game_manual = CanvasLayer.new()
+	_game_manual.set_script(manual_script)
+	_game_manual.name = "GameManual"
+	_game_manual.manual_closed.connect(_close_game_manual)
+	add_child(_game_manual)
+
+func _close_game_manual() -> void:
+	_manual_open = false
+	if _game_manual:
+		_game_manual.queue_free()
+		_game_manual = null
+
+func _toggle_inventory() -> void:
+	if _manual_open:
+		return  # don't open inventory while manual is open
+	if _inventory_open:
+		_close_inventory()
+	else:
+		_open_inventory()
+
+func _open_inventory() -> void:
+	_inventory_open = true
+	var inv_script := preload("res://scripts/inventory.gd")
+	_inventory = CanvasLayer.new()
+	_inventory.set_script(inv_script)
+	_inventory.name = "Inventory"
+	add_child(_inventory)
+
+func _close_inventory() -> void:
+	_inventory_open = false
+	if _inventory:
+		_inventory.queue_free()
+		_inventory = null
 
 # ------------------------------------------------------------------
 # Enemy spawning
