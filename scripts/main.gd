@@ -222,6 +222,7 @@ func _create_ui() -> void:
 	_prompt_label.offset_right = 0
 	_prompt_label.offset_bottom = 0
 	_prompt_label.visible = false
+	_prompt_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	canvas.add_child(_prompt_label)
 
 func _update_prompt() -> void:
