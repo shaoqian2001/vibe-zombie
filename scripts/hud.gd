@@ -60,6 +60,7 @@ func _build_hud() -> void:
 	_container = Control.new()
 	_container.name = "HUDContainer"
 	_container.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_container)
 
 	var viewport_h := 720.0  # match project viewport height
@@ -85,6 +86,7 @@ func _build_hud() -> void:
 	_ammo_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
 	_ammo_label.add_theme_constant_override("shadow_offset_x", 1)
 	_ammo_label.add_theme_constant_override("shadow_offset_y", 1)
+	_ammo_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_container.add_child(_ammo_label)
 
 	var fills := []
@@ -99,6 +101,7 @@ func _build_hud() -> void:
 		label.size = Vector2(LABEL_WIDTH, BAR_HEIGHT)
 		label.add_theme_font_size_override("font_size", 11)
 		label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85, 0.95))
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_container.add_child(label)
 
 		# Background bar
@@ -106,6 +109,7 @@ func _build_hud() -> void:
 		bg.color = BG_COLOR
 		bg.position = Vector2(MARGIN_LEFT + LABEL_WIDTH, y_pos)
 		bg.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
+		bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_container.add_child(bg)
 
 		# Fill bar
@@ -113,6 +117,7 @@ func _build_hud() -> void:
 		fill.color = data["color"]
 		fill.position = Vector2(MARGIN_LEFT + LABEL_WIDTH, y_pos)
 		fill.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
+		fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_container.add_child(fill)
 
 		fills.append(fill)
