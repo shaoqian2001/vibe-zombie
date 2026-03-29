@@ -193,7 +193,7 @@ func _build_resolution_tab() -> MarginContainer:
 	margin.add_child(vbox)
 
 	# Current resolution display
-	var current_size := DisplayServer.window_get_size()
+	var current_size := _get_current_resolution()
 	var current_label := Label.new()
 	current_label.text = "Current: %d x %d" % [current_size.x, current_size.y]
 	current_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -225,12 +225,16 @@ func _build_resolution_tab() -> MarginContainer:
 
 	return margin
 
+func _get_current_resolution() -> Vector2i:
+	var scale_size := get_window().content_scale_size
+	if scale_size != Vector2i.ZERO:
+		return scale_size
+	return get_viewport().get_visible_rect().size as Vector2i
+
 func _apply_resolution(res: Vector2i, label: Label) -> void:
-	DisplayServer.window_set_size(res)
-	# Centre the window on screen
-	var screen_size := DisplayServer.screen_get_size()
-	var win_pos := Vector2i((screen_size.x - res.x) / 2, (screen_size.y - res.y) / 2)
-	DisplayServer.window_set_position(win_pos)
+	# Use content_scale_size to change internal rendering resolution.
+	# This works in embedded windows where DisplayServer resize is blocked.
+	get_window().content_scale_size = res
 	label.text = "Current: %d x %d" % [res.x, res.y]
 	# Rebuild settings to update highlighted button
 	_close_settings()
