@@ -222,11 +222,11 @@ func _add_blood_splat(pos: Vector3, size: float) -> void:
 # HP bar (billboard above head)
 # ------------------------------------------------------------------
 
-func _build_hp_bar() -> void:
-	var bar_width := 0.8
-	var bar_height := 0.08
-	var bar_y := 2.2
+const HP_BAR_WIDTH := 0.8
+const HP_BAR_HEIGHT := 0.08
+const HP_BAR_Y := 2.2
 
+func _build_hp_bar() -> void:
 	# Background (dark)
 	var bg_mat := StandardMaterial3D.new()
 	bg_mat.albedo_color = Color(0.15, 0.15, 0.15, 0.9)
@@ -236,18 +236,17 @@ func _build_hp_bar() -> void:
 	bg_mat.no_depth_test = true
 	bg_mat.render_priority = 10
 
-	var bg_mesh := PlaneMesh.new()
-	bg_mesh.size = Vector2(bar_width, bar_height)
+	var bg_mesh := QuadMesh.new()
+	bg_mesh.size = Vector2(HP_BAR_WIDTH, HP_BAR_HEIGHT)
 	bg_mesh.material = bg_mat
-	bg_mesh.orientation = PlaneMesh.FACE_Z
 
 	_hp_bar_bg = MeshInstance3D.new()
 	_hp_bar_bg.name = "HPBarBG"
 	_hp_bar_bg.mesh = bg_mesh
-	_hp_bar_bg.position = Vector3(0, bar_y, 0)
+	_hp_bar_bg.position = Vector3(0, HP_BAR_Y, 0)
 	add_child(_hp_bar_bg)
 
-	# Foreground (red/green)
+	# Foreground (red)
 	var fg_mat := StandardMaterial3D.new()
 	fg_mat.albedo_color = Color(0.8, 0.15, 0.1, 0.95)
 	fg_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -256,24 +255,22 @@ func _build_hp_bar() -> void:
 	fg_mat.no_depth_test = true
 	fg_mat.render_priority = 11
 
-	var fg_mesh := PlaneMesh.new()
-	fg_mesh.size = Vector2(bar_width, bar_height)
+	var fg_mesh := QuadMesh.new()
+	fg_mesh.size = Vector2(HP_BAR_WIDTH, HP_BAR_HEIGHT)
 	fg_mesh.material = fg_mat
-	fg_mesh.orientation = PlaneMesh.FACE_Z
 
 	_hp_bar_fg = MeshInstance3D.new()
 	_hp_bar_fg.name = "HPBarFG"
 	_hp_bar_fg.mesh = fg_mesh
-	_hp_bar_fg.position = Vector3(0, bar_y, 0)
+	_hp_bar_fg.position = Vector3(0, HP_BAR_Y, 0)
 	add_child(_hp_bar_fg)
 
 func _update_hp_bar() -> void:
 	if _hp_bar_fg == null:
 		return
 	var ratio := hp / max_hp
-	var bar_width := 0.8
-
-	# Scale the foreground bar horizontally
-	_hp_bar_fg.scale.x = ratio
-	# Offset so the bar shrinks from the right
-	_hp_bar_fg.position.x = -bar_width * (1.0 - ratio) * 0.5
+	# Resize the quad mesh directly so billboard doesn't fight with scale
+	var fg_mesh := _hp_bar_fg.mesh as QuadMesh
+	fg_mesh.size.x = HP_BAR_WIDTH * ratio
+	# Shift left so the bar shrinks from right to left
+	_hp_bar_fg.position.x = -HP_BAR_WIDTH * (1.0 - ratio) * 0.5
