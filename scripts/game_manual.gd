@@ -232,9 +232,14 @@ func _get_current_resolution() -> Vector2i:
 	return get_viewport().get_visible_rect().size as Vector2i
 
 func _apply_resolution(res: Vector2i, label: Label) -> void:
-	# Use content_scale_size to change internal rendering resolution.
-	# This works in embedded windows where DisplayServer resize is blocked.
-	get_window().content_scale_size = res
+	var win := get_window()
+	# Set scale mode to VIEWPORT so the entire game (3D + 2D) renders at the
+	# chosen resolution and then gets scaled to fit the actual window.
+	win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
+	win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
+	win.content_scale_size = res
+	# Also try to resize the OS window (works in standalone, no-op if embedded)
+	DisplayServer.window_set_size(res)
 	label.text = "Current: %d x %d" % [res.x, res.y]
 	# Rebuild settings to update highlighted button
 	_close_settings()
