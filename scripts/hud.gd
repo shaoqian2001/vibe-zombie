@@ -6,6 +6,7 @@ var _armor_fill: ColorRect
 var _health_fill: ColorRect
 var _stamina_fill: ColorRect
 var _ammo_label: Label
+var _weapon_label: Label
 var _container: Control
 
 # Current values (0-100)
@@ -45,11 +46,18 @@ func set_armor(value: float) -> void:
 
 func set_ammo(current: int, magazine: int) -> void:
 	if _ammo_label:
-		_ammo_label.text = "%d / %d" % [current, magazine]
-		if current == 0:
+		if magazine == 0:
+			_ammo_label.text = ""
+		else:
+			_ammo_label.text = "%d / %d" % [current, magazine]
+		if current == 0 and magazine > 0:
 			_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.25, 0.2, 1.0))
 		else:
 			_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7, 1.0))
+
+func set_weapon_name(weapon_name: String) -> void:
+	if _weapon_label:
+		_weapon_label.text = weapon_name
 
 func set_reloading(is_reloading: bool) -> void:
 	if _ammo_label and is_reloading:
@@ -75,10 +83,24 @@ func _build_hud() -> void:
 	var total_height := bar_data.size() * BAR_HEIGHT + (bar_data.size() - 1) * BAR_GAP
 	var start_y := viewport_h - MARGIN_BOTTOM - total_height
 
+	# Weapon name label above ammo
+	_weapon_label = Label.new()
+	_weapon_label.name = "WeaponLabel"
+	_weapon_label.text = "UNARMED"
+	_weapon_label.position = Vector2(MARGIN_LEFT, start_y - 52)
+	_weapon_label.size = Vector2(LABEL_WIDTH + BAR_WIDTH, 24)
+	_weapon_label.add_theme_font_size_override("font_size", 14)
+	_weapon_label.add_theme_color_override("font_color", Color(0.7, 0.75, 0.8, 0.9))
+	_weapon_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
+	_weapon_label.add_theme_constant_override("shadow_offset_x", 1)
+	_weapon_label.add_theme_constant_override("shadow_offset_y", 1)
+	_weapon_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.add_child(_weapon_label)
+
 	# Ammo counter above the bars
 	_ammo_label = Label.new()
 	_ammo_label.name = "AmmoLabel"
-	_ammo_label.text = "8 / 8"
+	_ammo_label.text = ""
 	_ammo_label.position = Vector2(MARGIN_LEFT, start_y - 28)
 	_ammo_label.size = Vector2(LABEL_WIDTH + BAR_WIDTH, 24)
 	_ammo_label.add_theme_font_size_override("font_size", 16)

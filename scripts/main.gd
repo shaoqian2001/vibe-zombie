@@ -11,6 +11,7 @@ extends Node3D
 ## The view switches automatically between exterior and interior.
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
+const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
 
 const SPAWN_CANDIDATES := [
 	Vector3( 38.0, 0.5,  38.0),
@@ -35,6 +36,10 @@ const ENEMY_COUNT := 25
 const ENEMY_BLOCK_SIZE := 26.0
 const ENEMY_ROAD_WIDTH := 4.0
 const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
+
+# Weapon pickup spawning
+const WEAPON_PICKUP_COUNT := 12
+const WEAPON_PICKUP_MIN_DIST := 15.0
 
 @onready var player: CharacterBody3D = $Player
 @onready var camera: Camera3D        = $Camera3D
@@ -68,6 +73,7 @@ func _ready() -> void:
 	_create_ui()
 	_setup_hud()
 	_spawn_enemies(rng)
+	_spawn_weapon_pickups(rng)
 
 	await get_tree().process_frame
 	_connect_entrance_areas()
@@ -194,6 +200,63 @@ func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vec
 		var x := bx + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
 		var z := bz + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
 		return Vector3(x, 0.5, z)
+
+# ------------------------------------------------------------------
+# Weapon pickup spawning
+# ------------------------------------------------------------------
+
+func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
+	var total := ENEMY_CELL_SIZE * 5
+	var grid_origin := -total * 0.5
+	var placed_positions: Array[Vector3] = []
+	var weapon_types := ["pistol", "shotgun"]
+
+	for i in range(WEAPON_PICKUP_COUNT):
+		var pos := Vector3.ZERO
+		var valid := false
+
+		for _attempt in range(20):
+			pos = _random_walkable_pos(rng, grid_origin)
+			pos.y = 0.0
+
+			if pos.distance_to(player.global_position) < 10.0:
+				continue
+
+			var too_close := false
+			for prev in placed_positions:
+				if pos.distance_to(prev) < WEAPON_PICKUP_MIN_DIST:
+					too_close = true
+					break
+			if too_close:
+				continue
+
+			if _pos_inside_building(pos):
+				continue
+
+			valid = true
+			break
+
+		if not valid:
+			continue
+
+		placed_positions.append(pos)
+
+		var pickup := Area3D.new()
+		pickup.set_script(WeaponPickup)
+		pickup.name = "WeaponPickup_%d" % i
+		pickup.weapon_type = weapon_types[i % weapon_types.size()]
+		pickup.global_position = pos
+		add_child(pickup)
+
+func _pos_inside_building(pos: Vector3) -> bool:
+	for binfo in world.buildings:
+		var bpos: Vector3 = binfo.node.position
+		var hw: float = binfo.width * 0.5 + 1.0
+		var hd: float = binfo.depth * 0.5 + 1.0
+		if pos.x > bpos.x - hw and pos.x < bpos.x + hw \
+			and pos.z > bpos.z - hd and pos.z < bpos.z + hd:
+			return true
+	return false
 
 # ------------------------------------------------------------------
 # UI (interaction prompts)
