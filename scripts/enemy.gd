@@ -33,11 +33,11 @@ var _hp_bar_bg: MeshInstance3D
 var _hp_bar_fg: MeshInstance3D
 
 func _ready() -> void:
+	add_to_group("enemy")
 	_rng.randomize()
 	_pick_new_wander()
 	_build_model()
 	_build_hp_bar()
-	# Find the player node (deferred so scene tree is ready)
 	await get_tree().process_frame
 	_player_ref = _find_player()
 

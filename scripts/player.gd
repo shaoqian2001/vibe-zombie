@@ -9,19 +9,23 @@ const ROTATION_SPEED = 14.0
 
 # Stamina
 const STAMINA_MAX := 40.0
-const STAMINA_DRAIN := 15.0   # per second while sprinting
-const STAMINA_RECOVER := 10.0 # per second while not sprinting
-const STAMINA_RECOVER_DELAY := 2.0  # seconds after stop sprinting before recovery
+const STAMINA_DRAIN := 15.0
+const STAMINA_RECOVER := 10.0
+const STAMINA_RECOVER_DELAY := 2.0
 
 var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0
 var _is_sprinting: bool = false
 
-# Current weapon (key into WeaponData.WEAPONS)
-var _current_weapon: String = "pistol"
+# Weapon inventory
+var _weapons: Array[String] = []
+var _weapon_index: int = -1
+var _weapon_ammo: Dictionary = {}
+var _current_weapon: String = ""
 var _weapon_stats: Dictionary = {}
+var _armed: bool = false
 
-# Gun state
+# Gun state (for the currently equipped weapon)
 var ammo: int = 0
 var _shoot_timer: float = 0.0
 var _reload_timer: float = 0.0
@@ -36,19 +40,22 @@ var hud = null
 # Mouse look target on the ground plane (set externally by main.gd)
 var look_target: Vector3 = Vector3.INF
 
-# Pistol mesh (built in code, attached to right hand area)
+# Weapon model nodes
 var _pistol_node: Node3D = null
+var _shotgun_node: Node3D = null
 
-# Aim line — togglable (will later be tied to accessories)
+# Aim line
 var _aim_line: MeshInstance3D = null
-var _aim_dot: MeshInstance3D = null  # solid red dot at hit point
-var aim_line_enabled: bool = true  # on by default for testing
+var _aim_dot: MeshInstance3D = null
+var aim_line_enabled: bool = true
 
 func _ready() -> void:
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
-	_equip_weapon(_current_weapon)
 	_build_pistol()
+	_build_shotgun()
+	_pistol_node.visible = false
+	_shotgun_node.visible = false
 	_build_aim_line()
 
 func _physics_process(delta: float) -> void:
@@ -64,19 +71,64 @@ func _physics_process(delta: float) -> void:
 	_sync_hud()
 
 func _input(event: InputEvent) -> void:
-	if event.is_action_pressed("shoot"):
+	if event.is_action_pressed("weapon_1"):
+		_switch_weapon(0)
+	elif event.is_action_pressed("weapon_2"):
+		_switch_weapon(1)
+	elif event.is_action_pressed("shoot"):
 		_try_shoot()
 	elif event.is_action_pressed("reload"):
 		_try_reload()
 
 # ------------------------------------------------------------------
-# Weapon system
+# Weapon inventory
 # ------------------------------------------------------------------
 
-func _equip_weapon(weapon_name: String) -> void:
-	_current_weapon = weapon_name
-	_weapon_stats = WeaponData.get_weapon(weapon_name)
-	ammo = _weapon_stats.get("magazine_size", 8)
+func pickup_weapon(weapon_name: String) -> void:
+	var stats := WeaponData.get_weapon(weapon_name)
+	if stats.is_empty():
+		return
+
+	var mag: int = stats.get("magazine_size", 8)
+
+	if weapon_name in _weapons:
+		_weapon_ammo[weapon_name] = mag
+		if _current_weapon == weapon_name:
+			ammo = mag
+			_is_reloading = false
+		return
+
+	_weapons.append(weapon_name)
+	_weapon_ammo[weapon_name] = mag
+
+	var new_idx := _weapons.size() - 1
+	_equip_weapon(new_idx)
+
+func _switch_weapon(slot: int) -> void:
+	if slot < 0 or slot >= _weapons.size():
+		return
+	if slot == _weapon_index:
+		return
+	_equip_weapon(slot)
+
+func _equip_weapon(idx: int) -> void:
+	if idx < 0 or idx >= _weapons.size():
+		return
+
+	# Save ammo of the old weapon
+	if _armed and _current_weapon != "":
+		_weapon_ammo[_current_weapon] = ammo
+
+	_weapon_index = idx
+	_current_weapon = _weapons[idx]
+	_weapon_stats = WeaponData.get_weapon(_current_weapon)
+	ammo = _weapon_ammo.get(_current_weapon, _weapon_stats.get("magazine_size", 8))
+	_armed = true
+	_is_reloading = false
+	_shoot_timer = 0.0
+
+	_pistol_node.visible = (_current_weapon == "pistol")
+	_shotgun_node.visible = (_current_weapon == "shotgun")
 
 func _get_forward() -> Vector3:
 	var fwd := global_transform.basis.z
@@ -90,11 +142,9 @@ func _get_forward() -> Vector3:
 func _build_pistol() -> void:
 	_pistol_node = Node3D.new()
 	_pistol_node.name = "Pistol"
-	# Position at right hand area (+Z is the model's visual front)
 	_pistol_node.position = Vector3(0.35, 1.0, 0.30)
 	add_child(_pistol_node)
 
-	# Grip (handle)
 	var grip_mat := StandardMaterial3D.new()
 	grip_mat.albedo_color = Color(0.15, 0.15, 0.15, 1)
 	var grip_mesh := BoxMesh.new()
@@ -106,7 +156,6 @@ func _build_pistol() -> void:
 	grip.position = Vector3(0.0, -0.06, 0.0)
 	_pistol_node.add_child(grip)
 
-	# Slide (barrel / top part, extends forward = +Z)
 	var slide_mat := StandardMaterial3D.new()
 	slide_mat.albedo_color = Color(0.22, 0.22, 0.24, 1)
 	var slide_mesh := BoxMesh.new()
@@ -118,7 +167,6 @@ func _build_pistol() -> void:
 	slide.position = Vector3(0.0, 0.06, 0.04)
 	_pistol_node.add_child(slide)
 
-	# Muzzle (small cylinder at the front tip)
 	var muzzle_mat := StandardMaterial3D.new()
 	muzzle_mat.albedo_color = Color(0.10, 0.10, 0.10, 1)
 	var muzzle_mesh := CylinderMesh.new()
@@ -134,11 +182,90 @@ func _build_pistol() -> void:
 	_pistol_node.add_child(muzzle)
 
 # ------------------------------------------------------------------
-# Aim line — raycast-based, stops at first obstacle
+# Shotgun model
+# ------------------------------------------------------------------
+
+func _build_shotgun() -> void:
+	_shotgun_node = Node3D.new()
+	_shotgun_node.name = "Shotgun"
+	_shotgun_node.position = Vector3(0.35, 0.95, 0.30)
+	add_child(_shotgun_node)
+
+	# Stock (wooden rear grip)
+	var stock_mat := StandardMaterial3D.new()
+	stock_mat.albedo_color = Color(0.40, 0.26, 0.13, 1)
+	var stock_mesh := BoxMesh.new()
+	stock_mesh.size = Vector3(0.09, 0.10, 0.18)
+	stock_mesh.material = stock_mat
+	var stock := MeshInstance3D.new()
+	stock.name = "Stock"
+	stock.mesh = stock_mesh
+	stock.position = Vector3(0.0, -0.04, -0.14)
+	_shotgun_node.add_child(stock)
+
+	# Receiver (metal body connecting stock to barrels)
+	var receiver_mat := StandardMaterial3D.new()
+	receiver_mat.albedo_color = Color(0.18, 0.18, 0.20, 1)
+	var receiver_mesh := BoxMesh.new()
+	receiver_mesh.size = Vector3(0.08, 0.08, 0.12)
+	receiver_mesh.material = receiver_mat
+	var receiver := MeshInstance3D.new()
+	receiver.name = "Receiver"
+	receiver.mesh = receiver_mesh
+	receiver.position = Vector3(0.0, 0.0, -0.02)
+	_shotgun_node.add_child(receiver)
+
+	# Pump forend (wood)
+	var forend_mat := StandardMaterial3D.new()
+	forend_mat.albedo_color = Color(0.45, 0.30, 0.15, 1)
+	var forend_mesh := BoxMesh.new()
+	forend_mesh.size = Vector3(0.09, 0.07, 0.10)
+	forend_mesh.material = forend_mat
+	var forend := MeshInstance3D.new()
+	forend.name = "Forend"
+	forend.mesh = forend_mesh
+	forend.position = Vector3(0.0, -0.02, 0.10)
+	_shotgun_node.add_child(forend)
+
+	# Double barrels
+	var barrel_mat := StandardMaterial3D.new()
+	barrel_mat.albedo_color = Color(0.12, 0.12, 0.14, 1)
+	for i in range(2):
+		var offset_x := -0.025 + i * 0.05
+		var barrel_mesh := CylinderMesh.new()
+		barrel_mesh.top_radius = 0.025
+		barrel_mesh.bottom_radius = 0.025
+		barrel_mesh.height = 0.28
+		barrel_mesh.material = barrel_mat
+		var barrel := MeshInstance3D.new()
+		barrel.name = "Barrel_%d" % i
+		barrel.mesh = barrel_mesh
+		barrel.position = Vector3(offset_x, 0.02, 0.18)
+		barrel.rotation_degrees = Vector3(90, 0, 0)
+		_shotgun_node.add_child(barrel)
+
+	# Muzzle tips
+	var muzzle_mat := StandardMaterial3D.new()
+	muzzle_mat.albedo_color = Color(0.08, 0.08, 0.08, 1)
+	for i in range(2):
+		var offset_x := -0.025 + i * 0.05
+		var muzzle_mesh := CylinderMesh.new()
+		muzzle_mesh.top_radius = 0.028
+		muzzle_mesh.bottom_radius = 0.028
+		muzzle_mesh.height = 0.02
+		muzzle_mesh.material = muzzle_mat
+		var muzzle := MeshInstance3D.new()
+		muzzle.name = "MuzzleTip_%d" % i
+		muzzle.mesh = muzzle_mesh
+		muzzle.position = Vector3(offset_x, 0.02, 0.32)
+		muzzle.rotation_degrees = Vector3(90, 0, 0)
+		_shotgun_node.add_child(muzzle)
+
+# ------------------------------------------------------------------
+# Aim line
 # ------------------------------------------------------------------
 
 func _build_aim_line() -> void:
-	# Line mesh (ImmediateMesh redrawn each frame — always flat, no rotation)
 	var line_mat := StandardMaterial3D.new()
 	line_mat.albedo_color = Color(1.0, 0.1, 0.1, 0.6)
 	line_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -153,7 +280,6 @@ func _build_aim_line() -> void:
 	_aim_line.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	get_tree().root.add_child.call_deferred(_aim_line)
 
-	# Hit-point dot (small sphere, solid red)
 	var dot_mat := StandardMaterial3D.new()
 	dot_mat.albedo_color = Color(1.0, 0.05, 0.05, 0.9)
 	dot_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -174,26 +300,34 @@ func _build_aim_line() -> void:
 	get_tree().root.add_child.call_deferred(_aim_dot)
 
 func _get_muzzle_world_pos() -> Vector3:
-	if _pistol_node == null:
+	var weapon_node: Node3D = null
+	if _current_weapon == "pistol":
+		weapon_node = _pistol_node
+	elif _current_weapon == "shotgun":
+		weapon_node = _shotgun_node
+
+	if weapon_node == null:
 		return global_position + Vector3(0, 1.0, 0)
-	# Muzzle tip is just past the muzzle mesh (+Z = visual forward)
-	return _pistol_node.global_transform * Vector3(0.0, 0.06, 0.16)
+
+	if _current_weapon == "shotgun":
+		return weapon_node.global_transform * Vector3(0.0, 0.02, 0.34)
+	return weapon_node.global_transform * Vector3(0.0, 0.06, 0.16)
+
+func _cast_ray(origin: Vector3, end: Vector3) -> Dictionary:
+	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(origin, end)
+	if self is CollisionObject3D:
+		query.exclude = [get_rid()]
+	query.collision_mask = 0xFFFFFFFF
+	return space.intersect_ray(query)
 
 func _aim_raycast() -> Dictionary:
-	# Cast a ray from the muzzle in the forward direction up to weapon range.
-	# Returns { "end": Vector3, "hit": bool }
 	var weapon_range: float = _weapon_stats.get("range", 30.0)
 	var forward := _get_forward()
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * weapon_range
 
-	var space := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
-	if self is CollisionObject3D:
-		query.exclude = [get_rid()]
-	query.collision_mask = 0xFFFFFFFF
-
-	var result := space.intersect_ray(query)
+	var result := _cast_ray(ray_origin, ray_end)
 	if result:
 		return { "end": result.position, "hit": true }
 	return { "end": ray_end, "hit": false }
@@ -202,13 +336,25 @@ func _update_aim_line() -> void:
 	if _aim_line == null or not is_instance_valid(_aim_line):
 		return
 
-	_aim_line.visible = aim_line_enabled
+	var show := aim_line_enabled and _armed
+	_aim_line.visible = show
 	if _aim_dot and is_instance_valid(_aim_dot):
 		_aim_dot.visible = false
-	if not aim_line_enabled:
+	if not show:
 		return
 
 	var muzzle_pos := _get_muzzle_world_pos()
+	var im: ImmediateMesh = _aim_line.mesh as ImmediateMesh
+	im.clear_surfaces()
+
+	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
+
+	if hit_mode == "fan":
+		_draw_fan_aim(im, muzzle_pos)
+	else:
+		_draw_single_aim(im, muzzle_pos)
+
+func _draw_single_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
 	var aim := _aim_raycast()
 	var aim_end: Vector3 = aim["end"]
 	var did_hit: bool = aim["hit"]
@@ -217,24 +363,42 @@ func _update_aim_line() -> void:
 		_aim_line.visible = false
 		return
 
-	# Redraw the line as two vertices (flat, no rotation needed)
-	var im: ImmediateMesh = _aim_line.mesh as ImmediateMesh
-	im.clear_surfaces()
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
 	im.surface_add_vertex(muzzle_pos)
 	im.surface_add_vertex(aim_end)
 	im.surface_end()
 
-	# Show red dot at hit point
 	if did_hit and _aim_dot and is_instance_valid(_aim_dot):
 		_aim_dot.visible = true
 		_aim_dot.global_position = aim_end
+
+func _draw_fan_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
+	var forward := _get_forward()
+	var weapon_range: float = _weapon_stats.get("range", 12.0)
+	var fan_angle: float = _weapon_stats.get("fan_angle", 35.0)
+	var fan_rays: int = _weapon_stats.get("fan_rays", 7)
+
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	for i in range(fan_rays):
+		var t := float(i) / float(fan_rays - 1) if fan_rays > 1 else 0.5
+		var angle := deg_to_rad(lerp(-fan_angle, fan_angle, t))
+		var dir := forward.rotated(Vector3.UP, angle)
+		var ray_end := muzzle_pos + dir * weapon_range
+
+		var result := _cast_ray(muzzle_pos, ray_end)
+		var end_point: Vector3 = result.position if result else ray_end
+
+		im.surface_add_vertex(muzzle_pos)
+		im.surface_add_vertex(end_point)
+	im.surface_end()
 
 # ------------------------------------------------------------------
 # Gun mechanics
 # ------------------------------------------------------------------
 
 func _update_gun(delta: float) -> void:
+	if not _armed:
+		return
 	_shoot_timer = max(_shoot_timer - delta, 0.0)
 
 	if _is_reloading:
@@ -244,7 +408,7 @@ func _update_gun(delta: float) -> void:
 			ammo = _weapon_stats.get("magazine_size", 8)
 
 func _try_shoot() -> void:
-	if _is_reloading or ammo <= 0 or _shoot_timer > 0.0:
+	if not _armed or _is_reloading or ammo <= 0 or _shoot_timer > 0.0:
 		return
 
 	ammo -= 1
@@ -252,32 +416,95 @@ func _try_shoot() -> void:
 	_fire_bullet()
 
 func _try_reload() -> void:
+	if not _armed:
+		return
 	if _is_reloading or ammo == _weapon_stats.get("magazine_size", 8):
 		return
 	_is_reloading = true
 	_reload_timer = _weapon_stats.get("reload_time", 1.2)
 
 func _fire_bullet() -> void:
+	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
+	if hit_mode == "fan":
+		_fire_fan()
+	else:
+		_fire_single()
+
+func _fire_single() -> void:
 	var forward := _get_forward()
-	var weapon_range: float = _weapon_stats.get("range", 30.0)
+	var weapon_range: float = _weapon_stats.get("range", 40.0)
 	var damage: float = _weapon_stats.get("damage", 10.0)
+	var tolerance: float = _weapon_stats.get("hit_tolerance", 1.2)
 
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * weapon_range
 
-	var space := get_world_3d().direct_space_state
-	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_end)
-	if self is CollisionObject3D:
-		query.exclude = [get_rid()]
-	query.collision_mask = 0xFFFFFFFF
+	var result := _cast_ray(ray_origin, ray_end)
+	var hit_enemy := false
 
-	var result := space.intersect_ray(query)
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
 		if hit_body.has_method("take_damage"):
 			hit_body.take_damage(damage)
+			hit_enemy = true
+
+	# Relaxed hit detection: if the ray missed, check enemies near the ray line
+	if not hit_enemy:
+		var best_enemy: CharacterBody3D = null
+		var best_dist := tolerance
+
+		for enemy in get_tree().get_nodes_in_group("enemy"):
+			if not is_instance_valid(enemy) or not enemy is CharacterBody3D:
+				continue
+			if not enemy.has_method("take_damage"):
+				continue
+
+			var enemy_pos: Vector3 = enemy.global_position + Vector3(0, 0.9, 0)
+			var to_enemy := enemy_pos - ray_origin
+			var proj := to_enemy.dot(forward)
+			if proj < 0.0 or proj > weapon_range:
+				continue
+
+			var closest_on_ray := ray_origin + forward * proj
+			var perp_dist := closest_on_ray.distance_to(enemy_pos)
+			if perp_dist < best_dist:
+				best_dist = perp_dist
+				best_enemy = enemy
+
+		if best_enemy != null:
+			best_enemy.take_damage(damage)
 
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
+
+func _fire_fan() -> void:
+	var forward := _get_forward()
+	var weapon_range: float = _weapon_stats.get("range", 12.0)
+	var damage: float = _weapon_stats.get("damage", 15.0)
+	var fan_angle: float = _weapon_stats.get("fan_angle", 35.0)
+	var fan_rays: int = _weapon_stats.get("fan_rays", 7)
+
+	var ray_origin := _get_muzzle_world_pos()
+	var hit_enemies: Array = []
+
+	for i in range(fan_rays):
+		var t := float(i) / float(fan_rays - 1) if fan_rays > 1 else 0.5
+		var angle := deg_to_rad(lerp(-fan_angle, fan_angle, t))
+		var dir := forward.rotated(Vector3.UP, angle)
+		var ray_end := ray_origin + dir * weapon_range
+
+		var result := _cast_ray(ray_origin, ray_end)
+		var tracer_end: Vector3 = result.position if result else ray_end
+
+		if result and result.collider is CharacterBody3D:
+			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
+			if hit_body.has_method("take_damage") and hit_body not in hit_enemies:
+				hit_enemies.append(hit_body)
+
+		_spawn_tracer(ray_origin, tracer_end)
+
+	for enemy in hit_enemies:
+		if is_instance_valid(enemy):
+			enemy.take_damage(damage)
 
 func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 	var dir := to - from
@@ -389,5 +616,10 @@ func _rotate_to_face_mouse(delta: float) -> void:
 func _sync_hud() -> void:
 	if hud:
 		hud.set_stamina(stamina / STAMINA_MAX * 100.0)
-		hud.set_ammo(ammo, _weapon_stats.get("magazine_size", 8))
-		hud.set_reloading(_is_reloading)
+		if _armed:
+			hud.set_ammo(ammo, _weapon_stats.get("magazine_size", 8))
+			hud.set_weapon_name(_current_weapon.to_upper())
+		else:
+			hud.set_ammo(0, 0)
+			hud.set_weapon_name("UNARMED")
+		hud.set_reloading(_is_reloading and _armed)
