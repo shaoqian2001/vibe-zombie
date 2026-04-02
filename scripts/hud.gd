@@ -1,6 +1,7 @@
 extends CanvasLayer
 
 ## Bottom-left HUD showing Armor, Health, and Stamina bars + ammo counter above.
+## All positioning uses anchors so the HUD stays bottom-left at any resolution.
 
 var _armor_fill: ColorRect
 var _health_fill: ColorRect
@@ -17,11 +18,11 @@ var max_health: float = 100.0
 var stamina: float = 40.0
 var max_stamina: float = 100.0
 
+# Sizing (in virtual-viewport units — scales automatically with canvas_items stretch)
 const BAR_WIDTH := 200.0
 const BAR_HEIGHT := 16.0
 const BAR_GAP := 6.0
-const MARGIN_LEFT := 20.0
-const MARGIN_BOTTOM := 20.0
+const MARGIN := 20.0
 const LABEL_WIDTH := 70.0
 
 const ARMOR_COLOR := Color(0.30, 0.50, 0.85, 0.9)
@@ -65,82 +66,94 @@ func set_reloading(is_reloading: bool) -> void:
 		_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.7, 0.2, 1.0))
 
 func _build_hud() -> void:
+	# Full-rect container (mouse-transparent)
 	_container = Control.new()
 	_container.name = "HUDContainer"
 	_container.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_container)
 
-	var viewport_h := 720.0  # match project viewport height
+	# Anchor wrapper pinned to bottom-left
+	var anchor := Control.new()
+	anchor.name = "BottomLeftAnchor"
+	anchor.set_anchor(SIDE_LEFT, 0.0)
+	anchor.set_anchor(SIDE_BOTTOM, 1.0)
+	anchor.set_anchor(SIDE_RIGHT, 0.0)
+	anchor.set_anchor(SIDE_TOP, 1.0)
+	anchor.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.add_child(anchor)
 
-	# Bars from top to bottom: Armor, Health, Stamina
 	var bar_data := [
 		{"label": "ARMOR", "color": ARMOR_COLOR},
 		{"label": "HEALTH", "color": HEALTH_COLOR},
 		{"label": "STAMINA", "color": STAMINA_COLOR},
 	]
 
-	var total_height := bar_data.size() * BAR_HEIGHT + (bar_data.size() - 1) * BAR_GAP
-	var start_y := viewport_h - MARGIN_BOTTOM - total_height
+	var total_bars_height := bar_data.size() * BAR_HEIGHT + (bar_data.size() - 1) * BAR_GAP
+	var ammo_height := 24.0
+	var weapon_height := 24.0
+	var gap := 4.0
+	var total_height := total_bars_height + gap + ammo_height + gap + weapon_height
 
-	# Weapon name label above ammo
+	# Weapon name label (topmost)
 	_weapon_label = Label.new()
 	_weapon_label.name = "WeaponLabel"
 	_weapon_label.text = "UNARMED"
-	_weapon_label.position = Vector2(MARGIN_LEFT, start_y - 52)
-	_weapon_label.size = Vector2(LABEL_WIDTH + BAR_WIDTH, 24)
+	_weapon_label.position = Vector2(MARGIN, -MARGIN - total_height)
+	_weapon_label.size = Vector2(LABEL_WIDTH + BAR_WIDTH, weapon_height)
 	_weapon_label.add_theme_font_size_override("font_size", 14)
 	_weapon_label.add_theme_color_override("font_color", Color(0.7, 0.75, 0.8, 0.9))
 	_weapon_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
 	_weapon_label.add_theme_constant_override("shadow_offset_x", 1)
 	_weapon_label.add_theme_constant_override("shadow_offset_y", 1)
 	_weapon_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_container.add_child(_weapon_label)
+	anchor.add_child(_weapon_label)
 
-	# Ammo counter above the bars
+	# Ammo counter
 	_ammo_label = Label.new()
 	_ammo_label.name = "AmmoLabel"
 	_ammo_label.text = ""
-	_ammo_label.position = Vector2(MARGIN_LEFT, start_y - 28)
-	_ammo_label.size = Vector2(LABEL_WIDTH + BAR_WIDTH, 24)
+	_ammo_label.position = Vector2(MARGIN, -MARGIN - total_bars_height - gap - ammo_height)
+	_ammo_label.size = Vector2(LABEL_WIDTH + BAR_WIDTH, ammo_height)
 	_ammo_label.add_theme_font_size_override("font_size", 16)
 	_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7, 1.0))
 	_ammo_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
 	_ammo_label.add_theme_constant_override("shadow_offset_x", 1)
 	_ammo_label.add_theme_constant_override("shadow_offset_y", 1)
 	_ammo_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_container.add_child(_ammo_label)
+	anchor.add_child(_ammo_label)
 
+	# Bars
 	var fills := []
 	for i in range(bar_data.size()):
 		var data = bar_data[i]
-		var y_pos := start_y + i * (BAR_HEIGHT + BAR_GAP)
+		var y_pos := -MARGIN - total_bars_height + i * (BAR_HEIGHT + BAR_GAP)
 
 		# Label
 		var label := Label.new()
 		label.text = data["label"]
-		label.position = Vector2(MARGIN_LEFT, y_pos - 2)
+		label.position = Vector2(MARGIN, y_pos - 2)
 		label.size = Vector2(LABEL_WIDTH, BAR_HEIGHT)
 		label.add_theme_font_size_override("font_size", 11)
 		label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85, 0.95))
 		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_container.add_child(label)
+		anchor.add_child(label)
 
 		# Background bar
 		var bg := ColorRect.new()
 		bg.color = BG_COLOR
-		bg.position = Vector2(MARGIN_LEFT + LABEL_WIDTH, y_pos)
+		bg.position = Vector2(MARGIN + LABEL_WIDTH, y_pos)
 		bg.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
 		bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_container.add_child(bg)
+		anchor.add_child(bg)
 
 		# Fill bar
 		var fill := ColorRect.new()
 		fill.color = data["color"]
-		fill.position = Vector2(MARGIN_LEFT + LABEL_WIDTH, y_pos)
+		fill.position = Vector2(MARGIN + LABEL_WIDTH, y_pos)
 		fill.size = Vector2(BAR_WIDTH, BAR_HEIGHT)
 		fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_container.add_child(fill)
+		anchor.add_child(fill)
 
 		fills.append(fill)
 
