@@ -61,6 +61,7 @@ var buildings: Array = []
 func _ready() -> void:
 	_rng.seed = 98765
 	_generate_ground()
+	_generate_boundary_walls()
 	_generate_city_grid()
 	_add_sun_and_sky()
 
@@ -90,6 +91,37 @@ func _generate_ground() -> void:
 	cs.shape = shp
 	sb.add_child(cs)
 	add_child(sb)
+
+# ------------------------------------------------------------------
+# Boundary walls (invisible colliders at map edges)
+# ------------------------------------------------------------------
+
+func _generate_boundary_walls() -> void:
+	var wall_h := 10.0
+	var wall_thickness := 1.0
+	var extent := MAP_HALF
+	# Four walls: +X, -X, +Z, -Z
+	var walls := [
+		Vector3(extent + wall_thickness * 0.5, wall_h * 0.5, 0.0),   # +X
+		Vector3(-extent - wall_thickness * 0.5, wall_h * 0.5, 0.0),  # -X
+		Vector3(0.0, wall_h * 0.5, extent + wall_thickness * 0.5),   # +Z
+		Vector3(0.0, wall_h * 0.5, -extent - wall_thickness * 0.5),  # -Z
+	]
+	var sizes := [
+		Vector3(wall_thickness, wall_h, extent * 2.0 + wall_thickness * 2.0),  # +X/-X
+		Vector3(wall_thickness, wall_h, extent * 2.0 + wall_thickness * 2.0),
+		Vector3(extent * 2.0 + wall_thickness * 2.0, wall_h, wall_thickness),  # +Z/-Z
+		Vector3(extent * 2.0 + wall_thickness * 2.0, wall_h, wall_thickness),
+	]
+	for i in range(4):
+		var sb := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var shp := BoxShape3D.new()
+		shp.size = sizes[i]
+		cs.shape = shp
+		sb.position = walls[i]
+		sb.add_child(cs)
+		add_child(sb)
 
 # ------------------------------------------------------------------
 # City grid
