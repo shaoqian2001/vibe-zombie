@@ -402,7 +402,7 @@ func _update_prompt() -> void:
 # ------------------------------------------------------------------
 
 func _setup_mission(rng: RandomNumberGenerator) -> void:
-	var building_count := world.buildings.size()
+	var building_count: int = world.buildings.size()
 	if building_count < 2:
 		return
 
