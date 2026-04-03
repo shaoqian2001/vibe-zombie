@@ -106,10 +106,8 @@ func _try_attack() -> void:
 	if _player_ref == null or not is_instance_valid(_player_ref):
 		return
 	_attack_timer = ATTACK_COOLDOWN
-	# Deal damage to the player if they have a hud (health system)
-	if _player_ref.hud:
-		var new_health: float = _player_ref.hud.health - ATTACK_DAMAGE
-		_player_ref.hud.set_health(new_health)
+	if _player_ref.has_method("take_damage"):
+		_player_ref.take_damage(ATTACK_DAMAGE)
 
 func _find_player() -> CharacterBody3D:
 	var players := get_tree().get_nodes_in_group("player")
