@@ -13,7 +13,7 @@ var _container: Control
 # Current values (0-100)
 var armor: float = 15.0
 var max_armor: float = 100.0
-var health: float = 30.0
+var health: float = 100.0
 var max_health: float = 100.0
 var stamina: float = 40.0
 var max_stamina: float = 100.0
