@@ -13,6 +13,13 @@ const STAMINA_DRAIN := 15.0
 const STAMINA_RECOVER := 10.0
 const STAMINA_RECOVER_DELAY := 2.0
 
+# Health
+const HEALTH_MAX := 100.0
+var health: float = HEALTH_MAX
+var is_dead: bool = false
+
+signal died
+
 var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0
 var _is_sprinting: bool = false
@@ -59,6 +66,8 @@ func _ready() -> void:
 	_build_aim_line()
 
 func _physics_process(delta: float) -> void:
+	if is_dead:
+		return
 	_apply_gravity(delta)
 	var move_dir := _get_world_movement_direction()
 	_update_sprint(move_dir, delta)
@@ -69,6 +78,17 @@ func _physics_process(delta: float) -> void:
 	_update_gun(delta)
 	_update_aim_line()
 	_sync_hud()
+
+func take_damage(amount: float) -> void:
+	if is_dead:
+		return
+	health = max(health - amount, 0.0)
+	if hud:
+		hud.set_health(health / HEALTH_MAX * 100.0)
+	if health <= 0.0:
+		is_dead = true
+		velocity = Vector3.ZERO
+		died.emit()
 
 func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("weapon_1"):
