@@ -12,7 +12,8 @@ const RESOLUTIONS := [
 ]
 
 static func ui_scale() -> float:
-	var viewport_h := Engine.get_main_loop().root.get_visible_rect().size.y
+	var win: Window = Engine.get_main_loop().root as Window
+	var viewport_h: float = win.get_visible_rect().size.y
 	return viewport_h / 720.0
 
 static func make_panel_style(s: float) -> StyleBoxFlat:
@@ -60,14 +61,14 @@ static func make_button(text: String, s: float, width: float = 260.0, height: fl
 	return btn
 
 static func get_current_resolution() -> Vector2i:
-	var win := Engine.get_main_loop().root
-	var scale_size := win.content_scale_size
+	var win: Window = Engine.get_main_loop().root as Window
+	var scale_size: Vector2i = win.content_scale_size
 	if scale_size != Vector2i.ZERO:
 		return scale_size
 	return win.get_visible_rect().size as Vector2i
 
 static func apply_resolution(res: Vector2i) -> void:
-	var win := Engine.get_main_loop().root
+	var win: Window = Engine.get_main_loop().root as Window
 	win.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
 	win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_KEEP
 	win.content_scale_size = res
