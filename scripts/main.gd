@@ -144,6 +144,13 @@ func _setup_hud() -> void:
 	add_child(_hud)
 	player.hud = _hud
 
+func _rebuild_hud() -> void:
+	if _hud:
+		_hud.queue_free()
+		_hud = null
+	# Defer so the old HUD is freed first
+	call_deferred("_setup_hud")
+
 # ------------------------------------------------------------------
 # Game Manual (ESC) & Inventory (I)
 # ------------------------------------------------------------------
@@ -170,6 +177,8 @@ func _close_game_manual() -> void:
 	if _game_manual:
 		_game_manual.queue_free()
 		_game_manual = null
+	# Rebuild the HUD so it picks up any resolution change from settings
+	_rebuild_hud()
 
 func _toggle_inventory() -> void:
 	if _manual_open:
