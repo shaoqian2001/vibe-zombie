@@ -40,7 +40,7 @@ func _ready() -> void:
 	visible = true
 
 func _ui_scale() -> float:
-	var viewport_h := get_viewport().get_visible_rect().size.y
+	var viewport_h: float = get_viewport().get_visible_rect().size.y
 	return viewport_h / 720.0
 
 func _build_ui() -> void:
