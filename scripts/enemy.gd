@@ -134,66 +134,124 @@ func _pick_new_wander() -> void:
 # ------------------------------------------------------------------
 
 func _build_model() -> void:
-	# Zombie body colour: sickly grey-green
-	var body_mat := StandardMaterial3D.new()
-	body_mat.albedo_color = Color(0.35, 0.40, 0.30, 1)
+	var skin_tint := _rng.randf_range(-0.06, 0.06)
+	var scale_var := _rng.randf_range(0.9, 1.1)
 
-	var body_mesh := CapsuleMesh.new()
-	body_mesh.radius = 0.32
-	body_mesh.height = 1.6
-	body_mesh.material = body_mat
+	# Torso (upper body)
+	var torso_mat := StandardMaterial3D.new()
+	torso_mat.albedo_color = Color(0.35 + skin_tint, 0.40 + skin_tint, 0.30 + skin_tint, 1)
+	torso_mat.roughness = 0.9
+	var torso_mesh := BoxMesh.new()
+	torso_mesh.size = Vector3(0.52 * scale_var, 0.7, 0.30 * scale_var)
+	torso_mesh.material = torso_mat
+	var torso := MeshInstance3D.new()
+	torso.name = "Torso"
+	torso.mesh = torso_mesh
+	torso.position = Vector3(0, 1.15, 0)
+	torso.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(torso)
 
-	var body := MeshInstance3D.new()
-	body.name = "Body"
-	body.mesh = body_mesh
-	body.position = Vector3(0, 0.8, 0)
-	body.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	add_child(body)
+	# Legs
+	var leg_mat := StandardMaterial3D.new()
+	leg_mat.albedo_color = Color(0.22, 0.22, 0.20, 1)
+	leg_mat.roughness = 0.9
+	for side in [-1.0, 1.0]:
+		var leg_mesh := BoxMesh.new()
+		leg_mesh.size = Vector3(0.18 * scale_var, 0.7, 0.20 * scale_var)
+		leg_mesh.material = leg_mat
+		var leg := MeshInstance3D.new()
+		leg.mesh = leg_mesh
+		leg.position = Vector3(side * 0.13 * scale_var, 0.35, 0)
+		leg.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		add_child(leg)
 
-	# Head: pale sickly skin
+	# Arms
+	var arm_mat := StandardMaterial3D.new()
+	arm_mat.albedo_color = Color(0.38 + skin_tint, 0.42 + skin_tint, 0.32 + skin_tint, 1)
+	arm_mat.roughness = 0.9
+	for side in [-1.0, 1.0]:
+		var arm_mesh := CylinderMesh.new()
+		arm_mesh.top_radius = 0.06 * scale_var
+		arm_mesh.bottom_radius = 0.07 * scale_var
+		arm_mesh.height = 0.65
+		arm_mesh.material = arm_mat
+		var arm := MeshInstance3D.new()
+		arm.mesh = arm_mesh
+		arm.position = Vector3(side * 0.34 * scale_var, 1.0, 0.05)
+		arm.rotation_degrees = Vector3(_rng.randf_range(5, 25), 0, side * _rng.randf_range(-10, 10))
+		arm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		add_child(arm)
+
+	# Head
 	var head_mat := StandardMaterial3D.new()
-	head_mat.albedo_color = Color(0.60, 0.55, 0.45, 1)
-
+	head_mat.albedo_color = Color(0.55 + skin_tint, 0.50 + skin_tint, 0.40 + skin_tint, 1)
+	head_mat.roughness = 0.85
 	var head_mesh := SphereMesh.new()
-	head_mesh.radius = 0.26
-	head_mesh.height = 0.52
+	head_mesh.radius = 0.22 * scale_var
+	head_mesh.height = 0.44 * scale_var
 	head_mesh.material = head_mat
-
 	var head := MeshInstance3D.new()
 	head.name = "Head"
 	head.mesh = head_mesh
-	head.position = Vector3(0, 1.75, 0)
+	head.position = Vector3(0, 1.65, 0)
 	head.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	add_child(head)
 
-	# Eyes: bloodshot red
+	# Eyes: bloodshot red/yellow
 	var eye_mat := StandardMaterial3D.new()
-	eye_mat.albedo_color = Color(0.7, 0.1, 0.08, 1)
-
+	eye_mat.albedo_color = Color(0.7, 0.15, 0.08, 1)
+	eye_mat.emission_enabled = true
+	eye_mat.emission = Color(0.4, 0.05, 0.02)
+	eye_mat.emission_energy_multiplier = 0.3
 	var eye_mesh := SphereMesh.new()
-	eye_mesh.radius = 0.06
-	eye_mesh.height = 0.12
+	eye_mesh.radius = 0.05
+	eye_mesh.height = 0.10
 	eye_mesh.material = eye_mat
+	for side in [-1.0, 1.0]:
+		var eye := MeshInstance3D.new()
+		eye.mesh = eye_mesh
+		eye.position = Vector3(side * 0.08, 1.68, 0.18)
+		add_child(eye)
 
-	var eye_l := MeshInstance3D.new()
-	eye_l.name = "EyeLeft"
-	eye_l.mesh = eye_mesh
-	eye_l.position = Vector3(-0.10, 1.78, 0.20)
-	add_child(eye_l)
+	# Torn clothing patches
+	var cloth_colors := [
+		Color(0.30, 0.15, 0.12), Color(0.18, 0.22, 0.15),
+		Color(0.35, 0.30, 0.22), Color(0.20, 0.18, 0.25),
+	]
+	var cloth_mat := StandardMaterial3D.new()
+	cloth_mat.albedo_color = cloth_colors[_rng.randi() % cloth_colors.size()]
+	cloth_mat.roughness = 0.95
+	for _i in range(_rng.randi_range(1, 3)):
+		var patch_mesh := BoxMesh.new()
+		patch_mesh.size = Vector3(
+			_rng.randf_range(0.12, 0.25),
+			_rng.randf_range(0.15, 0.30),
+			_rng.randf_range(0.08, 0.15)
+		)
+		patch_mesh.material = cloth_mat
+		var patch := MeshInstance3D.new()
+		patch.mesh = patch_mesh
+		patch.position = Vector3(
+			_rng.randf_range(-0.20, 0.20),
+			_rng.randf_range(0.8, 1.4),
+			_rng.randf_range(0.10, 0.22)
+		)
+		patch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(patch)
 
-	var eye_r := MeshInstance3D.new()
-	eye_r.name = "EyeRight"
-	eye_r.mesh = eye_mesh
-	eye_r.position = Vector3(0.10, 1.78, 0.20)
-	add_child(eye_r)
+	# Blood splatters (randomized placement)
+	var splat_count := _rng.randi_range(2, 5)
+	for _i in range(splat_count):
+		_add_blood_splat(
+			Vector3(
+				_rng.randf_range(-0.22, 0.22),
+				_rng.randf_range(0.5, 1.5),
+				_rng.randf_range(0.12, 0.28)
+			),
+			_rng.randf_range(0.05, 0.14)
+		)
 
-	# Blood splatter patches on body
-	_add_blood_splat(Vector3(0.15, 1.0, 0.25), 0.12)
-	_add_blood_splat(Vector3(-0.20, 0.6, 0.20), 0.10)
-	_add_blood_splat(Vector3(0.05, 1.3, 0.28), 0.08)
-	_add_blood_splat(Vector3(-0.10, 1.65, 0.22), 0.07)  # on neck/head area
-
-	# Collision shape (same as player)
+	# Collision shape
 	var coll_shape := CapsuleShape3D.new()
 	coll_shape.radius = 0.34
 	coll_shape.height = 1.8

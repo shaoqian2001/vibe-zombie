@@ -9,6 +9,7 @@ var _stamina_fill: ColorRect
 var _ammo_label: Label
 var _weapon_label: Label
 var _container: Control
+var _dev_label: Label = null
 
 # Current values (0-100)
 var armor: float = 15.0
@@ -47,14 +48,17 @@ func set_armor(value: float) -> void:
 
 func set_ammo(current: int, magazine: int) -> void:
 	if _ammo_label:
-		if magazine == 0:
+		if magazine < 0:
+			_ammo_label.text = "MELEE"
+			_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7, 1.0))
+		elif magazine == 0:
 			_ammo_label.text = ""
 		else:
 			_ammo_label.text = "%d / %d" % [current, magazine]
-		if current == 0 and magazine > 0:
-			_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.25, 0.2, 1.0))
-		else:
-			_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7, 1.0))
+			if current == 0:
+				_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.25, 0.2, 1.0))
+			else:
+				_ammo_label.add_theme_color_override("font_color", Color(0.9, 0.85, 0.7, 1.0))
 
 func set_weapon_name(weapon_name: String) -> void:
 	if _weapon_label:
@@ -160,6 +164,27 @@ func _build_hud() -> void:
 	_armor_fill = fills[0]
 	_health_fill = fills[1]
 	_stamina_fill = fills[2]
+
+func show_dev_mode() -> void:
+	if _dev_label != null:
+		return
+	_dev_label = Label.new()
+	_dev_label.text = "DEV MODE"
+	_dev_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_dev_label.add_theme_font_size_override("font_size", 14)
+	_dev_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3, 0.8))
+	_dev_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
+	_dev_label.add_theme_constant_override("shadow_offset_x", 1)
+	_dev_label.add_theme_constant_override("shadow_offset_y", 1)
+	_dev_label.anchor_left = 0.0
+	_dev_label.anchor_top = 0.0
+	_dev_label.anchor_right = 1.0
+	_dev_label.anchor_bottom = 0.0
+	_dev_label.offset_right = -10
+	_dev_label.offset_top = 10
+	_dev_label.offset_bottom = 30
+	_dev_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.add_child(_dev_label)
 
 func _update_bars() -> void:
 	if _armor_fill:

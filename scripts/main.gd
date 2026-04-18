@@ -14,6 +14,8 @@ extends Node3D
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
 
+const DEV_MODE := true
+
 # Map rim spawn positions (near edges of the 152×152m map)
 const RIM_SPAWN_CANDIDATES := [
 	Vector3( 70.0, 0.5,  0.0),
@@ -38,8 +40,10 @@ const DOOR_ANIM_DURATION := 0.4
 const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 
 # Enemy spawning constants (matching world.gd dimensions)
-const BASE_ENEMY_COUNT := 50
-const HOTSPOT_ENEMY_COUNT := 8  # extra zombies near each mission building
+const BASE_ENEMY_COUNT_NORMAL := 50
+const BASE_ENEMY_COUNT_DEV := 5
+const HOTSPOT_ENEMY_COUNT_NORMAL := 8
+const HOTSPOT_ENEMY_COUNT_DEV := 2
 const ENEMY_BLOCK_SIZE := 26.0
 const ENEMY_ROAD_WIDTH := 4.0
 const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
@@ -96,16 +100,19 @@ func _ready() -> void:
 	_create_ui()
 	_setup_hud()
 
+	if DEV_MODE:
+		player.god_mode = true
+		if _hud and _hud.has_method("show_dev_mode"):
+			_hud.show_dev_mode()
+
 	await get_tree().process_frame
 
-	# Set up mission (requires buildings to be generated)
 	_setup_mission(rng)
 
 	_spawn_enemies(rng)
 	_spawn_weapon_pickups(rng)
 	_connect_entrance_areas()
 
-	# Connect player death
 	player.died.connect(_on_player_died)
 
 func _process(delta: float) -> void:
@@ -208,12 +215,14 @@ func _close_inventory() -> void:
 
 func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var enemy_script := preload("res://scripts/enemy.gd")
-	var total := ENEMY_CELL_SIZE * 5  # NUM_BLOCKS = 5
+	var total := ENEMY_CELL_SIZE * 5
 	var grid_origin := -total * 0.5
 	var idx := 0
 
-	# Base enemies spread across the map
-	for i in range(BASE_ENEMY_COUNT):
+	var base_count := BASE_ENEMY_COUNT_DEV if DEV_MODE else BASE_ENEMY_COUNT_NORMAL
+	var hotspot_count := HOTSPOT_ENEMY_COUNT_DEV if DEV_MODE else HOTSPOT_ENEMY_COUNT_NORMAL
+
+	for i in range(base_count):
 		var pos := _random_walkable_pos(rng, grid_origin)
 		if pos.distance_to(player.global_position) < 8.0:
 			pos = _random_walkable_pos(rng, grid_origin)
@@ -225,10 +234,9 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 		add_child(enemy)
 		idx += 1
 
-	# Extra enemies near pickup building
 	if not _pickup_building.is_empty():
 		var pickup_pos: Vector3 = _pickup_building.node.position
-		for i in range(HOTSPOT_ENEMY_COUNT):
+		for i in range(hotspot_count):
 			var pos := Vector3(
 				pickup_pos.x + rng.randf_range(-8.0, 8.0),
 				0.5,
@@ -243,10 +251,9 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 			add_child(enemy)
 			idx += 1
 
-	# Extra enemies near delivery building
 	if not _delivery_building.is_empty():
 		var delivery_pos: Vector3 = _delivery_building.node.position
-		for i in range(HOTSPOT_ENEMY_COUNT):
+		for i in range(hotspot_count):
 			var pos := Vector3(
 				delivery_pos.x + rng.randf_range(-8.0, 8.0),
 				0.5,
@@ -291,7 +298,7 @@ func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 	var total := ENEMY_CELL_SIZE * 5
 	var grid_origin := -total * 0.5
 	var placed_positions: Array[Vector3] = []
-	var weapon_types := ["pistol", "shotgun"]
+	var weapon_types := ["pistol", "shotgun", "smg", "grenade_launcher", "bat"]
 
 	for i in range(WEAPON_PICKUP_COUNT):
 		var pos := Vector3.ZERO
