@@ -91,7 +91,7 @@ func _render_map(ctrl: Control) -> void:
 	# Compute the largest square that fits within the viewport honouring margins
 	var avail_h := vp.y - TOP_MARGIN - BOTTOM_MARGIN
 	var avail_w := vp.x - SIDE_MIN_MARGIN * 2.0
-	var map_side := min(avail_h, avail_w)
+	var map_side := minf(avail_h, avail_w)
 	if map_side <= 0.0:
 		return
 	var ox := (vp.x - map_side) * 0.5
