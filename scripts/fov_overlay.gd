@@ -8,8 +8,11 @@ extends CanvasLayer
 ## Human-eyesight defaults: 145° horizontal FOV, ~50 world units (~200 m at
 ## the game's approximate 1 unit = 4 m scale).
 
-@export var fov_degrees: float  = 145.0
+@export var fov_degrees: float = 145.0
 @export var view_distance: float = 50.0
+## World-unit distance to move the cone apex behind the player so the
+## character model is fully visible inside the sector.
+@export var center_back_offset: float = 3.0
 
 const ARC_SEGMENTS := 32
 const N_VERTS := ARC_SEGMENTS + 2  # 1 center + (ARC_SEGMENTS + 1) arc pts = 34
@@ -38,6 +41,11 @@ func _process(_delta: float) -> void:
 	if _player == null or _camera == null or _mat == null:
 		return
 
+	# Viewport size used to normalise pixel coords → UV [0,1], matching the
+	# shader which uses UV rather than FRAGCOORD to avoid physical-vs-logical
+	# pixel mismatches under canvas_items stretch mode.
+	var vp_size := get_viewport().get_visible_rect().size
+
 	var ppos := _player.global_position
 	var fwd3 := _player.global_transform.basis.z
 	var facing := Vector2(fwd3.x, fwd3.z)
@@ -45,23 +53,33 @@ func _process(_delta: float) -> void:
 		facing = Vector2(0.0, 1.0)
 	facing = facing.normalized()
 
-	var half_rad  := deg_to_rad(fov_degrees * 0.5)
+	var half_rad   := deg_to_rad(fov_degrees * 0.5)
 	var base_angle := atan2(facing.y, facing.x)
+
+	# Shift the apex behind the player so the character model falls inside
+	# the visible sector instead of sitting right at its sharp point.
+	var apex_xz  := Vector2(ppos.x, ppos.z) - facing * center_back_offset
+	var apex_3d  := Vector3(apex_xz.x, ppos.y, apex_xz.y)
+	var apex_px  := _camera.unproject_position(apex_3d)  # still in pixel space
 
 	var polygon := PackedVector2Array()
 	polygon.resize(N_VERTS)
 
-	# Vertex 0: player's own screen position
-	polygon[0] = _camera.unproject_position(ppos)
+	# Vertex 0: shifted apex (pixel space; normalised at the end)
+	polygon[0] = apex_px
 
-	# Vertices 1 .. N_VERTS-1: arc swept ±half_rad around the facing direction
+	# Vertices 1 .. N_VERTS-1: arc swept ±half_rad, radius measured from ppos
 	for i in range(ARC_SEGMENTS + 1):
 		var t := float(i) / float(ARC_SEGMENTS)
 		var angle := base_angle - half_rad + t * (half_rad * 2.0)
 		var dir_xz := Vector2(cos(angle), sin(angle))
 		var world_xz := Vector2(ppos.x, ppos.z) + dir_xz * view_distance
 		var world3d := Vector3(world_xz.x, 0.0, world_xz.y)
-		polygon[i + 1] = _safe_project(world3d, polygon[0], dir_xz)
+		polygon[i + 1] = _safe_project(world3d, apex_px, dir_xz)
+
+	# Normalise all vertices to UV [0,1] before uploading to the shader.
+	for i in range(N_VERTS):
+		polygon[i] = polygon[i] / vp_size
 
 	_mat.set_shader_parameter("fov_polygon", polygon)
 

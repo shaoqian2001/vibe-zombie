@@ -1,9 +1,10 @@
 shader_type canvas_item;
 
 // FOV fog-of-war overlay.
-// fov_polygon holds N_VERTS screen-pixel positions that form a closed pie-slice
-// (center vertex first, then ARC_SEG+1 arc vertices going around).
-// Pixels inside the polygon are transparent; outside are darkened.
+// fov_polygon holds N_VERTS vertices in UV [0,1] space (top-left = 0,0).
+// Using UV instead of FRAGCOORD avoids mismatches between physical window
+// pixels and the logical viewport coords returned by unproject_position()
+// under Godot's canvas_items stretch mode.
 
 const int N_VERTS = 34;  // 1 center + 33 arc points (32 arc segments)
 
@@ -28,7 +29,7 @@ bool point_in_polygon(vec2 p) {
 }
 
 void fragment() {
-	if (point_in_polygon(FRAGCOORD.xy)) {
+	if (point_in_polygon(UV)) {
 		COLOR = vec4(0.0, 0.0, 0.0, 0.0);
 	} else {
 		COLOR = vec4(0.0, 0.0, 0.0, fog_alpha);
