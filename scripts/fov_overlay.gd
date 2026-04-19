@@ -78,8 +78,9 @@ func _safe_project(world3d: Vector3, player_screen: Vector2, world_dir_xz: Vecto
 	# until we find a point in front of the camera, then extend off screen.
 	var ppos := _player.global_position
 	var dir3 := Vector3(world_dir_xz.x, 0.0, world_dir_xz.y)
-	for step in [0.5, 0.25, 0.1]:
-		var probe := ppos + dir3 * (view_distance * step)
+	var steps: Array[float] = [0.5, 0.25, 0.1]
+	for step: float in steps:
+		var probe: Vector3 = ppos + dir3 * (view_distance * step)
 		if (probe - _camera.global_position).dot(cam_fwd) > 0.1:
 			var probe_screen := _camera.unproject_position(probe)
 			var screen_dir := (probe_screen - player_screen).normalized()
