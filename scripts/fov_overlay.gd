@@ -11,8 +11,9 @@ extends CanvasLayer
 @export var fov_degrees: float = 145.0
 @export var view_distance: float = 50.0
 ## World-unit distance to move the cone apex behind the player so the
-## character model is fully visible inside the sector.
-@export var center_back_offset: float = 3.0
+## character model is fully visible inside the sector. Keep this just large
+## enough to cover the player's half-depth — any more looks unnatural.
+@export var center_back_offset: float = 1.0
 
 const ARC_SEGMENTS := 32
 const N_VERTS := ARC_SEGMENTS + 2  # 1 center + (ARC_SEGMENTS + 1) arc pts = 34
