@@ -3,15 +3,22 @@ extends CanvasLayer
 ## Inventory screen (I key).
 ## Left half: full-body character view with equipment slots.
 ## Right half: backpack inventory grid.
+## All sizes scale proportionally with viewport resolution.
 
 signal inventory_closed
 
-const SLOT_SIZE := 56.0
-const SLOT_GAP := 6.0
+# Base design values (for 720p). Scaled by _ui_scale().
+const BASE_SLOT_SIZE := 56.0
+const BASE_SLOT_GAP := 6.0
 const GRID_COLS := 6
 const GRID_ROWS := 5
-const SECTION_FONT := 16
-const LABEL_FONT := 12
+const BASE_SECTION_FONT := 16
+const BASE_LABEL_FONT := 12
+const BASE_HINT_FONT := 12
+const BASE_MARGIN := 20.0
+const BASE_INNER_MARGIN := 16.0
+const BASE_SEPARATION := 8.0
+
 const SLOT_BG := Color(0.18, 0.18, 0.22, 0.85)
 const SLOT_BORDER := Color(0.40, 0.40, 0.45, 0.7)
 const PANEL_BG := Color(0.08, 0.08, 0.10, 0.92)
@@ -32,7 +39,18 @@ func _ready() -> void:
 	_build_ui()
 	visible = true
 
+func _ui_scale() -> float:
+	var viewport_h: float = get_viewport().get_visible_rect().size.y
+	return viewport_h / 720.0
+
 func _build_ui() -> void:
+	var s := _ui_scale()
+	var slot_size := BASE_SLOT_SIZE * s
+	var slot_gap := BASE_SLOT_GAP * s
+	var margin := BASE_MARGIN * s
+	var inner_margin := int(BASE_INNER_MARGIN * s)
+	var separation := int(BASE_SEPARATION * s)
+
 	# Dim background
 	var dim := ColorRect.new()
 	dim.color = Color(0.0, 0.0, 0.0, 0.50)
@@ -43,35 +61,35 @@ func _build_ui() -> void:
 	# Main split container
 	var root := HBoxContainer.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
-	root.set_anchor_and_offset(SIDE_LEFT, 0.0, 20)
-	root.set_anchor_and_offset(SIDE_RIGHT, 1.0, -20)
-	root.set_anchor_and_offset(SIDE_TOP, 0.0, 20)
-	root.set_anchor_and_offset(SIDE_BOTTOM, 1.0, -20)
-	root.add_theme_constant_override("separation", 16)
+	root.set_anchor_and_offset(SIDE_LEFT, 0.0, margin)
+	root.set_anchor_and_offset(SIDE_RIGHT, 1.0, -margin)
+	root.set_anchor_and_offset(SIDE_TOP, 0.0, margin)
+	root.set_anchor_and_offset(SIDE_BOTTOM, 1.0, -margin)
+	root.add_theme_constant_override("separation", int(16 * s))
 	add_child(root)
 
 	# ---- LEFT HALF: Character view ----
-	var left_panel := _create_panel()
+	var left_panel := _create_panel(s)
 	left_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left_panel.size_flags_stretch_ratio = 1.0
 	root.add_child(left_panel)
 
 	var left_content := MarginContainer.new()
-	left_content.add_theme_constant_override("margin_left", 16)
-	left_content.add_theme_constant_override("margin_right", 16)
-	left_content.add_theme_constant_override("margin_top", 16)
-	left_content.add_theme_constant_override("margin_bottom", 16)
+	left_content.add_theme_constant_override("margin_left", inner_margin)
+	left_content.add_theme_constant_override("margin_right", inner_margin)
+	left_content.add_theme_constant_override("margin_top", inner_margin)
+	left_content.add_theme_constant_override("margin_bottom", inner_margin)
 	left_panel.add_child(left_content)
 
 	var left_vbox := VBoxContainer.new()
-	left_vbox.add_theme_constant_override("separation", 8)
+	left_vbox.add_theme_constant_override("separation", separation)
 	left_content.add_child(left_vbox)
 
 	# Title
 	var char_title := Label.new()
 	char_title.text = "CHARACTER"
 	char_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	char_title.add_theme_font_size_override("font_size", SECTION_FONT)
+	char_title.add_theme_font_size_override("font_size", int(BASE_SECTION_FONT * s))
 	char_title.add_theme_color_override("font_color", Color(0.85, 0.80, 0.65))
 	left_vbox.add_child(char_title)
 
@@ -85,83 +103,87 @@ func _build_ui() -> void:
 
 	# Equipment slots positioned around the silhouette
 	for slot_info in EQUIP_SLOTS:
-		_add_equip_slot(char_area, slot_info)
+		_add_equip_slot(char_area, slot_info, slot_size, s)
 
 	# ---- RIGHT HALF: Inventory grid ----
-	var right_panel := _create_panel()
+	var right_panel := _create_panel(s)
 	right_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right_panel.size_flags_stretch_ratio = 1.0
 	root.add_child(right_panel)
 
 	var right_content := MarginContainer.new()
-	right_content.add_theme_constant_override("margin_left", 16)
-	right_content.add_theme_constant_override("margin_right", 16)
-	right_content.add_theme_constant_override("margin_top", 16)
-	right_content.add_theme_constant_override("margin_bottom", 16)
+	right_content.add_theme_constant_override("margin_left", inner_margin)
+	right_content.add_theme_constant_override("margin_right", inner_margin)
+	right_content.add_theme_constant_override("margin_top", inner_margin)
+	right_content.add_theme_constant_override("margin_bottom", inner_margin)
 	right_panel.add_child(right_content)
 
 	var right_vbox := VBoxContainer.new()
-	right_vbox.add_theme_constant_override("separation", 8)
+	right_vbox.add_theme_constant_override("separation", separation)
 	right_content.add_child(right_vbox)
 
 	# Title
 	var inv_title := Label.new()
 	inv_title.text = "BACKPACK"
 	inv_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	inv_title.add_theme_font_size_override("font_size", SECTION_FONT)
+	inv_title.add_theme_font_size_override("font_size", int(BASE_SECTION_FONT * s))
 	inv_title.add_theme_color_override("font_color", Color(0.85, 0.80, 0.65))
 	right_vbox.add_child(inv_title)
 
 	# Grid container for inventory slots
 	var grid := GridContainer.new()
 	grid.columns = GRID_COLS
-	grid.add_theme_constant_override("h_separation", int(SLOT_GAP))
-	grid.add_theme_constant_override("v_separation", int(SLOT_GAP))
+	grid.add_theme_constant_override("h_separation", int(slot_gap))
+	grid.add_theme_constant_override("v_separation", int(slot_gap))
 	grid.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right_vbox.add_child(grid)
 
 	for i in range(GRID_COLS * GRID_ROWS):
-		var slot := _create_slot(SLOT_BG)
+		var slot := _create_slot(SLOT_BG, slot_size, s)
 		grid.add_child(slot)
 
 	# Hint label
 	var hint := Label.new()
 	hint.text = "Press 'I' to close"
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_font_size_override("font_size", int(BASE_HINT_FONT * s))
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	right_vbox.add_child(hint)
 
-func _create_panel() -> PanelContainer:
+func _create_panel(s: float) -> PanelContainer:
 	var panel := PanelContainer.new()
 	var style := StyleBoxFlat.new()
 	style.bg_color = PANEL_BG
-	style.corner_radius_top_left = 8
-	style.corner_radius_top_right = 8
-	style.corner_radius_bottom_left = 8
-	style.corner_radius_bottom_right = 8
+	var r := int(8 * s)
+	style.corner_radius_top_left = r
+	style.corner_radius_top_right = r
+	style.corner_radius_bottom_left = r
+	style.corner_radius_bottom_right = r
+	var bw := int(max(1, 1 * s))
 	style.border_color = Color(0.30, 0.30, 0.35, 0.6)
-	style.border_width_left = 1
-	style.border_width_right = 1
-	style.border_width_top = 1
-	style.border_width_bottom = 1
+	style.border_width_left = bw
+	style.border_width_right = bw
+	style.border_width_top = bw
+	style.border_width_bottom = bw
 	panel.add_theme_stylebox_override("panel", style)
 	return panel
 
-func _create_slot(bg_color: Color) -> PanelContainer:
+func _create_slot(bg_color: Color, slot_size: float, s: float) -> PanelContainer:
 	var slot := PanelContainer.new()
-	slot.custom_minimum_size = Vector2(SLOT_SIZE, SLOT_SIZE)
+	slot.custom_minimum_size = Vector2(slot_size, slot_size)
 	var style := StyleBoxFlat.new()
 	style.bg_color = bg_color
-	style.corner_radius_top_left = 4
-	style.corner_radius_top_right = 4
-	style.corner_radius_bottom_left = 4
-	style.corner_radius_bottom_right = 4
+	var r := int(4 * s)
+	style.corner_radius_top_left = r
+	style.corner_radius_top_right = r
+	style.corner_radius_bottom_left = r
+	style.corner_radius_bottom_right = r
+	var bw := int(max(1, 1 * s))
 	style.border_color = SLOT_BORDER
-	style.border_width_left = 1
-	style.border_width_right = 1
-	style.border_width_top = 1
-	style.border_width_bottom = 1
+	style.border_width_left = bw
+	style.border_width_right = bw
+	style.border_width_top = bw
+	style.border_width_bottom = bw
 	slot.add_theme_stylebox_override("panel", style)
 	return slot
 
@@ -179,7 +201,7 @@ func _draw_character_silhouette(parent: Control) -> void:
 		var body_color := Color(0.28, 0.42, 0.22, 0.6)
 		var skin_color := Color(0.89, 0.73, 0.58, 0.6)
 
-		# Head (circle approximated by a square with rounded corners)
+		# Head
 		var head := ColorRect.new()
 		head.color = skin_color
 		head.size = Vector2(h * 0.12, h * 0.12)
@@ -243,20 +265,19 @@ func _draw_character_silhouette(parent: Control) -> void:
 		parent.add_child(rfoot)
 	)
 
-func _add_equip_slot(parent: Control, slot_info: Dictionary) -> void:
-	# We need to position after parent is sized
+func _add_equip_slot(parent: Control, slot_info: Dictionary, slot_size: float, s: float) -> void:
 	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 2)
+	container.add_theme_constant_override("separation", int(2 * s))
 	container.set_meta("equip_slot", true)
 	parent.add_child(container)
 
-	var slot := _create_slot(EQUIP_SLOT_BG)
+	var slot := _create_slot(EQUIP_SLOT_BG, slot_size, s)
 	container.add_child(slot)
 
 	var label := Label.new()
 	label.text = slot_info["name"]
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", LABEL_FONT)
+	label.add_theme_font_size_override("font_size", int(BASE_LABEL_FONT * s))
 	label.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
 	container.add_child(label)
 
@@ -266,7 +287,7 @@ func _add_equip_slot(parent: Control, slot_info: Dictionary) -> void:
 		var w := parent.size.x
 		var h := parent.size.y
 		container.position = Vector2(
-			w * offset.x - SLOT_SIZE * 0.5,
-			h * offset.y - SLOT_SIZE * 0.5
+			w * offset.x - slot_size * 0.5,
+			h * offset.y - slot_size * 0.5
 		)
 	)

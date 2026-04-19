@@ -59,10 +59,12 @@ func _build_model() -> void:
 	_model.position.y = _base_y
 	add_child(_model)
 
-	if weapon_type == "pistol":
-		_build_pistol_model()
-	elif weapon_type == "shotgun":
-		_build_shotgun_model()
+	match weapon_type:
+		"pistol": _build_pistol_model()
+		"shotgun": _build_shotgun_model()
+		"smg": _build_smg_model()
+		"grenade_launcher": _build_grenade_launcher_model()
+		"bat": _build_bat_model()
 
 func _build_pistol_model() -> void:
 	var grip_mat := StandardMaterial3D.new()
@@ -144,12 +146,86 @@ func _build_shotgun_model() -> void:
 		barrel.rotation_degrees = Vector3(90, 0, 0)
 		_model.add_child(barrel)
 
+func _build_smg_model() -> void:
+	var body_mat := StandardMaterial3D.new()
+	body_mat.albedo_color = Color(0.20, 0.20, 0.22, 1)
+	var body_mesh := BoxMesh.new()
+	body_mesh.size = Vector3(0.09, 0.12, 0.36)
+	body_mesh.material = body_mat
+	var body_mi := MeshInstance3D.new()
+	body_mi.mesh = body_mesh
+	body_mi.position = Vector3(0.0, 0.04, 0.06)
+	_model.add_child(body_mi)
+
+	var mag_mat := StandardMaterial3D.new()
+	mag_mat.albedo_color = Color(0.15, 0.15, 0.15, 1)
+	var mag_mesh := BoxMesh.new()
+	mag_mesh.size = Vector3(0.06, 0.18, 0.08)
+	mag_mesh.material = mag_mat
+	var mag := MeshInstance3D.new()
+	mag.mesh = mag_mesh
+	mag.position = Vector3(0.0, -0.10, 0.06)
+	_model.add_child(mag)
+
+func _build_grenade_launcher_model() -> void:
+	var body_mat := StandardMaterial3D.new()
+	body_mat.albedo_color = Color(0.28, 0.30, 0.22, 1)
+	var body_mesh := BoxMesh.new()
+	body_mesh.size = Vector3(0.12, 0.12, 0.24)
+	body_mesh.material = body_mat
+	var body_mi := MeshInstance3D.new()
+	body_mi.mesh = body_mesh
+	body_mi.position = Vector3(0.0, 0.0, -0.02)
+	_model.add_child(body_mi)
+
+	var barrel_mat := StandardMaterial3D.new()
+	barrel_mat.albedo_color = Color(0.15, 0.16, 0.14, 1)
+	var barrel_mesh := CylinderMesh.new()
+	barrel_mesh.top_radius = 0.05
+	barrel_mesh.bottom_radius = 0.05
+	barrel_mesh.height = 0.26
+	barrel_mesh.material = barrel_mat
+	var barrel := MeshInstance3D.new()
+	barrel.mesh = barrel_mesh
+	barrel.position = Vector3(0.0, 0.02, 0.18)
+	barrel.rotation_degrees = Vector3(90, 0, 0)
+	_model.add_child(barrel)
+
+func _build_bat_model() -> void:
+	var handle_mat := StandardMaterial3D.new()
+	handle_mat.albedo_color = Color(0.15, 0.12, 0.08, 1)
+	var handle_mesh := CylinderMesh.new()
+	handle_mesh.top_radius = 0.025
+	handle_mesh.bottom_radius = 0.03
+	handle_mesh.height = 0.30
+	handle_mesh.material = handle_mat
+	var handle := MeshInstance3D.new()
+	handle.mesh = handle_mesh
+	handle.position = Vector3(0.0, -0.05, 0.0)
+	_model.add_child(handle)
+
+	var barrel_mat := StandardMaterial3D.new()
+	barrel_mat.albedo_color = Color(0.50, 0.35, 0.18, 1)
+	var barrel_mesh := CylinderMesh.new()
+	barrel_mesh.top_radius = 0.04
+	barrel_mesh.bottom_radius = 0.03
+	barrel_mesh.height = 0.50
+	barrel_mesh.material = barrel_mat
+	var barrel := MeshInstance3D.new()
+	barrel.mesh = barrel_mesh
+	barrel.position = Vector3(0.0, 0.30, 0.0)
+	_model.add_child(barrel)
+
 func _build_glow() -> void:
 	var glow_mat := StandardMaterial3D.new()
-	if weapon_type == "pistol":
-		glow_mat.albedo_color = Color(0.3, 0.6, 1.0, 0.35)
-	else:
-		glow_mat.albedo_color = Color(1.0, 0.5, 0.2, 0.35)
+	var glow_colors := {
+		"pistol": Color(0.3, 0.6, 1.0, 0.35),
+		"shotgun": Color(1.0, 0.5, 0.2, 0.35),
+		"smg": Color(0.4, 1.0, 0.4, 0.35),
+		"grenade_launcher": Color(1.0, 0.3, 0.1, 0.35),
+		"bat": Color(0.8, 0.6, 0.2, 0.35),
+	}
+	glow_mat.albedo_color = glow_colors.get(weapon_type, Color(0.5, 0.5, 0.5, 0.35))
 	glow_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	glow_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	glow_mat.no_depth_test = false
