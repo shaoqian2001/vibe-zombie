@@ -13,18 +13,7 @@ extends Node3D
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
-
-# Map rim spawn positions (near edges of the 152×152m map)
-const RIM_SPAWN_CANDIDATES := [
-	Vector3( 70.0, 0.5,  0.0),
-	Vector3(-70.0, 0.5,  0.0),
-	Vector3(  0.0, 0.5,  70.0),
-	Vector3(  0.0, 0.5, -70.0),
-	Vector3( 65.0, 0.5,  65.0),
-	Vector3(-65.0, 0.5,  65.0),
-	Vector3( 65.0, 0.5, -65.0),
-	Vector3(-65.0, 0.5, -65.0),
-]
+const MapView = preload("res://scripts/map_view.gd")
 
 const BUILDING_TYPE_NAMES := [
 	"Convenience Store",
@@ -37,15 +26,16 @@ const BUILDING_TYPE_NAMES := [
 const DOOR_ANIM_DURATION := 0.4
 const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 
-# Enemy spawning constants (matching world.gd dimensions)
-const BASE_ENEMY_COUNT := 50
+# Enemy spawning — density scales with map area so larger worlds feel populated
+# without exploding the entity count.
+const ENEMIES_PER_BLOCK := 2.0
 const HOTSPOT_ENEMY_COUNT := 8  # extra zombies near each mission building
 const ENEMY_BLOCK_SIZE := 26.0
 const ENEMY_ROAD_WIDTH := 4.0
 const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
 
-# Weapon pickup spawning
-const WEAPON_PICKUP_COUNT := 12
+# Weapon pickup spawning — density scales with map size as well
+const WEAPON_PICKUPS_PER_BLOCK := 0.5
 const WEAPON_PICKUP_MIN_DIST := 15.0
 
 @onready var player: CharacterBody3D = $Player
@@ -59,6 +49,8 @@ var _game_manual: CanvasLayer = null
 var _inventory: CanvasLayer = null
 var _manual_open: bool = false
 var _inventory_open: bool = false
+var _map_view: CanvasLayer = null
+var _map_open: bool = false
 
 # State
 var _nearby_building: Dictionary = {}   # building whose door area the player overlaps
@@ -87,8 +79,9 @@ func _ready() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 
-	# Spawn player near map rim
-	var spawn_pos: Vector3 = RIM_SPAWN_CANDIDATES[rng.randi() % RIM_SPAWN_CANDIDATES.size()]
+	# Spawn player near map rim — positions derived from the world's actual size
+	var rim_candidates := _build_rim_spawn_candidates()
+	var spawn_pos: Vector3 = rim_candidates[rng.randi() % rim_candidates.size()]
 	player.global_position = spawn_pos
 
 	camera.set_target(player)
@@ -127,7 +120,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("inventory"):
 		_toggle_inventory()
 		return
-	if _manual_open or _inventory_open:
+	if event.is_action_pressed("map"):
+		_toggle_map()
+		return
+	if _manual_open or _inventory_open or _map_open:
 		return  # block other input while overlay is open
 	if event.is_action_pressed("interact"):
 		_handle_interact()
@@ -158,6 +154,8 @@ func _rebuild_hud() -> void:
 func _toggle_game_manual() -> void:
 	if _inventory_open:
 		_close_inventory()
+	if _map_open:
+		_close_map()
 	if _manual_open:
 		_close_game_manual()
 	else:
@@ -203,17 +201,64 @@ func _close_inventory() -> void:
 		_inventory = null
 
 # ------------------------------------------------------------------
+# Map overlay (M)
+# ------------------------------------------------------------------
+
+func _toggle_map() -> void:
+	if _manual_open or _inventory_open:
+		return
+	if _map_open:
+		_close_map()
+	else:
+		_open_map()
+
+func _open_map() -> void:
+	_map_open = true
+	_map_view = CanvasLayer.new()
+	_map_view.set_script(MapView)
+	_map_view.name = "MapView"
+	add_child(_map_view)
+	_map_view.configure(world, player, _pickup_building, _delivery_building, _has_package)
+
+func _close_map() -> void:
+	_map_open = false
+	if _map_view:
+		_map_view.queue_free()
+		_map_view = null
+
+# ------------------------------------------------------------------
+# Rim spawn candidates — positions just inside each edge of the map
+# ------------------------------------------------------------------
+
+func _build_rim_spawn_candidates() -> Array:
+	var extent: float = world.num_blocks * world.CELL_SIZE * 0.5 - 4.0
+	var diag: float = extent * 0.9
+	return [
+		Vector3( extent, 0.5,  0.0),
+		Vector3(-extent, 0.5,  0.0),
+		Vector3(  0.0,   0.5,  extent),
+		Vector3(  0.0,   0.5, -extent),
+		Vector3( diag,   0.5,  diag),
+		Vector3(-diag,   0.5,  diag),
+		Vector3( diag,   0.5, -diag),
+		Vector3(-diag,   0.5, -diag),
+	]
+
+# ------------------------------------------------------------------
 # Enemy spawning
 # ------------------------------------------------------------------
 
 func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var enemy_script := preload("res://scripts/enemy.gd")
-	var total := ENEMY_CELL_SIZE * 5  # NUM_BLOCKS = 5
+	var nb: int = world.num_blocks
+	var total := ENEMY_CELL_SIZE * nb
 	var grid_origin := -total * 0.5
 	var idx := 0
 
+	var base_enemy_count := int(ENEMIES_PER_BLOCK * nb * nb)
+
 	# Base enemies spread across the map
-	for i in range(BASE_ENEMY_COUNT):
+	for i in range(base_enemy_count):
 		var pos := _random_walkable_pos(rng, grid_origin)
 		if pos.distance_to(player.global_position) < 8.0:
 			pos = _random_walkable_pos(rng, grid_origin)
@@ -262,8 +307,9 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 			idx += 1
 
 func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vector3:
-	var block_col := rng.randi_range(0, 4)
-	var block_row := rng.randi_range(0, 4)
+	var last_block: int = world.num_blocks - 1
+	var block_col := rng.randi_range(0, last_block)
+	var block_row := rng.randi_range(0, last_block)
 	var bx := grid_origin + block_col * ENEMY_CELL_SIZE
 	var bz := grid_origin + block_row * ENEMY_CELL_SIZE
 
@@ -288,12 +334,15 @@ func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vec
 # ------------------------------------------------------------------
 
 func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
-	var total := ENEMY_CELL_SIZE * 5
+	var nb: int = world.num_blocks
+	var total := ENEMY_CELL_SIZE * nb
 	var grid_origin := -total * 0.5
 	var placed_positions: Array[Vector3] = []
 	var weapon_types := ["pistol", "shotgun"]
 
-	for i in range(WEAPON_PICKUP_COUNT):
+	var pickup_count := int(WEAPON_PICKUPS_PER_BLOCK * nb * nb)
+
+	for i in range(pickup_count):
 		var pos := Vector3.ZERO
 		var valid := false
 
