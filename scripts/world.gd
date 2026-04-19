@@ -81,6 +81,8 @@ func _generate_ground() -> void:
 
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = GRASS_COLOR
+	mat.roughness = 0.95
+	mat.metallic = 0.0
 
 	var mesh := PlaneMesh.new()
 	mesh.size = Vector2(size, size)
@@ -227,8 +229,17 @@ func _populate_block(bx: float, bz: float) -> void:
 			_create_building(Vector3(cx, bh * 0.5, cz), bw, bh, bd, color, btype, bx, bz)
 
 func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, btype: int, block_x: float, block_z: float) -> void:
+	var tint_offset := _rng.randf_range(-0.04, 0.04)
+	var tinted := Color(
+		clampf(color.r + tint_offset, 0.0, 1.0),
+		clampf(color.g + tint_offset, 0.0, 1.0),
+		clampf(color.b + tint_offset, 0.0, 1.0)
+	)
+
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
+	mat.albedo_color = tinted
+	mat.roughness = 0.75
+	mat.metallic = 0.05
 
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(w, h, d)
@@ -248,6 +259,8 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 	mi.add_child(sb)
 
 	add_child(mi)
+
+	_add_building_details(pos, w, h, d, tinted)
 
 	# --- Determine entrance side (face closest to nearest road) ---
 	var entrance_dir := _pick_entrance_side(pos, w, d, block_x, block_z)
@@ -274,6 +287,93 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 		entrance_facing = entrance_dir,
 		door_open = false,
 	})
+
+func _add_building_details(pos: Vector3, w: float, h: float, d: float, base_color: Color) -> void:
+	var ground_y := pos.y - h * 0.5
+	var window_color := Color(0.22, 0.28, 0.38, 1.0)
+	var window_mat := StandardMaterial3D.new()
+	window_mat.albedo_color = window_color
+	window_mat.roughness = 0.2
+	window_mat.metallic = 0.4
+
+	var floor_h := 3.2
+	var num_floors := int(h / floor_h)
+	var win_size := 0.6
+
+	# Windows on ±X and ±Z faces
+	for face in [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)]:
+		var face_w := d if absf(face.x) > 0.5 else w
+		var num_win := int(face_w / 2.5)
+		if num_win < 1:
+			continue
+
+		for fl in range(num_floors):
+			var y := ground_y + 1.8 + fl * floor_h
+			if y + win_size * 0.5 > pos.y + h * 0.5 - 0.3:
+				continue
+			for wi in range(num_win):
+				var t := (float(wi) + 0.5) / float(num_win) - 0.5
+				var local_off := t * (face_w - 1.0)
+
+				var wpos := pos
+				if absf(face.x) > 0.5:
+					wpos += Vector3(face.x * (w * 0.5 + 0.01), y - pos.y, local_off)
+				else:
+					wpos += Vector3(local_off, y - pos.y, face.z * (d * 0.5 + 0.01))
+
+				var wmesh := BoxMesh.new()
+				if absf(face.x) > 0.5:
+					wmesh.size = Vector3(0.02, win_size, win_size * 0.8)
+				else:
+					wmesh.size = Vector3(win_size * 0.8, win_size, 0.02)
+				wmesh.material = window_mat
+
+				var wmi := MeshInstance3D.new()
+				wmi.mesh = wmesh
+				wmi.position = wpos
+				wmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				add_child(wmi)
+
+	# Rooftop ledge
+	var ledge_color := Color(
+		clampf(base_color.r - 0.1, 0.0, 1.0),
+		clampf(base_color.g - 0.1, 0.0, 1.0),
+		clampf(base_color.b - 0.1, 0.0, 1.0)
+	)
+	var ledge_mat := StandardMaterial3D.new()
+	ledge_mat.albedo_color = ledge_color
+	ledge_mat.roughness = 0.8
+	var ledge_mesh := BoxMesh.new()
+	ledge_mesh.size = Vector3(w + 0.3, 0.2, d + 0.3)
+	ledge_mesh.material = ledge_mat
+	var ledge := MeshInstance3D.new()
+	ledge.mesh = ledge_mesh
+	ledge.position = Vector3(pos.x, pos.y + h * 0.5 + 0.1, pos.z)
+	add_child(ledge)
+
+	# Horizontal trim line at mid-height
+	if num_floors >= 2:
+		var trim_mat := StandardMaterial3D.new()
+		trim_mat.albedo_color = ledge_color
+		trim_mat.roughness = 0.8
+		var trim_y := ground_y + floor_h
+		for face in [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)]:
+			var face_w2 := d if absf(face.x) > 0.5 else w
+			var tmesh := BoxMesh.new()
+			if absf(face.x) > 0.5:
+				tmesh.size = Vector3(0.06, 0.12, face_w2 + 0.1)
+			else:
+				tmesh.size = Vector3(face_w2 + 0.1, 0.12, 0.06)
+			tmesh.material = trim_mat
+			var tmi := MeshInstance3D.new()
+			tmi.mesh = tmesh
+			tmi.position = Vector3(
+				pos.x + face.x * (w * 0.5 + 0.03),
+				trim_y,
+				pos.z + face.z * (d * 0.5 + 0.03)
+			)
+			tmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(tmi)
 
 ## Pick the building face closest to the edge of the block (nearest road).
 func _pick_entrance_side(pos: Vector3, w: float, d: float, block_x: float, block_z: float) -> Vector3:
@@ -386,6 +486,8 @@ func _create_entrance_area(entrance_pos: Vector3, facing: Vector3) -> Area3D:
 func _create_flat_quad(pos: Vector3, w: float, d: float, color: Color) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
+	mat.roughness = 0.85 if color == ROAD_COLOR else 0.9
+	mat.metallic = 0.0
 
 	var mesh := PlaneMesh.new()
 	mesh.size = Vector2(w, d)
@@ -401,21 +503,52 @@ func _create_flat_quad(pos: Vector3, w: float, d: float, color: Color) -> void:
 # ------------------------------------------------------------------
 
 func _add_sun_and_sky() -> void:
-	# Directional "sun" light
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
 	sun.rotation_degrees = Vector3(-52.0, 38.0, 0.0)
-	sun.light_energy = 1.6
+	sun.light_energy = 1.4
 	sun.shadow_enabled = true
+	sun.shadow_bias = 0.06
+	sun.directional_shadow_max_distance = 120.0
 	add_child(sun)
 
-	# Environment / sky
+	# Fill light from opposite side for softer shadows
+	var fill := DirectionalLight3D.new()
+	fill.name = "FillLight"
+	fill.rotation_degrees = Vector3(-30.0, -140.0, 0.0)
+	fill.light_energy = 0.35
+	fill.light_color = Color(0.75, 0.82, 1.0)
+	fill.shadow_enabled = false
+	add_child(fill)
+
+	var sky_mat := ProceduralSkyMaterial.new()
+	sky_mat.sky_top_color = Color(0.35, 0.55, 0.85)
+	sky_mat.sky_horizon_color = Color(0.65, 0.75, 0.90)
+	sky_mat.ground_bottom_color = Color(0.22, 0.20, 0.18)
+	sky_mat.ground_horizon_color = Color(0.55, 0.55, 0.50)
+	sky_mat.sun_angle_max = 30.0
+
+	var sky := Sky.new()
+	sky.sky_material = sky_mat
+
 	var env := Environment.new()
-	env.background_mode      = Environment.BG_COLOR
-	env.background_color     = Color(0.55, 0.65, 0.80)  # hazy overcast blue
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color  = Color(0.40, 0.42, 0.50)
-	env.ambient_light_energy = 0.7
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	env.ambient_light_energy = 0.5
+
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.65, 0.72, 0.82)
+	env.fog_density = 0.003
+	env.fog_sky_affect = 0.4
+
+	env.ssao_enabled = true
+	env.ssao_radius = 2.0
+	env.ssao_intensity = 1.5
+
+	env.glow_enabled = true
+	env.glow_intensity = 0.3
+	env.glow_bloom = 0.1
 
 	var we := WorldEnvironment.new()
 	we.environment = env

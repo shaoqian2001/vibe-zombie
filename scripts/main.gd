@@ -15,6 +15,8 @@ const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
 const MapView = preload("res://scripts/map_view.gd")
 
+const DEV_MODE := true
+
 const BUILDING_TYPE_NAMES := [
 	"Convenience Store",
 	"Apartment",
@@ -26,10 +28,12 @@ const BUILDING_TYPE_NAMES := [
 const DOOR_ANIM_DURATION := 0.4
 const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 
-# Enemy spawning — density scales with map area so larger worlds feel populated
-# without exploding the entity count.
-const ENEMIES_PER_BLOCK := 2.0
-const HOTSPOT_ENEMY_COUNT := 8  # extra zombies near each mission building
+# Enemy spawning — base density scales with map area so larger worlds feel populated
+# without exploding the entity count. DEV_MODE keeps the playtest count tiny.
+const ENEMIES_PER_BLOCK_NORMAL := 2.0
+const ENEMIES_PER_BLOCK_DEV := 0.2
+const HOTSPOT_ENEMY_COUNT_NORMAL := 8
+const HOTSPOT_ENEMY_COUNT_DEV := 2
 const ENEMY_BLOCK_SIZE := 26.0
 const ENEMY_ROAD_WIDTH := 4.0
 const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
@@ -89,16 +93,19 @@ func _ready() -> void:
 	_create_ui()
 	_setup_hud()
 
+	if DEV_MODE:
+		player.god_mode = true
+		if _hud and _hud.has_method("show_dev_mode"):
+			_hud.show_dev_mode()
+
 	await get_tree().process_frame
 
-	# Set up mission (requires buildings to be generated)
 	_setup_mission(rng)
 
 	_spawn_enemies(rng)
 	_spawn_weapon_pickups(rng)
 	_connect_entrance_areas()
 
-	# Connect player death
 	player.died.connect(_on_player_died)
 
 func _process(delta: float) -> void:
@@ -255,10 +262,12 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var grid_origin := -total * 0.5
 	var idx := 0
 
-	var base_enemy_count := int(ENEMIES_PER_BLOCK * nb * nb)
+	var per_block: float = ENEMIES_PER_BLOCK_DEV if DEV_MODE else ENEMIES_PER_BLOCK_NORMAL
+	var base_count := int(per_block * nb * nb)
+	var hotspot_count := HOTSPOT_ENEMY_COUNT_DEV if DEV_MODE else HOTSPOT_ENEMY_COUNT_NORMAL
 
 	# Base enemies spread across the map
-	for i in range(base_enemy_count):
+	for i in range(base_count):
 		var pos := _random_walkable_pos(rng, grid_origin)
 		if pos.distance_to(player.global_position) < 8.0:
 			pos = _random_walkable_pos(rng, grid_origin)
@@ -270,10 +279,9 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 		add_child(enemy)
 		idx += 1
 
-	# Extra enemies near pickup building
 	if not _pickup_building.is_empty():
 		var pickup_pos: Vector3 = _pickup_building.node.position
-		for i in range(HOTSPOT_ENEMY_COUNT):
+		for i in range(hotspot_count):
 			var pos := Vector3(
 				pickup_pos.x + rng.randf_range(-8.0, 8.0),
 				0.5,
@@ -288,10 +296,9 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 			add_child(enemy)
 			idx += 1
 
-	# Extra enemies near delivery building
 	if not _delivery_building.is_empty():
 		var delivery_pos: Vector3 = _delivery_building.node.position
-		for i in range(HOTSPOT_ENEMY_COUNT):
+		for i in range(hotspot_count):
 			var pos := Vector3(
 				delivery_pos.x + rng.randf_range(-8.0, 8.0),
 				0.5,
@@ -338,7 +345,7 @@ func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 	var total := ENEMY_CELL_SIZE * nb
 	var grid_origin := -total * 0.5
 	var placed_positions: Array[Vector3] = []
-	var weapon_types := ["pistol", "shotgun"]
+	var weapon_types := ["pistol", "shotgun", "smg", "grenade_launcher", "bat"]
 
 	var pickup_count := int(WEAPON_PICKUPS_PER_BLOCK * nb * nb)
 
