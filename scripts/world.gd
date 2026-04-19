@@ -6,12 +6,19 @@ extends Node3D
 ## Each block is filled with randomly-sized buildings.
 ## A ground plane (grass) underlies everything, and a sun + sky environment is created.
 
-const MAP_HALF       := 76.0   # Half-extent of the entire map (metres)
 const BLOCK_SIZE     := 26.0   # Width/depth of one city block
 const ROAD_WIDTH     := 4.0    # Width of a road between blocks
 const CELL_SIZE      := BLOCK_SIZE + ROAD_WIDTH  # Distance from block edge to next block edge
 
-const NUM_BLOCKS     := 5      # Number of blocks per axis (5×5 grid)
+## Number of blocks per axis (NxN grid). Exposed so future UI/settings can tune map size.
+## Keeps the map roughly square. Higher values produce a larger world at proportionally
+## higher memory cost (buildings scale with NUM_BLOCKS²).
+@export var num_blocks: int = 9
+
+## Derived half-extent of the entire map in metres (includes a 1m boundary margin).
+var map_half: float:
+	get:
+		return num_blocks * CELL_SIZE * 0.5 + 1.0
 
 # Building type → height category
 # Short types (single ground floor): Convenience Store, Warehouse, Diner
@@ -70,7 +77,7 @@ func _ready() -> void:
 # ------------------------------------------------------------------
 
 func _generate_ground() -> void:
-	var size := MAP_HALF * 2.0
+	var size := map_half * 2.0
 
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = GRASS_COLOR
@@ -101,7 +108,7 @@ func _generate_ground() -> void:
 func _generate_boundary_walls() -> void:
 	var wall_h := 10.0
 	var wall_thickness := 1.0
-	var extent := MAP_HALF
+	var extent := map_half
 	# Four walls: +X, -X, +Z, -Z
 	var walls := [
 		Vector3(extent + wall_thickness * 0.5, wall_h * 0.5, 0.0),   # +X
@@ -130,11 +137,11 @@ func _generate_boundary_walls() -> void:
 # ------------------------------------------------------------------
 
 func _generate_city_grid() -> void:
-	var total := NUM_BLOCKS * CELL_SIZE
+	var total := num_blocks * CELL_SIZE
 	var origin := Vector3(-total * 0.5, 0.0, -total * 0.5)
 
-	for row in range(NUM_BLOCKS):
-		for col in range(NUM_BLOCKS):
+	for row in range(num_blocks):
+		for col in range(num_blocks):
 			var bx := origin.x + col * CELL_SIZE
 			var bz := origin.z + row * CELL_SIZE
 
