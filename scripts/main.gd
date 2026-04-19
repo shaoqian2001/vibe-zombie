@@ -14,6 +14,7 @@ extends Node3D
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
 const MapView = preload("res://scripts/map_view.gd")
+const FovOverlay = preload("res://scripts/fov_overlay.gd")
 
 const DEV_MODE := true
 
@@ -55,6 +56,7 @@ var _manual_open: bool = false
 var _inventory_open: bool = false
 var _map_view: CanvasLayer = null
 var _map_open: bool = false
+var _fov_overlay: CanvasLayer = null
 
 # State
 var _nearby_building: Dictionary = {}   # building whose door area the player overlaps
@@ -83,12 +85,19 @@ func _ready() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 
+	# FOV overlay added first so it renders below the HUD/UI CanvasLayers
+	_fov_overlay = CanvasLayer.new()
+	_fov_overlay.set_script(FovOverlay)
+	_fov_overlay.name = "FovOverlay"
+	add_child(_fov_overlay)
+
 	# Spawn player near map rim — positions derived from the world's actual size
 	var rim_candidates := _build_rim_spawn_candidates()
 	var spawn_pos: Vector3 = rim_candidates[rng.randi() % rim_candidates.size()]
 	player.global_position = spawn_pos
 
 	camera.set_target(player)
+	_fov_overlay.configure(player, camera)
 	player.add_to_group("player")
 	_create_ui()
 	_setup_hud()
