@@ -15,6 +15,8 @@ const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
 const MapView = preload("res://scripts/map_view.gd")
 const FovOverlay = preload("res://scripts/fov_overlay.gd")
+const MissionSystem = preload("res://scripts/mission_system.gd")
+const DebugPanel = preload("res://scripts/debug_panel.gd")
 
 const DEV_MODE := true
 
@@ -33,8 +35,6 @@ const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 # without exploding the entity count. DEV_MODE keeps the playtest count tiny.
 const ENEMIES_PER_BLOCK_NORMAL := 2.0
 const ENEMIES_PER_BLOCK_DEV := 0.2
-const HOTSPOT_ENEMY_COUNT_NORMAL := 8
-const HOTSPOT_ENEMY_COUNT_DEV := 2
 const ENEMY_BLOCK_SIZE := 26.0
 const ENEMY_ROAD_WIDTH := 4.0
 const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
@@ -67,19 +67,15 @@ var _showing_interior: bool = false     # whether we are showing interior view
 var _door_tween: Tween = null           # active door animation tween
 var _occluded_buildings: Array = []     # buildings currently made transparent
 
-# Mission state
-enum MissionState { ACTIVE, COMPLETE, FAILED }
-var _mission_state: int = MissionState.ACTIVE
-var _has_package: bool = false
-var _pickup_building: Dictionary = {}
-var _delivery_building: Dictionary = {}
-var _package_marker: MeshInstance3D = null
-var _delivery_marker: MeshInstance3D = null
-var _package_pickup_area: Area3D = null
-var _package_delivery_area: Area3D = null
+# Mission system
+enum GameState { PLAYING, WON, LOST }
+var _game_state: int = GameState.PLAYING
+var _mission_system: Node = null
+var _debug_panel: CanvasLayer = null
 var _objective_label: Label = null
 var _overlay_canvas: CanvasLayer = null
-var _marker_time := 0.0
+
+const MISSION_COUNT := 4
 
 func _ready() -> void:
 	var rng := RandomNumberGenerator.new()
@@ -106,10 +102,11 @@ func _ready() -> void:
 		player.god_mode = true
 		if _hud and _hud.has_method("show_dev_mode"):
 			_hud.show_dev_mode()
+		_setup_debug_panel()
 
 	await get_tree().process_frame
 
-	_setup_mission(rng)
+	_setup_mission_system(rng)
 
 	_spawn_enemies(rng)
 	_spawn_weapon_pickups(rng)
@@ -118,17 +115,25 @@ func _ready() -> void:
 	player.died.connect(_on_player_died)
 
 func _process(delta: float) -> void:
-	if _mission_state != MissionState.ACTIVE:
+	if _game_state != GameState.PLAYING:
 		return
 	_update_mouse_look()
 	_update_player_inside()
 	_update_prompt()
 	_update_interior_wall_visibility()
 	_update_building_occlusion()
-	_update_markers(delta)
+	if _mission_system:
+		_mission_system.process(delta)
+		_update_objective_label()
 
 func _unhandled_input(event: InputEvent) -> void:
-	if _mission_state != MissionState.ACTIVE:
+	# Debug panel toggle (always available in dev mode)
+	if DEV_MODE and event is InputEventKey and event.pressed and event.keycode == KEY_F3:
+		if _debug_panel:
+			_debug_panel.toggle()
+		return
+
+	if _game_state != GameState.PLAYING:
 		return
 	if event.is_action_pressed("game_manual"):
 		_toggle_game_manual()
@@ -234,7 +239,7 @@ func _open_map() -> void:
 	_map_view.set_script(MapView)
 	_map_view.name = "MapView"
 	add_child(_map_view)
-	_map_view.configure(world, player, _pickup_building, _delivery_building, _has_package)
+	_map_view.configure(world, player, {}, {}, false)
 
 func _close_map() -> void:
 	_map_open = false
@@ -273,9 +278,7 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 
 	var per_block: float = ENEMIES_PER_BLOCK_DEV if DEV_MODE else ENEMIES_PER_BLOCK_NORMAL
 	var base_count := int(per_block * nb * nb)
-	var hotspot_count := HOTSPOT_ENEMY_COUNT_DEV if DEV_MODE else HOTSPOT_ENEMY_COUNT_NORMAL
 
-	# Base enemies spread across the map
 	for i in range(base_count):
 		var pos := _random_walkable_pos(rng, grid_origin)
 		if pos.distance_to(player.global_position) < 8.0:
@@ -287,40 +290,6 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 		enemy.global_position = pos
 		add_child(enemy)
 		idx += 1
-
-	if not _pickup_building.is_empty():
-		var pickup_pos: Vector3 = _pickup_building.node.position
-		for i in range(hotspot_count):
-			var pos := Vector3(
-				pickup_pos.x + rng.randf_range(-8.0, 8.0),
-				0.5,
-				pickup_pos.z + rng.randf_range(-8.0, 8.0)
-			)
-			if pos.distance_to(player.global_position) < 6.0:
-				continue
-			var enemy := CharacterBody3D.new()
-			enemy.set_script(enemy_script)
-			enemy.name = "Enemy_%d" % idx
-			enemy.global_position = pos
-			add_child(enemy)
-			idx += 1
-
-	if not _delivery_building.is_empty():
-		var delivery_pos: Vector3 = _delivery_building.node.position
-		for i in range(hotspot_count):
-			var pos := Vector3(
-				delivery_pos.x + rng.randf_range(-8.0, 8.0),
-				0.5,
-				delivery_pos.z + rng.randf_range(-8.0, 8.0)
-			)
-			if pos.distance_to(player.global_position) < 6.0:
-				continue
-			var enemy := CharacterBody3D.new()
-			enemy.set_script(enemy_script)
-			enemy.name = "Enemy_%d" % idx
-			enemy.global_position = pos
-			add_child(enemy)
-			idx += 1
 
 func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vector3:
 	var last_block: int = world.num_blocks - 1
@@ -472,135 +441,91 @@ func _update_prompt() -> void:
 		_prompt_label.visible = false
 
 # ------------------------------------------------------------------
-# Mission setup
+# Mission system (multi-mission with sequential unlocking)
 # ------------------------------------------------------------------
 
-func _setup_mission(rng: RandomNumberGenerator) -> void:
-	var building_count: int = world.buildings.size()
-	if building_count < 2:
-		return
+func _setup_mission_system(rng: RandomNumberGenerator) -> void:
+	_mission_system = Node.new()
+	_mission_system.set_script(MissionSystem)
+	_mission_system.name = "MissionSystem"
+	add_child(_mission_system)
+	_mission_system.add_to_group("mission_system")
 
-	var pickup_idx := rng.randi() % building_count
-	var delivery_idx := rng.randi() % building_count
-	while delivery_idx == pickup_idx:
-		delivery_idx = rng.randi() % building_count
+	_mission_system.setup(self, world, player, rng)
+	_mission_system.generate_missions(MISSION_COUNT)
 
-	_pickup_building = world.buildings[pickup_idx]
-	_delivery_building = world.buildings[delivery_idx]
+	_mission_system.mission_started.connect(_on_mission_started)
+	_mission_system.mission_completed.connect(_on_mission_completed)
+	_mission_system.all_missions_completed.connect(_on_all_missions_completed)
+	_mission_system.player_rescued.connect(_on_player_rescued)
 
-	# Create package pickup area (near the entrance of the pickup building)
-	_package_pickup_area = _create_mission_area(_pickup_building.entrance_pos)
-	_package_pickup_area.body_entered.connect(func(body: Node3D) -> void:
-		if body == player and not _has_package and _mission_state == MissionState.ACTIVE:
-			_pick_up_package()
-	)
+	# Start first mission
+	_mission_system.start_next_mission()
 
-	# Create delivery area (near the entrance of the delivery building)
-	_package_delivery_area = _create_mission_area(_delivery_building.entrance_pos)
-	_package_delivery_area.body_entered.connect(func(body: Node3D) -> void:
-		if body == player and _has_package and _mission_state == MissionState.ACTIVE:
-			_deliver_package()
-	)
+func _on_mission_started(_index: int, _data: Dictionary) -> void:
+	_update_objective_label()
 
-	# Create 3D markers above mission buildings
-	_package_marker = _create_building_marker(_pickup_building, Color(0.2, 0.8, 1.0))
-	_delivery_marker = _create_building_marker(_delivery_building, Color(1.0, 0.8, 0.1))
-	_delivery_marker.visible = false  # hidden until package is picked up
+func _on_mission_completed(_index: int) -> void:
+	if _objective_label:
+		_objective_label.text = "Mission complete! Next mission incoming..."
 
-	_update_objective_text()
+func _on_all_missions_completed() -> void:
+	if _objective_label:
+		_objective_label.text = "All missions done! Get to the rescue point! (green marker)"
 
-func _create_mission_area(entrance_pos: Vector3) -> Area3D:
-	var area := Area3D.new()
-	area.name = "MissionArea"
-	var cs := CollisionShape3D.new()
-	var shp := SphereShape3D.new()
-	shp.radius = 2.5
-	cs.shape = shp
-	area.add_child(cs)
-	area.position = entrance_pos + Vector3(0.0, 1.0, 0.0)
-	add_child(area)
-	return area
-
-func _create_building_marker(binfo: Dictionary, color: Color) -> MeshInstance3D:
-	var building_node: MeshInstance3D = binfo.node
-	var bpos := building_node.position
-	var bh: float = binfo.height
-
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(color.r, color.g, color.b, 0.85)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-
-	var mesh := PrismMesh.new()
-	mesh.size = Vector3(1.2, 1.8, 1.2)
-	mesh.material = mat
-
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.position = Vector3(bpos.x, bh + 2.5, bpos.z)
-	mi.rotation_degrees.x = 180  # flip to make diamond shape
-	add_child(mi)
-	return mi
-
-func _pick_up_package() -> void:
-	_has_package = true
-	if _package_marker:
-		_package_marker.queue_free()
-		_package_marker = null
-	if _delivery_marker:
-		_delivery_marker.visible = true
-	_update_objective_text()
-
-func _deliver_package() -> void:
-	_mission_state = MissionState.COMPLETE
-	if _delivery_marker:
-		_delivery_marker.queue_free()
-		_delivery_marker = null
-	_show_mission_complete()
+func _on_player_rescued() -> void:
+	_game_state = GameState.WON
+	_show_overlay("RESCUED!", Color(0.1, 0.8, 0.2))
+	if _objective_label:
+		_objective_label.text = "You survived!"
 
 func _on_player_died() -> void:
-	_mission_state = MissionState.FAILED
-	_show_game_over()
-
-func _update_objective_text() -> void:
-	if _objective_label == null:
-		return
-	if not _has_package:
-		var btype: int = _pickup_building.get("type", 0)
-		var type_name: String = BUILDING_TYPE_NAMES[btype] if btype < BUILDING_TYPE_NAMES.size() else "Building"
-		_objective_label.text = "MISSION: Pick up the package from the " + type_name + " (blue marker)"
-	else:
-		var btype: int = _delivery_building.get("type", 0)
-		var type_name: String = BUILDING_TYPE_NAMES[btype] if btype < BUILDING_TYPE_NAMES.size() else "Building"
-		_objective_label.text = "MISSION: Deliver the package to the " + type_name + " (yellow marker)"
-
-func _update_markers(delta: float) -> void:
-	_marker_time += delta * 2.0
-	var bob := sin(_marker_time) * 0.4
-	if _package_marker and is_instance_valid(_package_marker):
-		var bh: float = _pickup_building.height
-		_package_marker.position.y = bh + 2.5 + bob
-		_package_marker.rotation.y += delta * 1.5
-	if _delivery_marker and is_instance_valid(_delivery_marker) and _delivery_marker.visible:
-		var bh: float = _delivery_building.height
-		_delivery_marker.position.y = bh + 2.5 + bob
-		_delivery_marker.rotation.y += delta * 1.5
-
-# ------------------------------------------------------------------
-# Mission Complete / Game Over overlay
-# ------------------------------------------------------------------
-
-func _show_mission_complete() -> void:
-	_create_overlay("MISSION COMPLETE!", Color(0.1, 0.6, 0.15), true)
-	if _objective_label:
-		_objective_label.text = "Package delivered successfully!"
-
-func _show_game_over() -> void:
-	_create_overlay("YOU DIED", Color(0.7, 0.1, 0.05), true)
+	_game_state = GameState.LOST
+	_show_overlay("YOU DIED", Color(0.7, 0.1, 0.05))
 	if _objective_label:
 		_objective_label.text = ""
 
-func _create_overlay(title_text: String, title_color: Color, _show_buttons: bool) -> void:
+func _update_objective_label() -> void:
+	if _objective_label == null or _mission_system == null:
+		return
+	_objective_label.text = _mission_system.get_objective_text()
+
+	# Check rescue point proximity
+	if _mission_system.is_rescue_active():
+		if _mission_system.check_rescue(player.global_position):
+			pass  # handled by area trigger in mission_system
+
+# ------------------------------------------------------------------
+# Debug panel (DEV_MODE only, toggled with F3)
+# ------------------------------------------------------------------
+
+func _setup_debug_panel() -> void:
+	_debug_panel = CanvasLayer.new()
+	_debug_panel.set_script(DebugPanel)
+	_debug_panel.name = "DebugPanel"
+	add_child(_debug_panel)
+
+	_debug_panel.set_god_mode(player.god_mode)
+	_debug_panel.density_changed.connect(_on_debug_density_changed)
+	_debug_panel.god_mode_changed.connect(_on_debug_god_mode_changed)
+	_debug_panel.spawn_horde_requested.connect(_on_debug_spawn_horde)
+
+func _on_debug_density_changed(multiplier: float) -> void:
+	if _mission_system:
+		_mission_system.zombie_density_multiplier = multiplier
+
+func _on_debug_god_mode_changed(enabled: bool) -> void:
+	player.god_mode = enabled
+
+func _on_debug_spawn_horde(count: int) -> void:
+	if _mission_system:
+		_mission_system.spawn_horde_at(player.global_position + Vector3(10, 0, 10), count)
+
+# ------------------------------------------------------------------
+# Game Over / Win overlay
+# ------------------------------------------------------------------
+
+func _show_overlay(title_text: String, title_color: Color) -> void:
 	_overlay_canvas = CanvasLayer.new()
 	_overlay_canvas.name = "OverlayUI"
 	_overlay_canvas.layer = 10
@@ -636,7 +561,7 @@ func _create_overlay(title_text: String, title_color: Color, _show_buttons: bool
 	vbox.add_child(title)
 
 	var restart_btn := Button.new()
-	restart_btn.text = "Restart" if _mission_state == MissionState.FAILED else "Play Again"
+	restart_btn.text = "Restart" if _game_state == GameState.LOST else "Play Again"
 	restart_btn.custom_minimum_size = Vector2(200, 50)
 	restart_btn.add_theme_font_size_override("font_size", 24)
 	restart_btn.pressed.connect(func() -> void:
