@@ -128,7 +128,7 @@ func get_objective_text() -> String:
 			return prefix + "Pick up the package (blue marker)"
 		MissionType.HOLD_ZONE:
 			if _hold_in_zone:
-				var remaining := mission.hold_duration - _hold_timer
+				var remaining: float = mission.hold_duration - _hold_timer
 				return prefix + "Hold position! %.0fs remaining" % remaining
 			return prefix + mission.description
 		MissionType.ELIMINATION:
