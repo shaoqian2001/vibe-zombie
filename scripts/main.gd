@@ -464,7 +464,7 @@ func _create_mission_area(entrance_pos: Vector3) -> Area3D:
 	return area
 
 func _create_building_marker(binfo: Dictionary, color: Color) -> MeshInstance3D:
-	var building_node: MeshInstance3D = binfo.node
+	var building_node: Node3D = binfo.node
 	var bpos := building_node.position
 	var bh: float = binfo.height
 
@@ -697,7 +697,7 @@ func _close_door() -> void:
 	else:
 		# Player is outside: full cleanup
 		_destroy_interior()
-		var building_node: MeshInstance3D = _active_building.node
+		var building_node: Node3D = _active_building.node
 		building_node.visible = true
 		_active_building = {}
 		_showing_interior = false
@@ -726,7 +726,7 @@ func _animate_door(binfo: Dictionary, opening: bool) -> void:
 # Helpers
 # ------------------------------------------------------------------
 
-func _set_exterior_collision(building_node: MeshInstance3D, enabled: bool) -> void:
+func _set_exterior_collision(building_node: Node3D, enabled: bool) -> void:
 	for child in building_node.get_children():
 		if child is StaticBody3D:
 			child.process_mode = Node.PROCESS_MODE_INHERIT if enabled else Node.PROCESS_MODE_DISABLED
@@ -735,7 +735,7 @@ func _set_exterior_collision(building_node: MeshInstance3D, enabled: bool) -> vo
 					(sub as CollisionShape3D).disabled = not enabled
 
 func _create_interior(binfo: Dictionary) -> void:
-	var building_node: MeshInstance3D = binfo.node
+	var building_node: Node3D = binfo.node
 	var bpos: Vector3 = building_node.position
 	var building_ground := Vector3(bpos.x, 0.0, bpos.z)
 
@@ -819,7 +819,7 @@ func _switch_to_interior_view() -> void:
 	if _showing_interior:
 		return
 	_showing_interior = true
-	var building_node: MeshInstance3D = _active_building.node
+	var building_node: Node3D = _active_building.node
 	building_node.visible = false
 	if _current_interior:
 		_current_interior.visible = true
@@ -828,7 +828,7 @@ func _switch_to_exterior_view() -> void:
 	if not _showing_interior:
 		return
 	_showing_interior = false
-	var building_node: MeshInstance3D = _active_building.node
+	var building_node: Node3D = _active_building.node
 	building_node.visible = true
 	# Keep door mesh hidden (it's part of the pivot, not the exterior)
 	if _current_interior:
@@ -860,7 +860,7 @@ func _update_building_occlusion() -> void:
 	# Find buildings that occlude the player
 	var now_occluded: Array = []
 	for binfo in world.buildings:
-		var node: MeshInstance3D = binfo.node
+		var node: Node3D = binfo.node
 		if not node.visible:
 			continue
 		# Check if the building's AABB intersects the line from camera to player
@@ -881,12 +881,12 @@ func _update_building_occlusion() -> void:
 func _building_occludes(binfo: Dictionary, cam_pos: Vector3, player_pos: Vector3) -> bool:
 	var bpos: Vector3 = binfo.node.position
 	var hw: float = binfo.width * 0.5
-	var hh: float = binfo.height * 0.5
+	var bh: float = binfo.height
 	var hd: float = binfo.depth * 0.5
 
-	# AABB min/max
-	var aabb_min := Vector3(bpos.x - hw, bpos.y - hh, bpos.z - hd)
-	var aabb_max := Vector3(bpos.x + hw, bpos.y + hh, bpos.z + hd)
+	# Building container is at ground level (y=0), model extends from 0 to height
+	var aabb_min := Vector3(bpos.x - hw, bpos.y, bpos.z - hd)
+	var aabb_max := Vector3(bpos.x + hw, bpos.y + bh, bpos.z + hd)
 
 	# Ray-AABB intersection (slab method)
 	var dir := player_pos - cam_pos
@@ -915,13 +915,34 @@ func _building_occludes(binfo: Dictionary, cam_pos: Vector3, player_pos: Vector3
 	return tmax >= tmin and tmax > 0.0 and tmin < 1.0
 
 func _set_building_alpha(binfo: Dictionary, alpha: float) -> void:
-	var node: MeshInstance3D = binfo.node
-	var mat: StandardMaterial3D = node.mesh.material
-	if mat == null:
-		return
-	if alpha < 1.0:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.albedo_color.a = alpha
-	else:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-		mat.albedo_color.a = 1.0
+	var node: Node3D = binfo.node
+	_apply_alpha_recursive(node, alpha)
+
+func _apply_alpha_recursive(node: Node, alpha: float) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		for surface_idx in range(mi.get_surface_override_material_count()):
+			var existing := mi.get_surface_override_material(surface_idx)
+			if existing is StandardMaterial3D:
+				var mat := existing as StandardMaterial3D
+				if alpha < 1.0:
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+					mat.albedo_color.a = alpha
+				else:
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+					mat.albedo_color.a = 1.0
+				return
+		if mi.mesh:
+			for surface_idx in range(mi.mesh.get_surface_count()):
+				var mat := mi.mesh.surface_get_material(surface_idx)
+				if mat is StandardMaterial3D:
+					var smat := (mat as StandardMaterial3D).duplicate() as StandardMaterial3D
+					if alpha < 1.0:
+						smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+						smat.albedo_color.a = alpha
+					else:
+						smat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+						smat.albedo_color.a = 1.0
+					mi.set_surface_override_material(surface_idx, smat)
+	for child in node.get_children():
+		_apply_alpha_recursive(child, alpha)

@@ -50,6 +50,36 @@ const GRASS_COLOR   := Color(0.32, 0.46, 0.24)
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 
+# KayKit building models (A-H) — all have ~2×2 XZ footprint at origin, Y up
+const BUILDING_SCENES := [
+	preload("res://assets/buildings/building_A.gltf"),
+	preload("res://assets/buildings/building_B.gltf"),
+	preload("res://assets/buildings/building_C.gltf"),
+	preload("res://assets/buildings/building_D.gltf"),
+	preload("res://assets/buildings/building_E.gltf"),
+	preload("res://assets/buildings/building_F.gltf"),
+	preload("res://assets/buildings/building_G.gltf"),
+	preload("res://assets/buildings/building_H.gltf"),
+]
+# Native height of each model (in model units, footprint is always ~2×2)
+const BUILDING_MODEL_HEIGHTS := [1.65, 2.10, 2.98, 2.55, 2.35, 2.50, 1.85, 3.05]
+const BUILDING_MODEL_FOOTPRINT := 2.0
+
+# Street prop scenes
+const STREET_PROPS := {
+	"bench": preload("res://assets/street/bench.gltf"),
+	"streetlight": preload("res://assets/street/streetlight.gltf"),
+	"bush": preload("res://assets/street/bush.gltf"),
+	"dumpster": preload("res://assets/street/dumpster.gltf"),
+	"firehydrant": preload("res://assets/street/firehydrant.gltf"),
+	"trash_A": preload("res://assets/street/trash_A.gltf"),
+	"trash_B": preload("res://assets/street/trash_B.gltf"),
+	"car_sedan": preload("res://assets/street/car_sedan.gltf"),
+	"car_taxi": preload("res://assets/street/car_taxi.gltf"),
+	"car_police": preload("res://assets/street/car_police.gltf"),
+	"trafficlight": preload("res://assets/street/trafficlight_A.gltf"),
+}
+
 var _rng := RandomNumberGenerator.new()
 
 ## Array of dictionaries describing each building placed in the world.
@@ -162,6 +192,9 @@ func _generate_city_grid() -> void:
 			# Buildings inside the block
 			_populate_block(bx, bz)
 
+			# Street props along the roads adjacent to this block
+			_populate_street_props(bx, bz)
+
 # ------------------------------------------------------------------
 # Buildings
 # ------------------------------------------------------------------
@@ -221,53 +254,119 @@ func _populate_block(bx: float, bz: float) -> void:
 			var color := BUILDING_COLORS[_rng.randi() % BUILDING_COLORS.size()]
 			_create_building(Vector3(cx, bh * 0.5, cz), bw, bh, bd, color, btype, bx, bz)
 
+func _populate_street_props(bx: float, bz: float) -> void:
+	var prop_keys := STREET_PROPS.keys()
+	var sidewalk_edge := BLOCK_SIZE
+
+	# Props along the right-side road (between block and next block)
+	var road_x := bx + sidewalk_edge + ROAD_WIDTH * 0.5
+	var num_along_z := _rng.randi_range(1, 3)
+	for i in range(num_along_z):
+		var z := bz + _rng.randf_range(2.0, BLOCK_SIZE - 2.0)
+		# Place on sidewalk edge, not in the road itself
+		var side := -1.0 if _rng.randf() < 0.5 else 1.0
+		var x := road_x + side * (ROAD_WIDTH * 0.5 + 0.5)
+		_place_street_prop(Vector3(x, 0.0, z), prop_keys)
+
+	# Props along the bottom-side road
+	var road_z := bz + sidewalk_edge + ROAD_WIDTH * 0.5
+	var num_along_x := _rng.randi_range(1, 3)
+	for i in range(num_along_x):
+		var x := bx + _rng.randf_range(2.0, BLOCK_SIZE - 2.0)
+		var side := -1.0 if _rng.randf() < 0.5 else 1.0
+		var z := road_z + side * (ROAD_WIDTH * 0.5 + 0.5)
+		_place_street_prop(Vector3(x, 0.0, z), prop_keys)
+
+func _place_street_prop(pos: Vector3, prop_keys: Array) -> void:
+	var key: String = prop_keys[_rng.randi() % prop_keys.size()]
+	var scene: PackedScene = STREET_PROPS[key]
+	var instance := scene.instantiate()
+	instance.position = pos
+
+	var prop_scale := 1.0
+	var is_car := false
+	match key:
+		"streetlight":
+			prop_scale = 2.0
+		"bench":
+			prop_scale = 1.2
+		"bush":
+			prop_scale = _rng.randf_range(1.0, 1.5)
+		"dumpster":
+			prop_scale = 1.2
+		"firehydrant":
+			prop_scale = 1.0
+		"trash_A", "trash_B":
+			prop_scale = 0.8
+		"car_sedan", "car_taxi", "car_police":
+			prop_scale = 1.4
+			is_car = true
+		"trafficlight":
+			prop_scale = 2.0
+		"box_A", "box_B":
+			prop_scale = 1.0
+		"watertower":
+			prop_scale = 2.0
+
+	instance.scale = Vector3.ONE * prop_scale
+
+	if is_car:
+		# Cars align with roads — pick 0 or 90 degrees only
+		instance.rotation.y = (PI * 0.5) * float(_rng.randi_range(0, 1))
+	else:
+		instance.rotation.y = _rng.randf_range(0.0, TAU)
+
+	# Tight collision boxes only for cars
+	if is_car:
+		var sb := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var shp := BoxShape3D.new()
+		shp.size = Vector3(0.9 * prop_scale, 0.6 * prop_scale, 1.8 * prop_scale)
+		cs.shape = shp
+		sb.position = Vector3(0.0, 0.3 * prop_scale, 0.0)
+		sb.add_child(cs)
+		instance.add_child(sb)
+
+	add_child(instance)
+
 func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, btype: int, block_x: float, block_z: float) -> void:
-	var tint_offset := _rng.randf_range(-0.04, 0.04)
-	var tinted := Color(
-		clampf(color.r + tint_offset, 0.0, 1.0),
-		clampf(color.g + tint_offset, 0.0, 1.0),
-		clampf(color.b + tint_offset, 0.0, 1.0)
-	)
+	var model_idx := _rng.randi() % BUILDING_SCENES.size()
+	var scene: PackedScene = BUILDING_SCENES[model_idx]
+	var model_h: float = BUILDING_MODEL_HEIGHTS[model_idx]
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = tinted
-	mat.roughness = 0.75
-	mat.metallic = 0.05
+	var scale_x := w / BUILDING_MODEL_FOOTPRINT
+	var scale_y := h / model_h
+	var scale_z := d / BUILDING_MODEL_FOOTPRINT
 
-	var mesh := BoxMesh.new()
-	mesh.size = Vector3(w, h, d)
-	mesh.material = mat
+	var container := Node3D.new()
+	container.name = "Building"
+	container.position = Vector3(pos.x, 0.0, pos.z)
+	add_child(container)
 
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.position = pos
+	var model_instance := scene.instantiate()
+	model_instance.scale = Vector3(scale_x, scale_y, scale_z)
+	container.add_child(model_instance)
 
-	# Collision
-	var sb  := StaticBody3D.new()
-	var cs  := CollisionShape3D.new()
+	# Collision box matching the building dimensions
+	var sb := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
 	var shp := BoxShape3D.new()
 	shp.size = Vector3(w, h, d)
 	cs.shape = shp
+	sb.position = Vector3(0.0, h * 0.5, 0.0)
 	sb.add_child(cs)
-	mi.add_child(sb)
+	container.add_child(sb)
 
-	add_child(mi)
+	# pos was passed as (cx, h*0.5, cz) from _populate_block — reconstruct center pos
+	var center_pos := Vector3(pos.x, h * 0.5, pos.z)
+	var entrance_dir := _pick_entrance_side(center_pos, w, d, block_x, block_z)
+	var entrance_pos := _compute_entrance_position(center_pos, w, h, d, entrance_dir)
 
-	_add_building_details(pos, w, h, d, tinted)
-
-	# --- Determine entrance side (face closest to nearest road) ---
-	var entrance_dir := _pick_entrance_side(pos, w, d, block_x, block_z)
-	var entrance_pos := _compute_entrance_position(pos, w, h, d, entrance_dir)
-
-	# --- Create visual door ---
 	var door_info := _create_door(entrance_pos, entrance_dir, color)
-
-	# --- Create entrance trigger area ---
 	var entrance_area := _create_entrance_area(entrance_pos, entrance_dir)
 
-	# Store building info for the main scene to use
 	buildings.append({
-		node = mi,
+		node = container,
 		door_pivot = door_info.pivot,
 		door_base_angle = door_info.base_angle,
 		entrance_area = entrance_area,

@@ -1,76 +1,112 @@
-[gd_scene load_steps=18 format=3 uid="uid://cplayer000001"]
+[gd_scene load_steps=28 format=3 uid="uid://cplayer000001"]
 
 [ext_resource type="Script" path="res://scripts/player.gd" id="1_player"]
 
 [sub_resource type="StandardMaterial3D" id="TorsoMat"]
-albedo_color = Color(0.22, 0.35, 0.18, 1)
-roughness = 0.85
+albedo_color = Color(0.20, 0.32, 0.16, 1)
+roughness = 0.8
+metallic = 0.05
 
 [sub_resource type="BoxMesh" id="TorsoMesh"]
 material = SubResource("TorsoMat")
-size = Vector3(0.48, 0.55, 0.28)
+size = Vector3(0.50, 0.42, 0.30)
+
+[sub_resource type="StandardMaterial3D" id="VestMat"]
+albedo_color = Color(0.30, 0.28, 0.22, 1)
+roughness = 0.7
+metallic = 0.15
+
+[sub_resource type="BoxMesh" id="VestMesh"]
+material = SubResource("VestMat")
+size = Vector3(0.54, 0.38, 0.32)
 
 [sub_resource type="StandardMaterial3D" id="LegMat"]
-albedo_color = Color(0.20, 0.22, 0.28, 1)
+albedo_color = Color(0.18, 0.18, 0.22, 1)
 roughness = 0.9
 
 [sub_resource type="BoxMesh" id="LegMeshL"]
 material = SubResource("LegMat")
-size = Vector3(0.18, 0.65, 0.20)
+size = Vector3(0.20, 0.44, 0.22)
 
 [sub_resource type="BoxMesh" id="LegMeshR"]
 material = SubResource("LegMat")
-size = Vector3(0.18, 0.65, 0.20)
+size = Vector3(0.20, 0.44, 0.22)
+
+[sub_resource type="StandardMaterial3D" id="BootMat"]
+albedo_color = Color(0.12, 0.10, 0.08, 1)
+roughness = 0.75
+metallic = 0.1
+
+[sub_resource type="BoxMesh" id="BootMeshL"]
+material = SubResource("BootMat")
+size = Vector3(0.22, 0.18, 0.28)
+
+[sub_resource type="BoxMesh" id="BootMeshR"]
+material = SubResource("BootMat")
+size = Vector3(0.22, 0.18, 0.28)
 
 [sub_resource type="StandardMaterial3D" id="ArmMat"]
 albedo_color = Color(0.82, 0.68, 0.55, 1)
 roughness = 0.85
 
-[sub_resource type="CylinderMesh" id="ArmMeshL"]
+[sub_resource type="BoxMesh" id="ArmMeshL"]
 material = SubResource("ArmMat")
-top_radius = 0.06
-bottom_radius = 0.07
-height = 0.55
+size = Vector3(0.14, 0.42, 0.14)
 
-[sub_resource type="CylinderMesh" id="ArmMeshR"]
+[sub_resource type="BoxMesh" id="ArmMeshR"]
 material = SubResource("ArmMat")
-top_radius = 0.06
-bottom_radius = 0.07
-height = 0.55
+size = Vector3(0.14, 0.42, 0.14)
+
+[sub_resource type="StandardMaterial3D" id="GloveMat"]
+albedo_color = Color(0.25, 0.22, 0.18, 1)
+roughness = 0.7
+
+[sub_resource type="BoxMesh" id="GloveMeshL"]
+material = SubResource("GloveMat")
+size = Vector3(0.15, 0.12, 0.15)
+
+[sub_resource type="BoxMesh" id="GloveMeshR"]
+material = SubResource("GloveMat")
+size = Vector3(0.15, 0.12, 0.15)
 
 [sub_resource type="StandardMaterial3D" id="HeadMat"]
 albedo_color = Color(0.89, 0.73, 0.58, 1)
-roughness = 0.8
+roughness = 0.75
 
-[sub_resource type="SphereMesh" id="HeadMesh"]
+[sub_resource type="BoxMesh" id="HeadMesh"]
 material = SubResource("HeadMat")
-radius = 0.22
-height = 0.44
+size = Vector3(0.42, 0.42, 0.40)
 
 [sub_resource type="StandardMaterial3D" id="HairMat"]
 albedo_color = Color(0.18, 0.14, 0.10, 1)
 roughness = 0.95
 
-[sub_resource type="SphereMesh" id="HairMesh"]
+[sub_resource type="BoxMesh" id="HairMesh"]
 material = SubResource("HairMat")
-radius = 0.20
-height = 0.22
+size = Vector3(0.44, 0.16, 0.42)
 
 [sub_resource type="StandardMaterial3D" id="EyeMat"]
-albedo_color = Color(0.08, 0.08, 0.10, 1)
+albedo_color = Color(1.0, 1.0, 1.0, 1)
 
-[sub_resource type="SphereMesh" id="EyeMesh"]
+[sub_resource type="BoxMesh" id="EyeMesh"]
 material = SubResource("EyeMat")
-radius = 0.04
-height = 0.08
+size = Vector3(0.10, 0.08, 0.04)
+
+[sub_resource type="StandardMaterial3D" id="PupilMat"]
+albedo_color = Color(0.05, 0.05, 0.08, 1)
+
+[sub_resource type="BoxMesh" id="PupilMesh"]
+material = SubResource("PupilMat")
+size = Vector3(0.05, 0.06, 0.02)
 
 [sub_resource type="StandardMaterial3D" id="BeltMat"]
 albedo_color = Color(0.30, 0.22, 0.14, 1)
 roughness = 0.7
+metallic = 0.2
 
 [sub_resource type="BoxMesh" id="BeltMesh"]
 material = SubResource("BeltMat")
-size = Vector3(0.50, 0.06, 0.30)
+size = Vector3(0.52, 0.06, 0.32)
 
 [sub_resource type="CapsuleShape3D" id="CollShape"]
 radius = 0.34
@@ -80,50 +116,83 @@ height = 1.8
 script = ExtResource("1_player")
 
 [node name="Torso" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.1, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.05, 0)
 mesh = SubResource("TorsoMesh")
 cast_shadow = 1
 
+[node name="Vest" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.08, 0)
+mesh = SubResource("VestMesh")
+cast_shadow = 1
+
 [node name="LegLeft" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.12, 0.42, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.12, 0.58, 0)
 mesh = SubResource("LegMeshL")
 cast_shadow = 1
 
 [node name="LegRight" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.12, 0.42, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.12, 0.58, 0)
 mesh = SubResource("LegMeshR")
 cast_shadow = 1
 
+[node name="BootLeft" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.12, 0.28, 0.02)
+mesh = SubResource("BootMeshL")
+cast_shadow = 1
+
+[node name="BootRight" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.12, 0.28, 0.02)
+mesh = SubResource("BootMeshR")
+cast_shadow = 1
+
 [node name="ArmLeft" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.32, 1.05, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.33, 1.0, 0)
 mesh = SubResource("ArmMeshL")
 cast_shadow = 1
 
 [node name="ArmRight" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.32, 1.05, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.33, 1.0, 0)
 mesh = SubResource("ArmMeshR")
 cast_shadow = 1
 
+[node name="GloveLeft" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.33, 0.73, 0)
+mesh = SubResource("GloveMeshL")
+cast_shadow = 1
+
+[node name="GloveRight" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.33, 0.73, 0)
+mesh = SubResource("GloveMeshR")
+cast_shadow = 1
+
 [node name="Head" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.58, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.52, 0)
 mesh = SubResource("HeadMesh")
 cast_shadow = 1
 
 [node name="Hair" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.72, -0.02)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.68, -0.01)
 mesh = SubResource("HairMesh")
 cast_shadow = 1
 
 [node name="EyeLeft" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.08, 1.60, 0.18)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.10, 1.54, 0.19)
 mesh = SubResource("EyeMesh")
 
 [node name="EyeRight" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.08, 1.60, 0.18)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.10, 1.54, 0.19)
 mesh = SubResource("EyeMesh")
 
+[node name="PupilLeft" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.10, 1.54, 0.21)
+mesh = SubResource("PupilMesh")
+
+[node name="PupilRight" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.10, 1.54, 0.21)
+mesh = SubResource("PupilMesh")
+
 [node name="Belt" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.82, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.83, 0)
 mesh = SubResource("BeltMesh")
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]

@@ -224,81 +224,18 @@ func _build_pistol() -> void:
 # Shotgun model
 # ------------------------------------------------------------------
 
+const _ShotgunScene := preload("res://assets/weapons/Skeleton_Crossbow.gltf")
+
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
 	_shotgun_node.position = Vector3(0.35, 0.95, 0.30)
 	add_child(_shotgun_node)
 
-	# Stock (wooden rear grip)
-	var stock_mat := StandardMaterial3D.new()
-	stock_mat.albedo_color = Color(0.40, 0.26, 0.13, 1)
-	var stock_mesh := BoxMesh.new()
-	stock_mesh.size = Vector3(0.09, 0.10, 0.18)
-	stock_mesh.material = stock_mat
-	var stock := MeshInstance3D.new()
-	stock.name = "Stock"
-	stock.mesh = stock_mesh
-	stock.position = Vector3(0.0, -0.04, -0.14)
-	_shotgun_node.add_child(stock)
-
-	# Receiver (metal body connecting stock to barrels)
-	var receiver_mat := StandardMaterial3D.new()
-	receiver_mat.albedo_color = Color(0.18, 0.18, 0.20, 1)
-	var receiver_mesh := BoxMesh.new()
-	receiver_mesh.size = Vector3(0.08, 0.08, 0.12)
-	receiver_mesh.material = receiver_mat
-	var receiver := MeshInstance3D.new()
-	receiver.name = "Receiver"
-	receiver.mesh = receiver_mesh
-	receiver.position = Vector3(0.0, 0.0, -0.02)
-	_shotgun_node.add_child(receiver)
-
-	# Pump forend (wood)
-	var forend_mat := StandardMaterial3D.new()
-	forend_mat.albedo_color = Color(0.45, 0.30, 0.15, 1)
-	var forend_mesh := BoxMesh.new()
-	forend_mesh.size = Vector3(0.09, 0.07, 0.10)
-	forend_mesh.material = forend_mat
-	var forend := MeshInstance3D.new()
-	forend.name = "Forend"
-	forend.mesh = forend_mesh
-	forend.position = Vector3(0.0, -0.02, 0.10)
-	_shotgun_node.add_child(forend)
-
-	# Double barrels
-	var barrel_mat := StandardMaterial3D.new()
-	barrel_mat.albedo_color = Color(0.12, 0.12, 0.14, 1)
-	for i in range(2):
-		var offset_x := -0.025 + i * 0.05
-		var barrel_mesh := CylinderMesh.new()
-		barrel_mesh.top_radius = 0.025
-		barrel_mesh.bottom_radius = 0.025
-		barrel_mesh.height = 0.28
-		barrel_mesh.material = barrel_mat
-		var barrel := MeshInstance3D.new()
-		barrel.name = "Barrel_%d" % i
-		barrel.mesh = barrel_mesh
-		barrel.position = Vector3(offset_x, 0.02, 0.18)
-		barrel.rotation_degrees = Vector3(90, 0, 0)
-		_shotgun_node.add_child(barrel)
-
-	# Muzzle tips
-	var muzzle_mat := StandardMaterial3D.new()
-	muzzle_mat.albedo_color = Color(0.08, 0.08, 0.08, 1)
-	for i in range(2):
-		var offset_x := -0.025 + i * 0.05
-		var muzzle_mesh := CylinderMesh.new()
-		muzzle_mesh.top_radius = 0.028
-		muzzle_mesh.bottom_radius = 0.028
-		muzzle_mesh.height = 0.02
-		muzzle_mesh.material = muzzle_mat
-		var muzzle := MeshInstance3D.new()
-		muzzle.name = "MuzzleTip_%d" % i
-		muzzle.mesh = muzzle_mesh
-		muzzle.position = Vector3(offset_x, 0.02, 0.32)
-		muzzle.rotation_degrees = Vector3(90, 0, 0)
-		_shotgun_node.add_child(muzzle)
+	var model := _ShotgunScene.instantiate()
+	model.scale = Vector3(0.4, 0.4, 0.4)
+	model.rotation_degrees = Vector3(0, 180, 0)
+	_shotgun_node.add_child(model)
 
 # ------------------------------------------------------------------
 # SMG model
@@ -357,61 +294,24 @@ func _build_smg() -> void:
 # Grenade Launcher model
 # ------------------------------------------------------------------
 
+const _GrenadeLauncherScene := preload("res://assets/weapons/Skeleton_Staff.gltf")
+
 func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
 	_grenade_launcher_node.position = Vector3(0.35, 0.95, 0.30)
 	add_child(_grenade_launcher_node)
 
-	var body_mat := StandardMaterial3D.new()
-	body_mat.albedo_color = Color(0.28, 0.30, 0.22, 1)
-	var body_mesh := BoxMesh.new()
-	body_mesh.size = Vector3(0.10, 0.10, 0.20)
-	body_mesh.material = body_mat
-	var body_mi := MeshInstance3D.new()
-	body_mi.mesh = body_mesh
-	body_mi.position = Vector3(0.0, 0.0, -0.02)
-	_grenade_launcher_node.add_child(body_mi)
-
-	var grip_mat := StandardMaterial3D.new()
-	grip_mat.albedo_color = Color(0.35, 0.25, 0.14, 1)
-	var grip_mesh := BoxMesh.new()
-	grip_mesh.size = Vector3(0.08, 0.14, 0.08)
-	grip_mesh.material = grip_mat
-	var grip := MeshInstance3D.new()
-	grip.mesh = grip_mesh
-	grip.position = Vector3(0.0, -0.08, -0.06)
-	_grenade_launcher_node.add_child(grip)
-
-	var barrel_mat := StandardMaterial3D.new()
-	barrel_mat.albedo_color = Color(0.15, 0.16, 0.14, 1)
-	var barrel_mesh := CylinderMesh.new()
-	barrel_mesh.top_radius = 0.04
-	barrel_mesh.bottom_radius = 0.04
-	barrel_mesh.height = 0.22
-	barrel_mesh.material = barrel_mat
-	var barrel := MeshInstance3D.new()
-	barrel.mesh = barrel_mesh
-	barrel.position = Vector3(0.0, 0.02, 0.14)
-	barrel.rotation_degrees = Vector3(90, 0, 0)
-	_grenade_launcher_node.add_child(barrel)
-
-	var muzzle_mat := StandardMaterial3D.new()
-	muzzle_mat.albedo_color = Color(0.10, 0.10, 0.10, 1)
-	var muzzle_mesh := CylinderMesh.new()
-	muzzle_mesh.top_radius = 0.045
-	muzzle_mesh.bottom_radius = 0.045
-	muzzle_mesh.height = 0.03
-	muzzle_mesh.material = muzzle_mat
-	var muzzle := MeshInstance3D.new()
-	muzzle.mesh = muzzle_mesh
-	muzzle.position = Vector3(0.0, 0.02, 0.26)
-	muzzle.rotation_degrees = Vector3(90, 0, 0)
-	_grenade_launcher_node.add_child(muzzle)
+	var model := _GrenadeLauncherScene.instantiate()
+	model.scale = Vector3(0.35, 0.35, 0.35)
+	model.rotation_degrees = Vector3(0, 180, 0)
+	_grenade_launcher_node.add_child(model)
 
 # ------------------------------------------------------------------
 # Baseball Bat model
 # ------------------------------------------------------------------
+
+const _BatScene := preload("res://assets/weapons/Skeleton_Axe.gltf")
 
 func _build_bat() -> void:
 	_bat_node = Node3D.new()
@@ -419,45 +319,10 @@ func _build_bat() -> void:
 	_bat_node.position = Vector3(0.38, 0.95, 0.20)
 	add_child(_bat_node)
 
-	var handle_mat := StandardMaterial3D.new()
-	handle_mat.albedo_color = Color(0.15, 0.12, 0.08, 1)
-	handle_mat.roughness = 0.6
-	var handle_mesh := CylinderMesh.new()
-	handle_mesh.top_radius = 0.02
-	handle_mesh.bottom_radius = 0.025
-	handle_mesh.height = 0.25
-	handle_mesh.material = handle_mat
-	var handle := MeshInstance3D.new()
-	handle.mesh = handle_mesh
-	handle.position = Vector3(0.0, -0.05, 0.0)
-	handle.rotation_degrees = Vector3(90, 0, 0)
-	_bat_node.add_child(handle)
-
-	var barrel_mat := StandardMaterial3D.new()
-	barrel_mat.albedo_color = Color(0.50, 0.35, 0.18, 1)
-	barrel_mat.roughness = 0.7
-	var barrel_mesh := CylinderMesh.new()
-	barrel_mesh.top_radius = 0.035
-	barrel_mesh.bottom_radius = 0.025
-	barrel_mesh.height = 0.45
-	barrel_mesh.material = barrel_mat
-	var barrel := MeshInstance3D.new()
-	barrel.mesh = barrel_mesh
-	barrel.position = Vector3(0.0, 0.0, 0.35)
-	barrel.rotation_degrees = Vector3(90, 0, 0)
-	_bat_node.add_child(barrel)
-
-	var tip_mat := StandardMaterial3D.new()
-	tip_mat.albedo_color = Color(0.55, 0.38, 0.20, 1)
-	tip_mat.roughness = 0.65
-	var tip_mesh := SphereMesh.new()
-	tip_mesh.radius = 0.035
-	tip_mesh.height = 0.07
-	tip_mesh.material = tip_mat
-	var tip := MeshInstance3D.new()
-	tip.mesh = tip_mesh
-	tip.position = Vector3(0.0, 0.0, 0.58)
-	_bat_node.add_child(tip)
+	var model := _BatScene.instantiate()
+	model.scale = Vector3(0.4, 0.4, 0.4)
+	model.rotation_degrees = Vector3(0, 180, 0)
+	_bat_node.add_child(model)
 
 # ------------------------------------------------------------------
 # Aim line

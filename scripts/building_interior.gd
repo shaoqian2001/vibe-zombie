@@ -12,6 +12,19 @@ const WALL_COLOR     := Color(0.85, 0.83, 0.78)
 const FLOOR_COLOR    := Color(0.45, 0.40, 0.35)
 const DOOR_COLOR     := Color(0.35, 0.22, 0.12)
 
+const PROP_SCENES := {
+	"lantern": preload("res://assets/props/lantern.gltf"),
+	"torch": preload("res://assets/props/torch.gltf"),
+	"anvil": preload("res://assets/props/anvil.gltf"),
+	"hammer": preload("res://assets/props/hammer.gltf"),
+	"bucket": preload("res://assets/props/bucket_metal.gltf"),
+	"knife": preload("res://assets/props/knife.gltf"),
+	"axe": preload("res://assets/props/axe.gltf"),
+	"shovel": preload("res://assets/props/shovel.gltf"),
+	"rope": preload("res://assets/props/rope_bundle_A.gltf"),
+	"map": preload("res://assets/props/map.gltf"),
+}
+
 # Furniture palettes per building type
 const SHELF_COLOR    := Color(0.55, 0.40, 0.25)
 const COUNTER_COLOR  := Color(0.60, 0.58, 0.55)
@@ -169,6 +182,10 @@ func _furnish_convenience_store() -> void:
 	_add_box(Vector3(0.0, 1.0, -d * 0.45), Vector3(w * 0.7, 2.0, 0.5), FRIDGE_COLOR, true)
 	_add_box(Vector3(0.0, 2.5, d * 0.45), Vector3(1.5, 0.3, 0.05), Color(0.9, 0.2, 0.15), false)
 
+	_add_prop("lantern", Vector3(w * 0.3, 1.05, d * 0.28), 0.6)
+	_add_prop("bucket", Vector3(-w * 0.38, 0.0, d * 0.35), 0.8)
+	_add_prop("knife", Vector3(w * 0.1, 1.05, d * 0.22), 0.5, 1.2)
+
 # ------------------------------------------------------------------
 # Furniture: Apartment
 # ------------------------------------------------------------------
@@ -184,6 +201,9 @@ func _furnish_apartment() -> void:
 	_add_box(Vector3(-w * 0.42, 0.9, d * 0.1), Vector3(0.35, 1.8, 1.0), SHELF_COLOR, true)
 	_add_box(Vector3(w * 0.42, 0.45, -d * 0.2), Vector3(0.4, 0.9, 1.5), COUNTER_COLOR, true)
 	_add_box(Vector3(0.0, 0.03, 0.0), Vector3(1.8, 0.02, 1.4), Color(0.55, 0.20, 0.18), false)
+
+	_add_prop("lantern", Vector3(w * 0.2, 0.85, -d * 0.1), 0.5)
+	_add_prop("map", Vector3(-w * 0.3, 0.85, d * 0.1), 0.6, 0.5)
 
 # ------------------------------------------------------------------
 # Furniture: Office
@@ -207,6 +227,9 @@ func _furnish_office() -> void:
 	_add_box(Vector3(-w * 0.35, 0.6, -d * 0.42), Vector3(0.5, 1.2, 0.4), Color(0.50, 0.50, 0.50), true)
 	_add_box(Vector3(w * 0.4, 0.55, d * 0.3), Vector3(0.3, 1.1, 0.3), Color(0.7, 0.85, 0.9), true)
 
+	_add_prop("lantern", Vector3(0.0, 0.85, -d * 0.15), 0.5)
+	_add_prop("map", Vector3(-w * 0.2, 0.85, -d * 0.18), 0.6, 2.1)
+
 # ------------------------------------------------------------------
 # Furniture: Warehouse
 # ------------------------------------------------------------------
@@ -225,6 +248,13 @@ func _furnish_warehouse() -> void:
 	_add_box(Vector3(w * 0.2, 0.08, d * 0.2), Vector3(1.2, 0.16, 1.2), Color(0.6, 0.5, 0.3), true)
 	_add_box(Vector3(w * 0.35, 0.45, -d * 0.05), Vector3(0.6, 0.9, 0.6), Color(0.40, 0.30, 0.20), true)
 	_add_box(Vector3(w * 0.15, 0.45, d * 0.3), Vector3(0.6, 0.9, 0.6), Color(0.40, 0.30, 0.20), true)
+
+	_add_prop("anvil", Vector3(w * 0.3, 0.0, d * 0.1), 1.0)
+	_add_prop("hammer", Vector3(w * 0.35, 0.3, d * 0.15), 0.7, 0.8)
+	_add_prop("rope", Vector3(-w * 0.3, 0.0, d * 0.25), 1.0)
+	_add_prop("torch", Vector3(-w * 0.45, 1.2, -d * 0.2), 0.8, PI)
+	_add_prop("shovel", Vector3(w * 0.42, 0.0, d * 0.35), 0.8, 0.3)
+	_add_prop("axe", Vector3(-w * 0.1, 0.0, -d * 0.3), 0.8, 1.5)
 
 # ------------------------------------------------------------------
 # Furniture: Diner
@@ -247,6 +277,10 @@ func _furnish_diner() -> void:
 	_add_box(Vector3(w * 0.42, 0.4, d * 0.15), Vector3(0.4, 0.8, 1.2), BOOTH_COLOR, true)
 	_add_box(Vector3(w * 0.25, 0.4, d * 0.15), Vector3(0.6, 0.8, 0.9), TABLE_COLOR, true)
 	_add_box(Vector3(0.0, 1.5, -d * 0.48), Vector3(1.5, 0.8, 0.1), Color(0.15, 0.15, 0.18), false)
+
+	_add_prop("lantern", Vector3(-w * 0.3, 0.85, d * 0.15), 0.5)
+	_add_prop("bucket", Vector3(w * 0.35, 0.0, d * 0.3), 0.7)
+	_add_prop("knife", Vector3(w * 0.05, 1.15, -d * 0.25), 0.5, 2.0)
 
 # ------------------------------------------------------------------
 # Wall visibility (called by main.gd each frame while inside)
@@ -301,6 +335,16 @@ func _add_wall(pos: Vector3, size: Vector3, color: Color) -> MeshInstance3D:
 # ------------------------------------------------------------------
 # Helper: add a coloured box (optionally with collision)
 # ------------------------------------------------------------------
+
+func _add_prop(prop_name: String, pos: Vector3, scale_val: float = 1.0, rot_y: float = 0.0) -> void:
+	if not PROP_SCENES.has(prop_name):
+		return
+	var scene: PackedScene = PROP_SCENES[prop_name]
+	var inst := scene.instantiate()
+	inst.position = pos
+	inst.scale = Vector3.ONE * scale_val
+	inst.rotation.y = rot_y
+	add_child(inst)
 
 func _add_box(pos: Vector3, size: Vector3, color: Color, has_collision: bool) -> void:
 	var mat := StandardMaterial3D.new()

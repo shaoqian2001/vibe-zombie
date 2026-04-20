@@ -1,16 +1,17 @@
-[gd_scene load_steps=5 format=3 uid="uid://cmain0000001"]
+[gd_scene format=3 uid="uid://cmain0000001"]
 
-[ext_resource type="PackedScene" path="res://scenes/World.tscn" id="1_world"]
-[ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="2_player"]
-[ext_resource type="Script" path="res://scripts/main.gd" id="3_main"]
-[ext_resource type="Script" path="res://scripts/camera_controller.gd" id="4_camera"]
+[ext_resource type="PackedScene" uid="uid://cworld0000001" path="res://scenes/World.tscn" id="1_world"]
+[ext_resource type="PackedScene" uid="uid://cplayer000001" path="res://scenes/Player.tscn" id="2_player"]
+[ext_resource type="Script" uid="uid://dluqo85ie7aty" path="res://scripts/main.gd" id="3_main"]
+[ext_resource type="Script" uid="uid://bfkd5kfe8agvg" path="res://scripts/camera_controller.gd" id="4_camera"]
 
-[node name="Main" type="Node3D"]
+[node name="Main" type="Node3D" unique_id=1328416748]
 script = ExtResource("3_main")
 
-[node name="World" parent="." instance=ExtResource("1_world")]
+[node name="World" parent="." unique_id=1343131295 instance=ExtResource("1_world")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.10276592, 0)
 
-[node name="Player" parent="." instance=ExtResource("2_player")]
+[node name="Player" parent="." unique_id=860169663 instance=ExtResource("2_player")]
 
-[node name="Camera3D" type="Camera3D" parent="."]
+[node name="Camera3D" type="Camera3D" parent="." unique_id=854260519]
 script = ExtResource("4_camera")

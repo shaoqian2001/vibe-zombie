@@ -133,123 +133,204 @@ func _pick_new_wander() -> void:
 # Model construction (same shape as player, but zombie-coloured)
 # ------------------------------------------------------------------
 
+const ENEMY_WEAPON_SCENES := [
+	preload("res://assets/weapons/Skeleton_Blade.gltf"),
+	preload("res://assets/weapons/Skeleton_Axe.gltf"),
+	preload("res://assets/weapons/Skeleton_Staff.gltf"),
+]
+const ENEMY_SHIELD_SCENES := [
+	preload("res://assets/weapons/Skeleton_Shield_Small_A.gltf"),
+	preload("res://assets/weapons/Skeleton_Shield_Small_B.gltf"),
+]
+
 func _build_model() -> void:
 	var skin_tint := _rng.randf_range(-0.06, 0.06)
 	var scale_var := _rng.randf_range(0.9, 1.1)
 
-	# Torso (upper body)
+	# Skin palette for undead look
+	var skin_r := clampf(0.48 + skin_tint, 0.35, 0.60)
+	var skin_g := clampf(0.52 + skin_tint, 0.38, 0.62)
+	var skin_b := clampf(0.38 + skin_tint, 0.28, 0.50)
+
+	# Torso — blocky box style
 	var torso_mat := StandardMaterial3D.new()
-	torso_mat.albedo_color = Color(0.35 + skin_tint, 0.40 + skin_tint, 0.30 + skin_tint, 1)
+	torso_mat.albedo_color = Color(skin_r * 0.7, skin_g * 0.7, skin_b * 0.7, 1)
 	torso_mat.roughness = 0.9
 	var torso_mesh := BoxMesh.new()
-	torso_mesh.size = Vector3(0.52 * scale_var, 0.7, 0.30 * scale_var)
+	torso_mesh.size = Vector3(0.50 * scale_var, 0.42, 0.28 * scale_var)
 	torso_mesh.material = torso_mat
 	var torso := MeshInstance3D.new()
 	torso.name = "Torso"
 	torso.mesh = torso_mesh
-	torso.position = Vector3(0, 1.15, 0)
+	torso.position = Vector3(0, 1.05, 0)
 	torso.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	add_child(torso)
 
-	# Legs
+	# Ragged shirt/vest overlay
+	var cloth_colors := [
+		Color(0.30, 0.15, 0.12), Color(0.18, 0.22, 0.15),
+		Color(0.35, 0.30, 0.22), Color(0.20, 0.18, 0.25),
+		Color(0.15, 0.15, 0.20), Color(0.28, 0.12, 0.10),
+	]
+	var shirt_mat := StandardMaterial3D.new()
+	shirt_mat.albedo_color = cloth_colors[_rng.randi() % cloth_colors.size()]
+	shirt_mat.roughness = 0.95
+	var shirt_mesh := BoxMesh.new()
+	shirt_mesh.size = Vector3(0.52 * scale_var, 0.36, 0.30 * scale_var)
+	shirt_mesh.material = shirt_mat
+	var shirt := MeshInstance3D.new()
+	shirt.mesh = shirt_mesh
+	shirt.position = Vector3(0, 1.08, 0)
+	shirt.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(shirt)
+
+	# Legs — box style
 	var leg_mat := StandardMaterial3D.new()
-	leg_mat.albedo_color = Color(0.22, 0.22, 0.20, 1)
+	leg_mat.albedo_color = Color(0.18, 0.17, 0.15, 1)
 	leg_mat.roughness = 0.9
 	for side in [-1.0, 1.0]:
 		var leg_mesh := BoxMesh.new()
-		leg_mesh.size = Vector3(0.18 * scale_var, 0.7, 0.20 * scale_var)
+		leg_mesh.size = Vector3(0.19 * scale_var, 0.44, 0.20 * scale_var)
 		leg_mesh.material = leg_mat
 		var leg := MeshInstance3D.new()
 		leg.mesh = leg_mesh
-		leg.position = Vector3(side * 0.13 * scale_var, 0.35, 0)
+		leg.position = Vector3(side * 0.12 * scale_var, 0.58, 0)
 		leg.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 		add_child(leg)
 
-	# Arms
+	# Feet — dark blocky shoes
+	var boot_mat := StandardMaterial3D.new()
+	boot_mat.albedo_color = Color(0.10, 0.09, 0.08, 1)
+	boot_mat.roughness = 0.8
+	for side in [-1.0, 1.0]:
+		var boot_mesh := BoxMesh.new()
+		boot_mesh.size = Vector3(0.21 * scale_var, 0.16, 0.26 * scale_var)
+		boot_mesh.material = boot_mat
+		var boot := MeshInstance3D.new()
+		boot.mesh = boot_mesh
+		boot.position = Vector3(side * 0.12 * scale_var, 0.28, 0.02)
+		boot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		add_child(boot)
+
+	# Arms — box style with slight zombie slouch
 	var arm_mat := StandardMaterial3D.new()
-	arm_mat.albedo_color = Color(0.38 + skin_tint, 0.42 + skin_tint, 0.32 + skin_tint, 1)
+	arm_mat.albedo_color = Color(skin_r, skin_g, skin_b, 1)
 	arm_mat.roughness = 0.9
 	for side in [-1.0, 1.0]:
-		var arm_mesh := CylinderMesh.new()
-		arm_mesh.top_radius = 0.06 * scale_var
-		arm_mesh.bottom_radius = 0.07 * scale_var
-		arm_mesh.height = 0.65
+		var arm_mesh := BoxMesh.new()
+		arm_mesh.size = Vector3(0.13 * scale_var, 0.42, 0.13 * scale_var)
 		arm_mesh.material = arm_mat
 		var arm := MeshInstance3D.new()
 		arm.mesh = arm_mesh
-		arm.position = Vector3(side * 0.34 * scale_var, 1.0, 0.05)
-		arm.rotation_degrees = Vector3(_rng.randf_range(5, 25), 0, side * _rng.randf_range(-10, 10))
+		arm.position = Vector3(side * 0.33 * scale_var, 0.95, 0.06)
+		arm.rotation_degrees = Vector3(_rng.randf_range(8, 30), 0, side * _rng.randf_range(-5, 15))
 		arm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 		add_child(arm)
 
-	# Head
+	# Hands — bony fists
+	var hand_mat := StandardMaterial3D.new()
+	hand_mat.albedo_color = Color(skin_r * 0.85, skin_g * 0.85, skin_b * 0.8, 1)
+	hand_mat.roughness = 0.85
+	for side in [-1.0, 1.0]:
+		var hand_mesh := BoxMesh.new()
+		hand_mesh.size = Vector3(0.14 * scale_var, 0.12, 0.14 * scale_var)
+		hand_mesh.material = hand_mat
+		var hand := MeshInstance3D.new()
+		hand.mesh = hand_mesh
+		hand.position = Vector3(side * 0.33 * scale_var, 0.70, 0.08)
+		hand.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		add_child(hand)
+
+	# Head — large blocky head (chibi proportions)
 	var head_mat := StandardMaterial3D.new()
-	head_mat.albedo_color = Color(0.55 + skin_tint, 0.50 + skin_tint, 0.40 + skin_tint, 1)
-	head_mat.roughness = 0.85
-	var head_mesh := SphereMesh.new()
-	head_mesh.radius = 0.22 * scale_var
-	head_mesh.height = 0.44 * scale_var
+	head_mat.albedo_color = Color(skin_r, skin_g, skin_b, 1)
+	head_mat.roughness = 0.8
+	var head_mesh := BoxMesh.new()
+	head_mesh.size = Vector3(0.40 * scale_var, 0.40 * scale_var, 0.38 * scale_var)
 	head_mesh.material = head_mat
 	var head := MeshInstance3D.new()
 	head.name = "Head"
 	head.mesh = head_mesh
-	head.position = Vector3(0, 1.65, 0)
+	head.position = Vector3(0, 1.48, 0)
 	head.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	add_child(head)
 
-	# Eyes: bloodshot red/yellow
+	# Eyes: glowing red/yellow
 	var eye_mat := StandardMaterial3D.new()
-	eye_mat.albedo_color = Color(0.7, 0.15, 0.08, 1)
+	eye_mat.albedo_color = Color(0.9, 0.2, 0.05, 1)
 	eye_mat.emission_enabled = true
-	eye_mat.emission = Color(0.4, 0.05, 0.02)
-	eye_mat.emission_energy_multiplier = 0.3
-	var eye_mesh := SphereMesh.new()
-	eye_mesh.radius = 0.05
-	eye_mesh.height = 0.10
-	eye_mesh.material = eye_mat
+	eye_mat.emission = Color(0.6, 0.08, 0.02)
+	eye_mat.emission_energy_multiplier = 0.5
 	for side in [-1.0, 1.0]:
+		var eye_mesh := BoxMesh.new()
+		eye_mesh.size = Vector3(0.10, 0.06, 0.04)
+		eye_mesh.material = eye_mat
 		var eye := MeshInstance3D.new()
 		eye.mesh = eye_mesh
-		eye.position = Vector3(side * 0.08, 1.68, 0.18)
+		eye.position = Vector3(side * 0.10, 1.52, 0.18)
 		add_child(eye)
 
-	# Torn clothing patches
-	var cloth_colors := [
-		Color(0.30, 0.15, 0.12), Color(0.18, 0.22, 0.15),
-		Color(0.35, 0.30, 0.22), Color(0.20, 0.18, 0.25),
-	]
-	var cloth_mat := StandardMaterial3D.new()
-	cloth_mat.albedo_color = cloth_colors[_rng.randi() % cloth_colors.size()]
-	cloth_mat.roughness = 0.95
+	# Mouth — dark gash
+	var mouth_mat := StandardMaterial3D.new()
+	mouth_mat.albedo_color = Color(0.15, 0.05, 0.05, 1)
+	var mouth_mesh := BoxMesh.new()
+	mouth_mesh.size = Vector3(0.18, 0.04, 0.03)
+	mouth_mesh.material = mouth_mat
+	var mouth := MeshInstance3D.new()
+	mouth.mesh = mouth_mesh
+	mouth.position = Vector3(0, 1.38, 0.18)
+	add_child(mouth)
+
+	# Torn clothing patches on torso
 	for _i in range(_rng.randi_range(1, 3)):
+		var patch_mat := StandardMaterial3D.new()
+		patch_mat.albedo_color = cloth_colors[_rng.randi() % cloth_colors.size()]
+		patch_mat.roughness = 0.95
 		var patch_mesh := BoxMesh.new()
 		patch_mesh.size = Vector3(
-			_rng.randf_range(0.12, 0.25),
-			_rng.randf_range(0.15, 0.30),
-			_rng.randf_range(0.08, 0.15)
+			_rng.randf_range(0.10, 0.22),
+			_rng.randf_range(0.10, 0.22),
+			0.01
 		)
-		patch_mesh.material = cloth_mat
+		patch_mesh.material = patch_mat
 		var patch := MeshInstance3D.new()
 		patch.mesh = patch_mesh
 		patch.position = Vector3(
-			_rng.randf_range(-0.20, 0.20),
-			_rng.randf_range(0.8, 1.4),
-			_rng.randf_range(0.10, 0.22)
+			_rng.randf_range(-0.18, 0.18),
+			_rng.randf_range(0.9, 1.2),
+			0.15
 		)
 		patch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(patch)
 
-	# Blood splatters (randomized placement)
-	var splat_count := _rng.randi_range(2, 5)
-	for _i in range(splat_count):
+	# Blood splatters
+	for _i in range(_rng.randi_range(2, 4)):
 		_add_blood_splat(
 			Vector3(
-				_rng.randf_range(-0.22, 0.22),
-				_rng.randf_range(0.5, 1.5),
-				_rng.randf_range(0.12, 0.28)
+				_rng.randf_range(-0.20, 0.20),
+				_rng.randf_range(0.5, 1.4),
+				_rng.randf_range(0.12, 0.25)
 			),
-			_rng.randf_range(0.05, 0.14)
+			_rng.randf_range(0.04, 0.10)
 		)
+
+	# Skeleton weapon accessory — 70% chance to carry one
+	if _rng.randf() < 0.7:
+		var weapon_scene: PackedScene = ENEMY_WEAPON_SCENES[_rng.randi() % ENEMY_WEAPON_SCENES.size()]
+		var weapon_inst := weapon_scene.instantiate()
+		weapon_inst.scale = Vector3(0.3, 0.3, 0.3)
+		weapon_inst.position = Vector3(0.35, 0.75, 0.0)
+		weapon_inst.rotation_degrees = Vector3(0, _rng.randf_range(-30, 30), -90)
+		add_child(weapon_inst)
+
+	# Shield on left side — 30% chance
+	if _rng.randf() < 0.3:
+		var shield_scene: PackedScene = ENEMY_SHIELD_SCENES[_rng.randi() % ENEMY_SHIELD_SCENES.size()]
+		var shield_inst := shield_scene.instantiate()
+		shield_inst.scale = Vector3(0.35, 0.35, 0.35)
+		shield_inst.position = Vector3(-0.38, 0.95, 0.05)
+		shield_inst.rotation_degrees = Vector3(0, 90, 0)
+		add_child(shield_inst)
 
 	# Collision shape
 	var coll_shape := CapsuleShape3D.new()

@@ -101,50 +101,10 @@ func _build_pistol_model() -> void:
 	_model.add_child(muzzle)
 
 func _build_shotgun_model() -> void:
-	var stock_mat := StandardMaterial3D.new()
-	stock_mat.albedo_color = Color(0.40, 0.26, 0.13, 1)
-	var stock_mesh := BoxMesh.new()
-	stock_mesh.size = Vector3(0.11, 0.12, 0.22)
-	stock_mesh.material = stock_mat
-	var stock := MeshInstance3D.new()
-	stock.mesh = stock_mesh
-	stock.position = Vector3(0.0, -0.02, -0.18)
-	_model.add_child(stock)
-
-	var receiver_mat := StandardMaterial3D.new()
-	receiver_mat.albedo_color = Color(0.18, 0.18, 0.20, 1)
-	var receiver_mesh := BoxMesh.new()
-	receiver_mesh.size = Vector3(0.10, 0.10, 0.14)
-	receiver_mesh.material = receiver_mat
-	var receiver := MeshInstance3D.new()
-	receiver.mesh = receiver_mesh
-	receiver.position = Vector3(0.0, 0.0, -0.02)
-	_model.add_child(receiver)
-
-	var forend_mat := StandardMaterial3D.new()
-	forend_mat.albedo_color = Color(0.45, 0.30, 0.15, 1)
-	var forend_mesh := BoxMesh.new()
-	forend_mesh.size = Vector3(0.11, 0.08, 0.12)
-	forend_mesh.material = forend_mat
-	var forend := MeshInstance3D.new()
-	forend.mesh = forend_mesh
-	forend.position = Vector3(0.0, -0.02, 0.12)
-	_model.add_child(forend)
-
-	var barrel_mat := StandardMaterial3D.new()
-	barrel_mat.albedo_color = Color(0.12, 0.12, 0.14, 1)
-	for i in range(2):
-		var offset_x := -0.03 + i * 0.06
-		var barrel_mesh := CylinderMesh.new()
-		barrel_mesh.top_radius = 0.03
-		barrel_mesh.bottom_radius = 0.03
-		barrel_mesh.height = 0.34
-		barrel_mesh.material = barrel_mat
-		var barrel := MeshInstance3D.new()
-		barrel.mesh = barrel_mesh
-		barrel.position = Vector3(offset_x, 0.02, 0.22)
-		barrel.rotation_degrees = Vector3(90, 0, 0)
-		_model.add_child(barrel)
+	var scene: PackedScene = preload("res://assets/weapons/Skeleton_Crossbow.gltf")
+	var inst := scene.instantiate()
+	inst.scale = Vector3(0.5, 0.5, 0.5)
+	_model.add_child(inst)
 
 func _build_smg_model() -> void:
 	var body_mat := StandardMaterial3D.new()
@@ -168,53 +128,16 @@ func _build_smg_model() -> void:
 	_model.add_child(mag)
 
 func _build_grenade_launcher_model() -> void:
-	var body_mat := StandardMaterial3D.new()
-	body_mat.albedo_color = Color(0.28, 0.30, 0.22, 1)
-	var body_mesh := BoxMesh.new()
-	body_mesh.size = Vector3(0.12, 0.12, 0.24)
-	body_mesh.material = body_mat
-	var body_mi := MeshInstance3D.new()
-	body_mi.mesh = body_mesh
-	body_mi.position = Vector3(0.0, 0.0, -0.02)
-	_model.add_child(body_mi)
-
-	var barrel_mat := StandardMaterial3D.new()
-	barrel_mat.albedo_color = Color(0.15, 0.16, 0.14, 1)
-	var barrel_mesh := CylinderMesh.new()
-	barrel_mesh.top_radius = 0.05
-	barrel_mesh.bottom_radius = 0.05
-	barrel_mesh.height = 0.26
-	barrel_mesh.material = barrel_mat
-	var barrel := MeshInstance3D.new()
-	barrel.mesh = barrel_mesh
-	barrel.position = Vector3(0.0, 0.02, 0.18)
-	barrel.rotation_degrees = Vector3(90, 0, 0)
-	_model.add_child(barrel)
+	var scene: PackedScene = preload("res://assets/weapons/Skeleton_Staff.gltf")
+	var inst := scene.instantiate()
+	inst.scale = Vector3(0.45, 0.45, 0.45)
+	_model.add_child(inst)
 
 func _build_bat_model() -> void:
-	var handle_mat := StandardMaterial3D.new()
-	handle_mat.albedo_color = Color(0.15, 0.12, 0.08, 1)
-	var handle_mesh := CylinderMesh.new()
-	handle_mesh.top_radius = 0.025
-	handle_mesh.bottom_radius = 0.03
-	handle_mesh.height = 0.30
-	handle_mesh.material = handle_mat
-	var handle := MeshInstance3D.new()
-	handle.mesh = handle_mesh
-	handle.position = Vector3(0.0, -0.05, 0.0)
-	_model.add_child(handle)
-
-	var barrel_mat := StandardMaterial3D.new()
-	barrel_mat.albedo_color = Color(0.50, 0.35, 0.18, 1)
-	var barrel_mesh := CylinderMesh.new()
-	barrel_mesh.top_radius = 0.04
-	barrel_mesh.bottom_radius = 0.03
-	barrel_mesh.height = 0.50
-	barrel_mesh.material = barrel_mat
-	var barrel := MeshInstance3D.new()
-	barrel.mesh = barrel_mesh
-	barrel.position = Vector3(0.0, 0.30, 0.0)
-	_model.add_child(barrel)
+	var scene: PackedScene = preload("res://assets/weapons/Skeleton_Axe.gltf")
+	var inst := scene.instantiate()
+	inst.scale = Vector3(0.5, 0.5, 0.5)
+	_model.add_child(inst)
 
 func _build_glow() -> void:
 	var glow_mat := StandardMaterial3D.new()
