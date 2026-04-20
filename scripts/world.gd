@@ -287,43 +287,42 @@ func _place_street_prop(pos: Vector3, prop_keys: Array) -> void:
 	var is_car := false
 	match key:
 		"streetlight":
-			prop_scale = 2.0
+			prop_scale = 4.0
 		"bench":
-			prop_scale = 1.2
+			prop_scale = 3.0
 		"bush":
-			prop_scale = _rng.randf_range(1.0, 1.5)
+			prop_scale = _rng.randf_range(2.5, 4.0)
 		"dumpster":
-			prop_scale = 1.2
+			prop_scale = 3.0
 		"firehydrant":
-			prop_scale = 1.0
+			prop_scale = 2.5
 		"trash_A", "trash_B":
-			prop_scale = 0.8
+			prop_scale = 2.0
 		"car_sedan", "car_taxi", "car_police":
-			prop_scale = 1.4
+			prop_scale = 3.0
 			is_car = true
 		"trafficlight":
-			prop_scale = 2.0
+			prop_scale = 4.0
 		"box_A", "box_B":
-			prop_scale = 1.0
+			prop_scale = 2.5
 		"watertower":
-			prop_scale = 2.0
+			prop_scale = 5.0
 
 	instance.scale = Vector3.ONE * prop_scale
 
 	if is_car:
-		# Cars align with roads — pick 0 or 90 degrees only
 		instance.rotation.y = (PI * 0.5) * float(_rng.randi_range(0, 1))
 	else:
 		instance.rotation.y = _rng.randf_range(0.0, TAU)
 
-	# Tight collision boxes only for cars
-	if is_car:
+	# Collision only for dumpsters — cars are purely decorative
+	if key == "dumpster":
 		var sb := StaticBody3D.new()
 		var cs := CollisionShape3D.new()
 		var shp := BoxShape3D.new()
-		shp.size = Vector3(0.9 * prop_scale, 0.6 * prop_scale, 1.8 * prop_scale)
+		shp.size = Vector3(1.0, 0.8, 1.2)
 		cs.shape = shp
-		sb.position = Vector3(0.0, 0.3 * prop_scale, 0.0)
+		sb.position = Vector3(0.0, 0.4, 0.0)
 		sb.add_child(cs)
 		instance.add_child(sb)
 

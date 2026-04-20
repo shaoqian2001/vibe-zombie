@@ -666,13 +666,16 @@ func _open_door(binfo: Dictionary) -> void:
 	# Create interior if needed (skip if re-opening same building from inside)
 	if need_interior:
 		_create_interior(binfo)
+		# Start hidden — only show when player steps inside
+		_current_interior.visible = false
+		_current_interior.process_mode = Node.PROCESS_MODE_DISABLED
 
-	# Set initial view based on player position
+	# Force-check player position and set correct view
 	_update_player_inside()
 	if _player_inside:
-		_switch_to_interior_view()
+		_force_interior_view()
 	else:
-		_switch_to_exterior_view()
+		_force_exterior_view()
 
 # ------------------------------------------------------------------
 # Close door
@@ -696,9 +699,8 @@ func _close_door() -> void:
 		pass
 	else:
 		# Player is outside: full cleanup
+		_force_exterior_view()
 		_destroy_interior()
-		var building_node: Node3D = _active_building.node
-		building_node.visible = true
 		_active_building = {}
 		_showing_interior = false
 
@@ -818,21 +820,29 @@ func _update_player_inside() -> void:
 func _switch_to_interior_view() -> void:
 	if _showing_interior:
 		return
+	_force_interior_view()
+
+func _switch_to_exterior_view() -> void:
+	if not _showing_interior:
+		return
+	_force_exterior_view()
+
+func _force_interior_view() -> void:
 	_showing_interior = true
 	var building_node: Node3D = _active_building.node
 	building_node.visible = false
 	if _current_interior:
 		_current_interior.visible = true
+		_current_interior.process_mode = Node.PROCESS_MODE_INHERIT
 
-func _switch_to_exterior_view() -> void:
-	if not _showing_interior:
-		return
+func _force_exterior_view() -> void:
 	_showing_interior = false
-	var building_node: Node3D = _active_building.node
-	building_node.visible = true
-	# Keep door mesh hidden (it's part of the pivot, not the exterior)
+	if not _active_building.is_empty():
+		var building_node: Node3D = _active_building.node
+		building_node.visible = true
 	if _current_interior:
 		_current_interior.visible = false
+		_current_interior.process_mode = Node.PROCESS_MODE_DISABLED
 
 # ------------------------------------------------------------------
 # Interior wall visibility based on camera angle

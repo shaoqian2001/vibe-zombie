@@ -60,9 +60,13 @@ var _aim_line: MeshInstance3D = null
 var _aim_dot: MeshInstance3D = null
 var aim_line_enabled: bool = true
 
+const _CharacterScene := preload("res://assets/characters/db87f3b8fab54264877c86937fa42b22.gltf")
+const _PLAYER_VARIANT := 1  # cyan-emissive variant
+
 func _ready() -> void:
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
+	_build_character_model()
 	_build_pistol()
 	_build_shotgun()
 	_build_smg()
@@ -74,6 +78,39 @@ func _ready() -> void:
 	_grenade_launcher_node.visible = false
 	_bat_node.visible = false
 	_build_aim_line()
+
+func _build_character_model() -> void:
+	for child in get_children():
+		if child is MeshInstance3D:
+			child.queue_free()
+	var scene_inst := _CharacterScene.instantiate()
+	var mesh_parent := _find_mesh_parent(scene_inst)
+	if mesh_parent:
+		var idx := 0
+		for child in mesh_parent.get_children():
+			if child is Node3D:
+				if idx == _PLAYER_VARIANT:
+					(child as Node3D).position = Vector3.ZERO
+					child.visible = true
+				else:
+					child.visible = false
+				idx += 1
+	scene_inst.scale = Vector3(0.9, 0.9, 0.9)
+	scene_inst.position = Vector3(0.0, 0.0, 0.0)
+	add_child(scene_inst)
+
+static func _find_mesh_parent(node: Node) -> Node:
+	var child_count := 0
+	for child in node.get_children():
+		if child is Node3D:
+			child_count += 1
+	if child_count >= 6:
+		return node
+	for child in node.get_children():
+		var result := _find_mesh_parent(child)
+		if result:
+			return result
+	return null
 
 func _physics_process(delta: float) -> void:
 	if is_dead:
