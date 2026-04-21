@@ -12,7 +12,7 @@ var _density_slider: HSlider
 var _density_label: Label
 var _god_mode_check: CheckButton
 var _horde_spin: SpinBox
-var _visible := false
+var _visible := true
 
 var _density_value: float = 1.0
 var _god_mode_value: bool = true  # matches DEV_MODE default
@@ -20,7 +20,7 @@ var _god_mode_value: bool = true  # matches DEV_MODE default
 func _ready() -> void:
 	layer = 15
 	_build_panel()
-	_panel.visible = false
+	_panel.visible = true
 
 func toggle() -> void:
 	_visible = not _visible
@@ -35,15 +35,14 @@ func _build_panel() -> void:
 	_panel = PanelContainer.new()
 	_panel.name = "DebugPanel"
 
-	# Position top-right
 	_panel.anchor_left = 1.0
 	_panel.anchor_right = 1.0
-	_panel.anchor_top = 0.0
-	_panel.anchor_bottom = 0.0
+	_panel.anchor_top = 0.5
+	_panel.anchor_bottom = 0.5
 	_panel.offset_left = -320
 	_panel.offset_right = -10
-	_panel.offset_top = 40
-	_panel.offset_bottom = 280
+	_panel.offset_top = -120
+	_panel.offset_bottom = 120
 
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.1, 0.1, 0.12, 0.92)
