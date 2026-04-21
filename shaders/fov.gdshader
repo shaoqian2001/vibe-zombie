@@ -5,8 +5,14 @@ shader_type canvas_item;
 // Using UV instead of FRAGCOORD avoids mismatches between physical window
 // pixels and the logical viewport coords returned by unproject_position()
 // under Godot's canvas_items stretch mode.
+//
+// The polygon is a lens / vesica shape: two circular arcs meeting at an apex
+// (the character's head) and a far tip (view_distance ahead). Each arc is
+// sampled with ARC_SEGMENTS + 1 points, so the total vertex count is
+// 2 * (ARC_SEGMENTS + 1). Apex and tip are duplicated once each, which the
+// point-in-polygon ray-cast tolerates (zero-length edges are no-ops).
 
-const int N_VERTS = 34;  // 1 center + 33 arc points (32 arc segments)
+const int N_VERTS = 34;  // 2 arcs * (16 segments + 1) points per arc
 
 uniform vec2 fov_polygon[N_VERTS];
 uniform float fog_alpha : hint_range(0.0, 1.0) = 0.88;
