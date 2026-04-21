@@ -98,6 +98,11 @@ func _physics_process(delta: float) -> void:
 func take_damage(amount: float) -> void:
 	hp = max(hp - amount, 0.0)
 	if hp <= 0.0:
+		# Notify mission system of kill
+		var mission_nodes := get_tree().get_nodes_in_group("mission_system")
+		for ms in mission_nodes:
+			if ms.has_method("notify_enemy_killed"):
+				ms.notify_enemy_killed()
 		queue_free()
 
 func _try_attack() -> void:
