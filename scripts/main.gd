@@ -239,7 +239,7 @@ func _open_map() -> void:
 	_map_view.set_script(MapView)
 	_map_view.name = "MapView"
 	add_child(_map_view)
-	_map_view.configure(world, player, {}, {}, false)
+	_map_view.configure(world, player, _mission_system)
 
 func _close_map() -> void:
 	_map_open = false

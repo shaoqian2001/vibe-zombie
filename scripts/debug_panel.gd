@@ -2,6 +2,7 @@ extends CanvasLayer
 
 ## Debug control panel (only visible in DEV_MODE).
 ## Controls: zombie density multiplier, god mode toggle, horde spawn button.
+## Changes to density and god mode only apply when the Apply button is clicked.
 
 signal density_changed(multiplier: float)
 signal god_mode_changed(enabled: bool)
@@ -12,22 +13,24 @@ var _density_slider: HSlider
 var _density_label: Label
 var _god_mode_check: CheckButton
 var _horde_spin: SpinBox
-var _visible := false
+var _apply_btn: Button
+var _visible := true
 
-var _density_value: float = 1.0
-var _god_mode_value: bool = true  # matches DEV_MODE default
+# Currently applied values (what the game is actually using)
+var _applied_density: float = 1.0
+var _applied_god_mode: bool = true  # matches DEV_MODE default
 
 func _ready() -> void:
 	layer = 15
 	_build_panel()
-	_panel.visible = false
+	_panel.visible = true
 
 func toggle() -> void:
 	_visible = not _visible
 	_panel.visible = _visible
 
 func set_god_mode(value: bool) -> void:
-	_god_mode_value = value
+	_applied_god_mode = value
 	if _god_mode_check:
 		_god_mode_check.button_pressed = value
 
@@ -35,15 +38,14 @@ func _build_panel() -> void:
 	_panel = PanelContainer.new()
 	_panel.name = "DebugPanel"
 
-	# Position top-right
 	_panel.anchor_left = 1.0
 	_panel.anchor_right = 1.0
-	_panel.anchor_top = 0.0
-	_panel.anchor_bottom = 0.0
+	_panel.anchor_top = 0.5
+	_panel.anchor_bottom = 0.5
 	_panel.offset_left = -320
 	_panel.offset_right = -10
-	_panel.offset_top = 40
-	_panel.offset_bottom = 280
+	_panel.offset_top = -140
+	_panel.offset_bottom = 140
 
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.1, 0.1, 0.12, 0.92)
@@ -79,28 +81,39 @@ func _build_panel() -> void:
 	density_title.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
 	density_hbox.add_child(density_title)
 	_density_label = Label.new()
-	_density_label.text = "1.0x"
+	_density_label.text = "1.00x"
 	_density_label.add_theme_font_size_override("font_size", 13)
 	_density_label.add_theme_color_override("font_color", Color(1.0, 0.8, 0.3))
 	density_hbox.add_child(_density_label)
 
 	_density_slider = HSlider.new()
-	_density_slider.min_value = 0.0
+	_density_slider.min_value = 0.25
 	_density_slider.max_value = 5.0
 	_density_slider.step = 0.25
 	_density_slider.value = 1.0
 	_density_slider.custom_minimum_size = Vector2(0, 20)
-	_density_slider.value_changed.connect(_on_density_changed)
+	_density_slider.value_changed.connect(_on_density_preview)
 	vbox.add_child(_density_slider)
 
 	# God Mode
 	_god_mode_check = CheckButton.new()
 	_god_mode_check.text = "God Mode (Invincible)"
-	_god_mode_check.button_pressed = _god_mode_value
+	_god_mode_check.button_pressed = _applied_god_mode
 	_god_mode_check.add_theme_font_size_override("font_size", 13)
 	_god_mode_check.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
-	_god_mode_check.toggled.connect(_on_god_mode_toggled)
 	vbox.add_child(_god_mode_check)
+
+	# Apply button
+	_apply_btn = Button.new()
+	_apply_btn.text = "Apply"
+	_apply_btn.add_theme_font_size_override("font_size", 14)
+	var apply_style := StyleBoxFlat.new()
+	apply_style.bg_color = Color(0.2, 0.55, 0.3, 0.9)
+	apply_style.set_corner_radius_all(4)
+	apply_style.set_content_margin_all(6)
+	_apply_btn.add_theme_stylebox_override("normal", apply_style)
+	_apply_btn.pressed.connect(_on_apply)
+	vbox.add_child(_apply_btn)
 
 	# Separator
 	var sep2 := HSeparator.new()
@@ -137,15 +150,21 @@ func _build_panel() -> void:
 	hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 	vbox.add_child(hint)
 
-func _on_density_changed(value: float) -> void:
-	_density_value = value
+func _on_density_preview(value: float) -> void:
 	if _density_label:
 		_density_label.text = "%.2fx" % value
-	density_changed.emit(value)
 
-func _on_god_mode_toggled(pressed: bool) -> void:
-	_god_mode_value = pressed
-	god_mode_changed.emit(pressed)
+func _on_apply() -> void:
+	var new_density: float = _density_slider.value
+	var new_god_mode: bool = _god_mode_check.button_pressed
+
+	if not is_equal_approx(new_density, _applied_density):
+		_applied_density = new_density
+		density_changed.emit(new_density)
+
+	if new_god_mode != _applied_god_mode:
+		_applied_god_mode = new_god_mode
+		god_mode_changed.emit(new_god_mode)
 
 func _on_spawn_horde() -> void:
 	var count: int = int(_horde_spin.value)

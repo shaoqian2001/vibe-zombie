@@ -5,15 +5,17 @@ extends CanvasLayer
 ## view_distance) to screen space each frame and passes it to the shader as a
 ## polygon. Pixels outside the polygon are darkened; inside are transparent.
 ##
-## Human-eyesight defaults: 145° horizontal FOV, ~50 world units (~200 m at
-## the game's approximate 1 unit = 4 m scale).
+## Human-eyesight defaults: 145° horizontal FOV, ~25 world units (~100 m at
+## the game's approximate 1 unit = 4 m scale) — close to the distance beyond
+## which a human can no longer resolve useful detail in practice.
 
 @export var fov_degrees: float = 145.0
-@export var view_distance: float = 50.0
-## World-unit distance to move the cone apex behind the player so the
-## character model is fully visible inside the sector. Keep this just large
-## enough to cover the player's half-depth — any more looks unnatural.
-@export var center_back_offset: float = 1.0
+@export var view_distance: float = 25.0
+## World-unit height of the character's eyes above the player's root position.
+## The sector apex is anchored here so it projects to the rendered head on
+## screen, and the whole polygon lies at head level so the character's body
+## remains inside the unshaded area from every facing direction.
+@export var head_height: float = 1.6
 
 const ARC_SEGMENTS := 32
 const N_VERTS := ARC_SEGMENTS + 2  # 1 center + (ARC_SEGMENTS + 1) arc pts = 34
@@ -57,25 +59,29 @@ func _process(_delta: float) -> void:
 	var half_rad   := deg_to_rad(fov_degrees * 0.5)
 	var base_angle := atan2(facing.y, facing.x)
 
-	# Shift the apex behind the player so the character model falls inside
-	# the visible sector instead of sitting right at its sharp point.
-	var apex_xz  := Vector2(ppos.x, ppos.z) - facing * center_back_offset
-	var apex_3d  := Vector3(apex_xz.x, ppos.y, apex_xz.y)
+	# Apex anchored at the character's head position. Using head height (rather
+	# than an offset behind the feet) makes the apex project onto the rendered
+	# head, so the body hangs "below" the apex on screen and stays inside the
+	# sector at every facing direction. The whole polygon is a planar slice at
+	# this height to keep the projection consistent.
+	var y_apex := ppos.y + head_height
+	var apex_3d  := Vector3(ppos.x, y_apex, ppos.z)
 	var apex_px  := _camera.unproject_position(apex_3d)  # still in pixel space
 
 	var polygon := PackedVector2Array()
 	polygon.resize(N_VERTS)
 
-	# Vertex 0: shifted apex (pixel space; normalised at the end)
+	# Vertex 0: apex (pixel space; normalised at the end)
 	polygon[0] = apex_px
 
-	# Vertices 1 .. N_VERTS-1: arc swept ±half_rad, radius measured from ppos
+	# Vertices 1 .. N_VERTS-1: arc swept ±half_rad around the head, at head
+	# height so the polygon stays coplanar with its apex.
 	for i in range(ARC_SEGMENTS + 1):
 		var t := float(i) / float(ARC_SEGMENTS)
 		var angle := base_angle - half_rad + t * (half_rad * 2.0)
 		var dir_xz := Vector2(cos(angle), sin(angle))
 		var world_xz := Vector2(ppos.x, ppos.z) + dir_xz * view_distance
-		var world3d := Vector3(world_xz.x, 0.0, world_xz.y)
+		var world3d := Vector3(world_xz.x, y_apex, world_xz.y)
 		polygon[i + 1] = _safe_project(world3d, apex_px, dir_xz)
 
 	# Normalise all vertices to UV [0,1] before uploading to the shader.
@@ -100,6 +106,7 @@ func _safe_project(world3d: Vector3, player_screen: Vector2, world_dir_xz: Vecto
 	var steps: Array[float] = [0.5, 0.25, 0.1]
 	for step: float in steps:
 		var probe: Vector3 = ppos + dir3 * (view_distance * step)
+		probe.y = world3d.y
 		if (probe - _camera.global_position).dot(cam_fwd) > 0.1:
 			var probe_screen := _camera.unproject_position(probe)
 			var screen_dir := (probe_screen - player_screen).normalized()
