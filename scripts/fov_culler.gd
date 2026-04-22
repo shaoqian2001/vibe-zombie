@@ -30,6 +30,11 @@ extends Node
 
 const META_RADIUS         := &"fov_cull_radius"
 const META_DISABLE_PROCESS := &"fov_cull_disable_process"
+## Optional Vector2 XZ override. Use when the entity's own global_position
+## doesn't equal its culling centre — e.g. buildings are a container Node3D
+## at world origin whose children carry the actual world positions, so the
+## container itself needs to advertise its logical centre explicitly.
+const META_CENTER          := &"fov_cull_center"
 const GROUP               := &"fov_cullable"
 
 var _player: Node3D = null
@@ -71,7 +76,11 @@ func _process(_delta: float) -> void:
 		var radius: float = float(n3.get_meta(META_RADIUS, 0.5))
 		var disable_process: bool = bool(n3.get_meta(META_DISABLE_PROCESS, false))
 
-		var p_xz := Vector2(n3.global_position.x, n3.global_position.z)
+		var p_xz: Vector2
+		if n3.has_meta(META_CENTER):
+			p_xz = n3.get_meta(META_CENTER)
+		else:
+			p_xz = Vector2(n3.global_position.x, n3.global_position.z)
 		var inside := _point_in_fov(p_xz, radius, head_xz, facing, half_rad, view_dist)
 
 		if n3.visible != inside:

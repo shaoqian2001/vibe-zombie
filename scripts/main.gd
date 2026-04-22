@@ -117,20 +117,34 @@ func _ready() -> void:
 	_fov_overlay.name = "FovOverlay"
 	add_child(_fov_overlay)
 
+	# Spawn player near map rim — positions derived from the world's actual size.
+	# Rim candidates are fixed points at the map edges; any of them can fall
+	# inside a building once the procedural grid fills blocks out to the rim,
+	# which would leave the player wedged between walls at start. Drop any
+	# overlapping candidates; if every rim point is blocked, scan for a
+	# fallback walkable position.
+	var rim_candidates := _build_rim_spawn_candidates()
+	var valid_rim: Array = []
+	for cand in rim_candidates:
+		if not _pos_inside_building(cand):
+			valid_rim.append(cand)
+	if valid_rim.is_empty():
+		valid_rim.append(_find_clear_fallback_spawn(rng, rim_candidates[0]))
+
 	# Pick spawn slots. In MP, every peer evaluates the same RNG against the
 	# same sorted peer list, so each one places the others identically.
-	var rim_candidates := _build_rim_spawn_candidates()
 	var spawn_assignments: Dictionary = {}  # peer_id -> Vector3
 	if _is_mp:
 		var ids := NetworkManager.peers.keys()
 		ids.sort()
-		# Shuffle the rim candidates with our shared seed so positions look random
-		# without being correlated to peer-id ordering.
-		_shuffle_array(rim_candidates, rng)
+		# Shuffle so spawn points look random without being correlated to peer
+		# id ordering (shared seed makes this deterministic across peers).
+		_shuffle_array(valid_rim, rng)
 		for i in range(ids.size()):
-			spawn_assignments[ids[i]] = rim_candidates[i % rim_candidates.size()]
+			spawn_assignments[ids[i]] = valid_rim[i % valid_rim.size()]
 	else:
-		spawn_assignments[1] = rim_candidates[rng.randi() % rim_candidates.size()]
+		valid_rim.shuffle()
+		spawn_assignments[1] = valid_rim[0]
 
 	# The Player node baked into Main.tscn becomes the LOCAL player.
 	player.add_to_group("player")
@@ -139,7 +153,7 @@ func _ready() -> void:
 		if player.has_method("refresh_authority"):
 			player.refresh_authority()
 		player.name = "Player_%d" % _local_peer_id
-		player.global_position = spawn_assignments.get(_local_peer_id, rim_candidates[0])
+		player.global_position = spawn_assignments.get(_local_peer_id, valid_rim[0])
 		_player_nodes[_local_peer_id] = player
 
 		# Spawn a representation for every other peer.
@@ -454,6 +468,21 @@ func _build_rim_spawn_candidates() -> Array:
 		Vector3( diag,   0.5, -diag),
 		Vector3(-diag,   0.5, -diag),
 	]
+
+## Random-sample a nearby spawn point that isn't wedged inside a building.
+## Used when every hand-placed rim candidate happens to land inside a
+## procedurally generated block — rare, but possible on larger maps.
+func _find_clear_fallback_spawn(rng: RandomNumberGenerator, hint: Vector3) -> Vector3:
+	for _i in range(60):
+		var jitter := Vector3(rng.randf_range(-10.0, 10.0), 0.0, rng.randf_range(-10.0, 10.0))
+		var cand := Vector3(hint.x + jitter.x, 0.5, hint.z + jitter.z)
+		if not _pos_inside_building(cand):
+			return cand
+	# Last resort: world origin. The ground plane is at y=0, so 0.5 keeps
+	# the capsule off it. The caller has already warned in logs if we
+	# reach this path.
+	push_warning("main.gd: could not find a building-free spawn near rim; defaulting to origin")
+	return Vector3(0, 0.5, 0)
 
 # ------------------------------------------------------------------
 # Enemy spawning
@@ -1130,13 +1159,27 @@ func _building_occludes(binfo: Dictionary, cam_pos: Vector3, player_pos: Vector3
 	return tmax >= tmin and tmax > 0.0 and tmin < 1.0
 
 func _set_building_alpha(binfo: Dictionary, alpha: float) -> void:
-	var node: MeshInstance3D = binfo.node
-	var mat: StandardMaterial3D = node.mesh.material
-	if mat == null:
+	# The rooftop ledge, windows, trim and awning are separate MeshInstance3D
+	# siblings of the building body, so fading just binfo.node leaves the
+	# roof fully opaque and still blocking the player. Walk the whole
+	# container subtree and fade every mesh's material together.
+	var root: Node3D = binfo.get("container", binfo.node)
+	if root == null:
 		return
-	if alpha < 1.0:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.albedo_color.a = alpha
-	else:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-		mat.albedo_color.a = 1.0
+	_fade_mesh_tree(root, alpha)
+
+func _fade_mesh_tree(node: Node, alpha: float) -> void:
+	if node is MeshInstance3D:
+		var mi: MeshInstance3D = node
+		var prim := mi.mesh as PrimitiveMesh
+		if prim != null:
+			var mat := prim.material as StandardMaterial3D
+			if mat != null:
+				if alpha < 1.0:
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+					mat.albedo_color.a = alpha
+				else:
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+					mat.albedo_color.a = 1.0
+	for child in node.get_children():
+		_fade_mesh_tree(child, alpha)

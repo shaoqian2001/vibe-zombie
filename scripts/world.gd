@@ -253,6 +253,12 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 	add_child(container)
 	container.add_to_group(&"fov_cullable")
 	container.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5 + 1.0)
+	# Container stays at world origin; its children carry world positions.
+	# Advertise the logical XZ centre so the culler uses the building's
+	# actual location rather than (0, 0) — otherwise every building looks
+	# like it's at the map centre and gets hidden whenever the player is
+	# anywhere else.
+	container.set_meta(&"fov_cull_center", Vector2(pos.x, pos.z))
 
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = tinted
