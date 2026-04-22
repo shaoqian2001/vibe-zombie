@@ -16,6 +16,10 @@ run/main_scene="res://scenes/TitleMenu.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+NetworkManager="*res://scripts/network_manager.gd"
+
 [display]
 
 window/size/viewport_width=1280
