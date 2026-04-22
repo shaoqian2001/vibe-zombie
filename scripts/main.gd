@@ -43,9 +43,22 @@ const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
 const WEAPON_PICKUPS_PER_BLOCK := 0.5
 const WEAPON_PICKUP_MIN_DIST := 15.0
 
+const PlayerScene = preload("res://scenes/Player.tscn")
+
 @onready var player: CharacterBody3D = $Player
 @onready var camera: Camera3D        = $Camera3D
 @onready var world: Node3D           = $World
+
+# Networking
+var _is_mp: bool = false
+var _is_host: bool = true
+var _local_peer_id: int = 1
+# Map of peer_id -> Player node (includes self).
+var _player_nodes: Dictionary = {}
+# Counter for unique enemy names emitted by the host.
+var _next_enemy_id: int = 0
+# Counter for unique weapon-pickup names.
+var _next_pickup_id: int = 0
 
 # UI
 var _prompt_label: Label = null
@@ -78,8 +91,23 @@ var _overlay_canvas: CanvasLayer = null
 const MISSION_COUNT := 4
 
 func _ready() -> void:
+	# Network state snapshot for this scene
+	_is_mp = NetworkManager.is_networked
+	_is_host = (not _is_mp) or NetworkManager.is_host
+	_local_peer_id = multiplayer.get_unique_id() if _is_mp else 1
+
+	# Main is host-authoritative for enemy / pickup / world spawns. Set on every
+	# peer so @rpc("authority") routing matches.
+	if _is_mp:
+		set_multiplayer_authority(1)
+
+	# In MP we want a deterministic shared RNG so spawn positions match across
+	# peers. The world is already seeded from NetworkManager.game_seed.
 	var rng := RandomNumberGenerator.new()
-	rng.randomize()
+	if _is_mp:
+		rng.seed = NetworkManager.game_seed ^ 0xC0FFEE
+	else:
+		rng.randomize()
 
 	# FOV overlay added first so it renders below the HUD/UI CanvasLayers
 	_fov_overlay = CanvasLayer.new()
@@ -87,32 +115,118 @@ func _ready() -> void:
 	_fov_overlay.name = "FovOverlay"
 	add_child(_fov_overlay)
 
-	# Spawn player near map rim — positions derived from the world's actual size
+	# Pick spawn slots. In MP, every peer evaluates the same RNG against the
+	# same sorted peer list, so each one places the others identically.
 	var rim_candidates := _build_rim_spawn_candidates()
-	var spawn_pos: Vector3 = rim_candidates[rng.randi() % rim_candidates.size()]
-	player.global_position = spawn_pos
+	var spawn_assignments: Dictionary = {}  # peer_id -> Vector3
+	if _is_mp:
+		var ids := NetworkManager.peers.keys()
+		ids.sort()
+		# Shuffle the rim candidates with our shared seed so positions look random
+		# without being correlated to peer-id ordering.
+		_shuffle_array(rim_candidates, rng)
+		for i in range(ids.size()):
+			spawn_assignments[ids[i]] = rim_candidates[i % rim_candidates.size()]
+	else:
+		spawn_assignments[1] = rim_candidates[rng.randi() % rim_candidates.size()]
+
+	# The Player node baked into Main.tscn becomes the LOCAL player.
+	player.add_to_group("player")
+	if _is_mp:
+		player.set_multiplayer_authority(_local_peer_id)
+		if player.has_method("refresh_authority"):
+			player.refresh_authority()
+		player.name = "Player_%d" % _local_peer_id
+		player.global_position = spawn_assignments.get(_local_peer_id, rim_candidates[0])
+		_player_nodes[_local_peer_id] = player
+
+		# Spawn a representation for every other peer.
+		for peer_id in spawn_assignments.keys():
+			if peer_id == _local_peer_id:
+				continue
+			_spawn_remote_player(peer_id, spawn_assignments[peer_id])
+	else:
+		player.global_position = spawn_assignments[1]
+		_player_nodes[1] = player
 
 	camera.set_target(player)
 	_fov_overlay.configure(player, camera)
-	player.add_to_group("player")
 	_create_ui()
 	_setup_hud()
 
-	if DEV_MODE:
+	# Show game code top-right when networked.
+	if _is_mp and _hud and _hud.has_method("show_game_code"):
+		_hud.show_game_code(NetworkManager.game_code, NetworkManager.peers.size())
+
+	if DEV_MODE and not _is_mp:
+		# In MP, god mode is opt-in via debug only; off by default for fairness.
 		player.god_mode = true
 		if _hud and _hud.has_method("show_dev_mode"):
 			_hud.show_dev_mode()
 		_setup_debug_panel()
+	elif DEV_MODE and _is_mp:
+		_setup_debug_panel()
 
 	await get_tree().process_frame
 
-	_setup_mission_system(rng)
+	# Mission system runs only on the host. Clients see hordes via networked
+	# enemy spawns; mission UI for clients is a TODO (objective text comes
+	# from the host's mission system in this iteration).
+	if _is_host:
+		_setup_mission_system(rng)
+		_spawn_enemies(rng)
+		_spawn_weapon_pickups(rng)
 
-	_spawn_enemies(rng)
-	_spawn_weapon_pickups(rng)
 	_connect_entrance_areas()
 
 	player.died.connect(_on_player_died)
+
+	# Late-joining peers (MP only): listen for new connections so we can spawn
+	# their player representation on already-running clients/host.
+	if _is_mp:
+		multiplayer.peer_connected.connect(_on_mp_peer_connected)
+		multiplayer.peer_disconnected.connect(_on_mp_peer_disconnected)
+
+func _shuffle_array(arr: Array, rng: RandomNumberGenerator) -> void:
+	for i in range(arr.size() - 1, 0, -1):
+		var j := rng.randi() % (i + 1)
+		var tmp = arr[i]
+		arr[i] = arr[j]
+		arr[j] = tmp
+
+func _spawn_remote_player(peer_id: int, pos: Vector3) -> CharacterBody3D:
+	if _player_nodes.has(peer_id):
+		return _player_nodes[peer_id]
+	var p := PlayerScene.instantiate() as CharacterBody3D
+	p.name = "Player_%d" % peer_id
+	# Set authority BEFORE add_child so Player._ready sees the correct value.
+	p.set_multiplayer_authority(peer_id)
+	add_child(p)
+	if p.has_method("refresh_authority"):
+		p.refresh_authority()
+	p.global_position = pos
+	p.add_to_group("player")
+	_player_nodes[peer_id] = p
+	return p
+
+func _on_mp_peer_connected(peer_id: int) -> void:
+	# Late joiner — give them a deterministic spawn near the rim.
+	if _player_nodes.has(peer_id):
+		return
+	var rim := _build_rim_spawn_candidates()
+	var pos: Vector3 = rim[peer_id % rim.size()]
+	_spawn_remote_player(peer_id, pos)
+	if _hud and _hud.has_method("update_peer_count"):
+		_hud.update_peer_count(NetworkManager.peers.size())
+
+func _on_mp_peer_disconnected(peer_id: int) -> void:
+	if _player_nodes.has(peer_id):
+		var p: Node = _player_nodes[peer_id]
+		_player_nodes.erase(peer_id)
+		if is_instance_valid(p):
+			p.queue_free()
+	if _hud and _hud.has_method("update_peer_count"):
+		_hud.update_peer_count(NetworkManager.peers.size())
 
 func _process(delta: float) -> void:
 	if _game_state != GameState.PLAYING:
@@ -122,9 +236,69 @@ func _process(delta: float) -> void:
 	_update_prompt()
 	_update_interior_wall_visibility()
 	_update_building_occlusion()
+	# Host: distribute enemy AI target lookup over WorkerThreadPool. Each
+	# enemy then reads its cached_target_pos in _physics_process — no per-tick
+	# O(N*M) search on the main thread.
+	if _is_host:
+		_update_enemy_ai_parallel()
 	if _mission_system:
 		_mission_system.process(delta)
 		_update_objective_label()
+
+# ------------------------------------------------------------------
+# Parallel enemy AI (host only)
+# ------------------------------------------------------------------
+
+# Snapshots reused frame-to-frame to avoid per-tick allocation.
+var _ai_enemies: Array = []
+var _ai_enemy_positions: Array = []
+var _ai_player_positions: Array = []
+var _ai_results: Array = []
+
+func _update_enemy_ai_parallel() -> void:
+	_ai_enemies.clear()
+	_ai_enemy_positions.clear()
+	for n in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(n):
+			continue
+		_ai_enemies.append(n)
+		_ai_enemy_positions.append((n as Node3D).global_position)
+	if _ai_enemies.is_empty():
+		return
+
+	_ai_player_positions.clear()
+	for n in get_tree().get_nodes_in_group("player"):
+		if not is_instance_valid(n):
+			continue
+		_ai_player_positions.append((n as Node3D).global_position)
+	if _ai_player_positions.is_empty():
+		return
+
+	_ai_results.resize(_ai_enemies.size())
+	var task := WorkerThreadPool.add_group_task(
+		Callable(self, "_ai_compute_target"),
+		_ai_enemies.size(), -1, true
+	)
+	WorkerThreadPool.wait_for_group_task_completion(task)
+
+	for i in range(_ai_enemies.size()):
+		var e: Node = _ai_enemies[i]
+		if is_instance_valid(e):
+			e.cached_target_pos = _ai_results[i]
+
+# Worker-thread function — must NOT touch nodes; only reads from snapshot
+# arrays (`_ai_enemy_positions`, `_ai_player_positions`) and writes a unique
+# index into `_ai_results`.
+func _ai_compute_target(idx: int) -> void:
+	var ep: Vector3 = _ai_enemy_positions[idx]
+	var best_pos := Vector3.INF
+	var best_d := INF
+	for pp in _ai_player_positions:
+		var d: float = (pp as Vector3).distance_squared_to(ep)
+		if d < best_d:
+			best_d = d
+			best_pos = pp
+	_ai_results[idx] = best_pos
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Debug panel toggle (always available in dev mode)
@@ -270,26 +444,51 @@ func _build_rim_spawn_candidates() -> Array:
 # ------------------------------------------------------------------
 
 func _spawn_enemies(rng: RandomNumberGenerator) -> void:
-	var enemy_script := preload("res://scripts/enemy.gd")
 	var nb: int = world.num_blocks
 	var total := ENEMY_CELL_SIZE * nb
 	var grid_origin := -total * 0.5
-	var idx := 0
 
-	var per_block: float = ENEMIES_PER_BLOCK_DEV if DEV_MODE else ENEMIES_PER_BLOCK_NORMAL
+	# Difficulty drives per-block enemy density when networked.
+	var per_block: float
+	if _is_mp:
+		var diff := NetworkManager.difficulty_settings(NetworkManager.difficulty)
+		per_block = diff.enemies_per_block
+	else:
+		per_block = ENEMIES_PER_BLOCK_DEV if DEV_MODE else ENEMIES_PER_BLOCK_NORMAL
+
 	var base_count := int(per_block * nb * nb)
 
 	for i in range(base_count):
 		var pos := _random_walkable_pos(rng, grid_origin)
 		if pos.distance_to(player.global_position) < 8.0:
 			pos = _random_walkable_pos(rng, grid_origin)
+		_spawn_enemy_at(pos)
 
-		var enemy := CharacterBody3D.new()
-		enemy.set_script(enemy_script)
-		enemy.name = "Enemy_%d" % idx
-		enemy.global_position = pos
-		add_child(enemy)
-		idx += 1
+func _spawn_enemy_at(pos: Vector3) -> CharacterBody3D:
+	var enemy_id := _next_enemy_id
+	_next_enemy_id += 1
+	if _is_mp:
+		# Server-authoritative: tell every peer (including ourselves) to create
+		# an identical enemy node. The host then owns its AI; clients only
+		# receive transform/HP updates via RPC.
+		rpc("_remote_spawn_enemy", enemy_id, pos)
+		# call_local equivalent for the host:
+		_remote_spawn_enemy(enemy_id, pos)
+	else:
+		_remote_spawn_enemy(enemy_id, pos)
+	# Find and return the just-created node (host side).
+	return get_node_or_null("Enemy_%d" % enemy_id) as CharacterBody3D
+
+@rpc("authority", "call_remote", "reliable")
+func _remote_spawn_enemy(enemy_id: int, pos: Vector3) -> void:
+	if has_node("Enemy_%d" % enemy_id):
+		return
+	var enemy_script := preload("res://scripts/enemy.gd")
+	var enemy := CharacterBody3D.new()
+	enemy.set_script(enemy_script)
+	enemy.name = "Enemy_%d" % enemy_id
+	enemy.global_position = pos
+	add_child(enemy)
 
 func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vector3:
 	var last_block: int = world.num_blocks - 1
@@ -357,12 +556,26 @@ func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 
 		placed_positions.append(pos)
 
-		var pickup := Area3D.new()
-		pickup.set_script(WeaponPickup)
-		pickup.name = "WeaponPickup_%d" % i
-		pickup.weapon_type = weapon_types[i % weapon_types.size()]
-		pickup.global_position = pos
-		add_child(pickup)
+		var weapon_type: String = weapon_types[i % weapon_types.size()]
+		var pickup_id := _next_pickup_id
+		_next_pickup_id += 1
+		if _is_mp:
+			rpc("_remote_spawn_pickup", pickup_id, weapon_type, pos)
+			_remote_spawn_pickup(pickup_id, weapon_type, pos)
+		else:
+			_remote_spawn_pickup(pickup_id, weapon_type, pos)
+
+@rpc("authority", "call_remote", "reliable")
+func _remote_spawn_pickup(pickup_id: int, weapon_type: String, pos: Vector3) -> void:
+	var node_name := "WeaponPickup_%d" % pickup_id
+	if has_node(node_name):
+		return
+	var pickup := Area3D.new()
+	pickup.set_script(WeaponPickup)
+	pickup.name = node_name
+	pickup.weapon_type = weapon_type
+	pickup.global_position = pos
+	add_child(pickup)
 
 func _pos_inside_building(pos: Vector3) -> bool:
 	for binfo in world.buildings:

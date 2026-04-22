@@ -1,6 +1,15 @@
 extends CharacterBody3D
 
 ## A zombie enemy that wanders, chases and attacks the player.
+##
+## Networking model:
+##   - The server (peer 1) is the authority for every enemy. Only the host
+##     runs movement, AI and damage application.
+##   - Clients receive transform updates via _sync_transform() pushed from the
+##     host (host-side push, ~20Hz, unreliable_ordered).
+##   - Damage from a client weapon is forwarded to the host via _request_damage.
+##   - On death, the host calls _despawn() on every peer, so all copies of the
+##     node disappear in lockstep.
 
 const SPEED := 2.0
 const CHASE_SPEED := 3.5
@@ -14,6 +23,10 @@ const DETECT_RANGE := 12.0
 const ATTACK_RANGE := 1.8
 const ATTACK_DAMAGE := 8.0
 const ATTACK_COOLDOWN := 1.5
+
+# Network sync
+const NET_SYNC_HZ := 20.0
+const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
 
 # HP
 var max_hp := 30.0
@@ -32,8 +45,20 @@ var _player_ref: CharacterBody3D = null
 var _hp_bar_bg: MeshInstance3D
 var _hp_bar_fg: MeshInstance3D
 
+# Network state
+var _net_sync_timer := 0.0
+var _is_authority_cached := true
+
+# Cached target supplied by main.gd's parallel AI coordinator (host only).
+# Vector3.INF means "no cached value, fall back to the single-threaded search".
+var cached_target_pos: Vector3 = Vector3.INF
+
 func _ready() -> void:
 	add_to_group("enemy")
+	# Host (peer id 1) owns every enemy. In single-player this is just self.
+	if NetworkManager.is_networked:
+		set_multiplayer_authority(1)
+	_is_authority_cached = (not NetworkManager.is_networked) or is_multiplayer_authority()
 	_rng.randomize()
 	_pick_new_wander()
 	_build_model()
@@ -42,6 +67,12 @@ func _ready() -> void:
 	_player_ref = _find_player()
 
 func _physics_process(delta: float) -> void:
+	if not _is_authority_cached:
+		# Client copy — host pushes transform updates via RPC. Just refresh
+		# the HP bar (HP is replicated separately) and exit.
+		_update_hp_bar()
+		return
+
 	# Gravity
 	if is_on_floor():
 		velocity.y = -0.5
@@ -50,22 +81,32 @@ func _physics_process(delta: float) -> void:
 
 	_attack_timer = max(_attack_timer - delta, 0.0)
 
+	# Prefer the position computed by main.gd's parallel AI coordinator.
+	# Fall back to the local single-threaded search if no cache is available
+	# (e.g. single-player or first frame).
+	var target_pos: Vector3 = cached_target_pos
+	if target_pos == Vector3.INF:
+		if _player_ref == null or not is_instance_valid(_player_ref):
+			_player_ref = _find_player()
+		if _player_ref:
+			target_pos = _player_ref.global_position
+
 	var move_dir := Vector3.ZERO
 	var current_speed := SPEED
 
-	if _player_ref and is_instance_valid(_player_ref):
-		var dist := global_position.distance_to(_player_ref.global_position)
+	if target_pos != Vector3.INF:
+		var dist := global_position.distance_to(target_pos)
 
 		if dist < ATTACK_RANGE:
 			# In attack range — stop and attack
 			move_dir = Vector3.ZERO
-			_try_attack()
+			_try_attack_at(target_pos)
 		elif dist < DETECT_RANGE:
-			# Chase player
-			var to_player := _player_ref.global_position - global_position
-			to_player.y = 0.0
-			if to_player.length() > 0.1:
-				move_dir = to_player.normalized()
+			# Chase target
+			var to_target := target_pos - global_position
+			to_target.y = 0.0
+			if to_target.length() > 0.1:
+				move_dir = to_target.normalized()
 			current_speed = CHASE_SPEED
 		else:
 			# Wander
@@ -95,24 +136,90 @@ func _physics_process(delta: float) -> void:
 	# Keep HP bar updated
 	_update_hp_bar()
 
+	# Push transform to remote peers at a fixed rate (host only).
+	if NetworkManager.is_networked:
+		_net_sync_timer -= delta
+		if _net_sync_timer <= 0.0:
+			_net_sync_timer = NET_SYNC_INTERVAL
+			rpc("_sync_transform", global_position, rotation.y)
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _sync_transform(pos: Vector3, yaw: float) -> void:
+	# Smooth-snap on the client side. Distance check avoids visible jumps from
+	# packet jitter while keeping us in sync over time.
+	if global_position.distance_to(pos) > 4.0:
+		global_position = pos
+	else:
+		global_position = global_position.lerp(pos, 0.5)
+	rotation.y = yaw
+
+@rpc("authority", "call_remote", "reliable")
+func _sync_hp(new_hp: float) -> void:
+	hp = new_hp
+	_update_hp_bar()
+
+@rpc("authority", "call_remote", "reliable")
+func _despawn() -> void:
+	queue_free()
+
 func take_damage(amount: float) -> void:
+	# In multiplayer, only the authority (host) mutates state. Clients forward
+	# the request via RPC so the host can apply, replicate and despawn.
+	if NetworkManager.is_networked and not is_multiplayer_authority():
+		rpc_id(1, "_request_damage", amount)
+		return
+	_apply_damage(amount)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_damage(amount: float) -> void:
+	# Only authority handles damage requests.
+	if not is_multiplayer_authority():
+		return
+	_apply_damage(amount)
+
+func _apply_damage(amount: float) -> void:
 	hp = max(hp - amount, 0.0)
+	if NetworkManager.is_networked:
+		rpc("_sync_hp", hp)
 	if hp <= 0.0:
-		# Notify mission system of kill
+		# Notify mission system of kill (host only — mission system is host-side)
 		var mission_nodes := get_tree().get_nodes_in_group("mission_system")
 		for ms in mission_nodes:
 			if ms.has_method("notify_enemy_killed"):
 				ms.notify_enemy_killed()
+		if NetworkManager.is_networked:
+			rpc("_despawn")
 		queue_free()
 
 func _try_attack() -> void:
-	if _attack_timer > 0.0:
+	_try_attack_at(_player_ref.global_position if _player_ref else Vector3.INF)
+
+func _try_attack_at(target_pos: Vector3) -> void:
+	if _attack_timer > 0.0 or target_pos == Vector3.INF:
 		return
-	if _player_ref == null or not is_instance_valid(_player_ref):
+	# Prefer the cached _player_ref. If it isn't current (the closest player
+	# changed mid-tick), refresh from the player group.
+	if _player_ref == null or not is_instance_valid(_player_ref) \
+			or _player_ref.global_position.distance_to(target_pos) > 0.5:
+		_player_ref = _find_closest_player(target_pos)
+	if _player_ref == null:
 		return
 	_attack_timer = ATTACK_COOLDOWN
 	if _player_ref.has_method("take_damage"):
 		_player_ref.take_damage(ATTACK_DAMAGE)
+
+func _find_closest_player(near: Vector3) -> CharacterBody3D:
+	var best: CharacterBody3D = null
+	var best_d := INF
+	for n in get_tree().get_nodes_in_group("player"):
+		if not is_instance_valid(n):
+			continue
+		var p: CharacterBody3D = n as CharacterBody3D
+		var d: float = p.global_position.distance_squared_to(near)
+		if d < best_d:
+			best_d = d
+			best = p
+	return best
 
 func _find_player() -> CharacterBody3D:
 	var players := get_tree().get_nodes_in_group("player")

@@ -387,8 +387,12 @@ func _reveal_rescue() -> void:
 # ------------------------------------------------------------------
 
 func _spawn_horde(center: Vector3, count: int) -> void:
-	var enemy_script := preload("res://scripts/enemy.gd")
-	var actual_count := int(count * zombie_density_multiplier)
+	# Apply lobby difficulty's horde multiplier (only meaningful in MP, but
+	# harmless in single-player).
+	var horde_mult := 1.0
+	if NetworkManager.is_networked:
+		horde_mult = NetworkManager.difficulty_settings(NetworkManager.difficulty).horde_mult
+	var actual_count := int(count * zombie_density_multiplier * horde_mult)
 
 	for i in range(actual_count):
 		var angle := _rng.randf_range(0.0, TAU)
@@ -399,12 +403,10 @@ func _spawn_horde(center: Vector3, count: int) -> void:
 			center.z + sin(angle) * dist
 		)
 
-		var enemy := CharacterBody3D.new()
-		enemy.set_script(enemy_script)
-		enemy.name = "HordeEnemy_%d" % (_horde_enemies.size())
-		enemy.global_position = pos
-		_main.add_child(enemy)
-		_horde_enemies.append(enemy)
+		# Route through main so spawns are replicated in MP.
+		var enemy: CharacterBody3D = _main._spawn_enemy_at(pos)
+		if enemy:
+			_horde_enemies.append(enemy)
 
 func spawn_horde_at(center: Vector3, count: int) -> void:
 	_spawn_horde(center, count)

@@ -45,8 +45,20 @@ func _process(delta: float) -> void:
 func _on_body_entered(body: Node3D) -> void:
 	if not body.is_in_group("player"):
 		return
+	# Only the body's owning peer collects — otherwise every peer would grant
+	# the same pickup to their local copy.
+	if NetworkManager.is_networked:
+		if body.has_method("is_multiplayer_authority") and not body.is_multiplayer_authority():
+			return
 	if body.has_method("pickup_weapon"):
 		body.pickup_weapon(weapon_type)
+	# Tell every peer (including ourselves) to despawn this pickup node.
+	if NetworkManager.is_networked:
+		rpc("_despawn_pickup")
+	queue_free()
+
+@rpc("any_peer", "call_remote", "reliable")
+func _despawn_pickup() -> void:
 	queue_free()
 
 # ------------------------------------------------------------------

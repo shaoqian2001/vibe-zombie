@@ -60,7 +60,28 @@ var _aim_line: MeshInstance3D = null
 var _aim_dot: MeshInstance3D = null
 var aim_line_enabled: bool = true
 
+# Network state — true if this peer owns this player (or in single-player).
+var _owns_input: bool = true
+
+# Network sync (for non-authority peers we just receive position updates)
+const NET_SYNC_HZ := 20.0
+const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
+var _net_sync_timer := 0.0
+
 func _ready() -> void:
+	# In MP, the player node has multiplayer_authority set by the spawner code
+	# in main.gd to the owning peer's id. In single-player the default
+	# (server-only) authority applies and _owns_input stays true.
+	if NetworkManager.is_networked:
+		_owns_input = is_multiplayer_authority()
+
+## Called by main.gd after it sets set_multiplayer_authority() on this player,
+## to make sure `_owns_input` matches the authoritative state (in case Player._ready
+## ran with the default authority before main had a chance to override it).
+func refresh_authority() -> void:
+	if NetworkManager.is_networked:
+		_owns_input = is_multiplayer_authority()
+
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
 	_build_pistol()
@@ -73,11 +94,18 @@ func _ready() -> void:
 	_smg_node.visible = false
 	_grenade_launcher_node.visible = false
 	_bat_node.visible = false
-	_build_aim_line()
+	# Only the local (input-owning) player needs an aim line.
+	if _owns_input:
+		_build_aim_line()
 
 func _physics_process(delta: float) -> void:
 	if is_dead:
 		return
+
+	# Remote players: just consume synced transform — no input or physics.
+	if not _owns_input:
+		return
+
 	_apply_gravity(delta)
 	var move_dir := _get_world_movement_direction()
 	_update_sprint(move_dir, delta)
@@ -89,7 +117,38 @@ func _physics_process(delta: float) -> void:
 	_update_aim_line()
 	_sync_hud()
 
+	# Push transform to remote peers (client-authoritative on own player).
+	if NetworkManager.is_networked:
+		_net_sync_timer -= delta
+		if _net_sync_timer <= 0.0:
+			_net_sync_timer = NET_SYNC_INTERVAL
+			rpc("_sync_player_transform", global_position, rotation.y, _is_sprinting)
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
+	# Smooth on the receiving side. Big distance = teleport.
+	if global_position.distance_to(pos) > 5.0:
+		global_position = pos
+	else:
+		global_position = global_position.lerp(pos, 0.5)
+	rotation.y = yaw
+	_is_sprinting = sprinting
+
 func take_damage(amount: float) -> void:
+	# In MP, damage is applied on the player's owning peer so health/HUD stay
+	# authoritative for that player. Forward if we're not the authority.
+	if NetworkManager.is_networked and not is_multiplayer_authority():
+		rpc_id(get_multiplayer_authority(), "_take_damage_rpc", amount)
+		return
+	_apply_damage(amount)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _take_damage_rpc(amount: float) -> void:
+	if not is_multiplayer_authority():
+		return
+	_apply_damage(amount)
+
+func _apply_damage(amount: float) -> void:
 	if is_dead or god_mode:
 		return
 	health = max(health - amount, 0.0)
@@ -101,6 +160,9 @@ func take_damage(amount: float) -> void:
 		died.emit()
 
 func _input(event: InputEvent) -> void:
+	# Only the owning peer (or single-player) consumes input.
+	if not _owns_input:
+		return
 	if event.is_action_pressed("weapon_1"):
 		_switch_weapon(0)
 	elif event.is_action_pressed("weapon_2"):

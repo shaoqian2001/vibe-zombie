@@ -10,6 +10,8 @@ var _ammo_label: Label
 var _weapon_label: Label
 var _container: Control
 var _dev_label: Label = null
+var _code_label: Label = null
+var _peer_count_label: Label = null
 
 # Current values (0-100)
 var armor: float = 15.0
@@ -165,6 +167,56 @@ func _build_hud() -> void:
 	_health_fill = fills[1]
 	_stamina_fill = fills[2]
 
+func show_game_code(code: String, peer_count: int = 0) -> void:
+	if code.is_empty():
+		return
+	if _code_label == null:
+		_code_label = Label.new()
+		_code_label.name = "GameCodeLabel"
+		_code_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		_code_label.add_theme_font_size_override("font_size", 22)
+		_code_label.add_theme_color_override("font_color", Color(1.0, 0.92, 0.55, 1.0))
+		_code_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+		_code_label.add_theme_constant_override("shadow_offset_x", 2)
+		_code_label.add_theme_constant_override("shadow_offset_y", 2)
+		_code_label.anchor_left = 0.0
+		_code_label.anchor_top = 0.0
+		_code_label.anchor_right = 1.0
+		_code_label.anchor_bottom = 0.0
+		_code_label.offset_right = -16
+		_code_label.offset_top = 12
+		_code_label.offset_bottom = 38
+		_code_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_container.add_child(_code_label)
+
+		_peer_count_label = Label.new()
+		_peer_count_label.name = "PeerCountLabel"
+		_peer_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		_peer_count_label.add_theme_font_size_override("font_size", 12)
+		_peer_count_label.add_theme_color_override("font_color", Color(0.75, 0.85, 0.95, 0.95))
+		_peer_count_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.7))
+		_peer_count_label.add_theme_constant_override("shadow_offset_x", 1)
+		_peer_count_label.add_theme_constant_override("shadow_offset_y", 1)
+		_peer_count_label.anchor_left = 0.0
+		_peer_count_label.anchor_top = 0.0
+		_peer_count_label.anchor_right = 1.0
+		_peer_count_label.anchor_bottom = 0.0
+		_peer_count_label.offset_right = -16
+		_peer_count_label.offset_top = 38
+		_peer_count_label.offset_bottom = 56
+		_peer_count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_container.add_child(_peer_count_label)
+
+	_code_label.text = "CODE  %s" % code
+	if peer_count > 0:
+		_peer_count_label.text = "%d player%s" % [peer_count, "" if peer_count == 1 else "s"]
+	else:
+		_peer_count_label.text = ""
+
+func update_peer_count(peer_count: int) -> void:
+	if _peer_count_label:
+		_peer_count_label.text = "%d player%s" % [peer_count, "" if peer_count == 1 else "s"]
+
 func show_dev_mode() -> void:
 	if _dev_label != null:
 		return
@@ -181,8 +233,10 @@ func show_dev_mode() -> void:
 	_dev_label.anchor_right = 1.0
 	_dev_label.anchor_bottom = 0.0
 	_dev_label.offset_right = -10
-	_dev_label.offset_top = 10
-	_dev_label.offset_bottom = 30
+	# Push DEV MODE label below the game code label if it exists.
+	var top_offset := 60.0 if _code_label != null else 10.0
+	_dev_label.offset_top = top_offset
+	_dev_label.offset_bottom = top_offset + 20.0
 	_dev_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_container.add_child(_dev_label)
 

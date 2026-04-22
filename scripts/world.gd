@@ -66,7 +66,14 @@ var _rng := RandomNumberGenerator.new()
 var buildings: Array = []
 
 func _ready() -> void:
-	_rng.seed = 98765
+	# When networked, every peer must build the same world. Pull the seed and
+	# map size from the NetworkManager so the host's choices are deterministic
+	# on all clients.
+	if NetworkManager.is_networked:
+		_rng.seed = NetworkManager.game_seed if NetworkManager.game_seed != 0 else 98765
+		num_blocks = NetworkManager.map_size
+	else:
+		_rng.seed = 98765
 	_generate_ground()
 	_generate_boundary_walls()
 	_generate_city_grid()

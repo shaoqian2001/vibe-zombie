@@ -8,7 +8,6 @@ const MenuShared = preload("res://scripts/menu_shared.gd")
 var _center: CenterContainer
 var _main_panel: PanelContainer
 var _settings_panel: PanelContainer = null
-var _multiplayer_panel: PanelContainer = null
 
 const BASE_TITLE_FONT := 48
 const BASE_SUBTITLE_FONT := 16
@@ -101,7 +100,7 @@ func _on_single_player() -> void:
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 func _on_multiplayer() -> void:
-	_show_multiplayer_menu()
+	get_tree().change_scene_to_file("res://scenes/MultiplayerMenu.tscn")
 
 func _on_settings() -> void:
 	_show_settings()
@@ -133,80 +132,8 @@ func _on_resolution_changed() -> void:
 	# Tear down everything and rebuild at new scale
 	_settings_panel = null
 	_main_panel = null
-	_multiplayer_panel = null
 	for child in get_children():
 		child.queue_free()
 	call_deferred("_build_ui")
 	call_deferred("_show_settings")
 
-# ------------------------------------------------------------------
-# Multiplayer sub-panel
-# ------------------------------------------------------------------
-
-func _show_multiplayer_menu() -> void:
-	if _multiplayer_panel:
-		return
-	var s := MenuShared.ui_scale()
-	_main_panel.visible = false
-
-	_multiplayer_panel = PanelContainer.new()
-	_multiplayer_panel.custom_minimum_size = Vector2(480 * s, 400 * s)
-	_multiplayer_panel.add_theme_stylebox_override("panel", MenuShared.make_panel_style(s))
-	_center.add_child(_multiplayer_panel)
-
-	var vbox := VBoxContainer.new()
-	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
-	vbox.add_theme_constant_override("separation", int(14 * s))
-	_multiplayer_panel.add_child(vbox)
-
-	# Title
-	var title := Label.new()
-	title.text = "MULTIPLAYER"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", int(28 * s))
-	title.add_theme_color_override("font_color", Color(0.90, 0.85, 0.70))
-	vbox.add_child(title)
-
-	# Spacer
-	var spacer := Control.new()
-	spacer.custom_minimum_size = Vector2(0, 8 * s)
-	vbox.add_child(spacer)
-
-	# Host game
-	var host_btn := MenuShared.make_button("Host Game", s, 280, 46, 18)
-	host_btn.pressed.connect(func() -> void: pass)  # placeholder
-	vbox.add_child(host_btn)
-
-	# Join game
-	var join_btn := MenuShared.make_button("Join Game", s, 280, 46, 18)
-	join_btn.pressed.connect(func() -> void: pass)  # placeholder
-	vbox.add_child(join_btn)
-
-	# Server browser
-	var browse_btn := MenuShared.make_button("Server Browser", s, 280, 46, 18)
-	browse_btn.pressed.connect(func() -> void: pass)  # placeholder
-	vbox.add_child(browse_btn)
-
-	# Placeholder notice
-	var notice := Label.new()
-	notice.text = "Coming soon..."
-	notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	notice.add_theme_font_size_override("font_size", int(13 * s))
-	notice.add_theme_color_override("font_color", Color(0.50, 0.50, 0.45))
-	vbox.add_child(notice)
-
-	# Spacer before back button
-	var spacer2 := Control.new()
-	spacer2.custom_minimum_size = Vector2(0, 4 * s)
-	vbox.add_child(spacer2)
-
-	# Back button
-	var back_btn := MenuShared.make_button("Back", s, 140, 40, 18)
-	back_btn.pressed.connect(_close_multiplayer)
-	vbox.add_child(back_btn)
-
-func _close_multiplayer() -> void:
-	if _multiplayer_panel:
-		_multiplayer_panel.queue_free()
-		_multiplayer_panel = null
-	_main_panel.visible = true
