@@ -33,6 +33,12 @@ func _ready() -> void:
 
 	body_entered.connect(_on_body_entered)
 
+	# FOV culling: hide the model while outside the player's view. Process
+	# stays active so body_entered can fire if the player walks onto an
+	# unseen pickup (pausing process on an Area3D would silence that signal).
+	add_to_group(&"fov_cullable")
+	set_meta(&"fov_cull_radius", 0.8)
+
 	_build_model()
 	_build_glow()
 

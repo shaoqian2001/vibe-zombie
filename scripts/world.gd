@@ -236,6 +236,17 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 		clampf(color.b + tint_offset, 0.0, 1.0)
 	)
 
+	# Per-building container so every mesh (body, windows, trim, ledge,
+	# awning), the door pivot, and the entrance area can be hidden as one
+	# unit when the FOV culler decides the whole building is outside the
+	# player's view. The container sits at world origin so child positions
+	# stay in world coordinates exactly like before.
+	var container := Node3D.new()
+	container.name = "Building_%d" % buildings.size()
+	add_child(container)
+	container.add_to_group(&"fov_cullable")
+	container.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5 + 1.0)
+
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = tinted
 	mat.roughness = 0.75
@@ -258,22 +269,23 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 	sb.add_child(cs)
 	mi.add_child(sb)
 
-	add_child(mi)
+	container.add_child(mi)
 
-	_add_building_details(pos, w, h, d, tinted)
+	_add_building_details(container, pos, w, h, d, tinted)
 
 	# --- Determine entrance side (face closest to nearest road) ---
 	var entrance_dir := _pick_entrance_side(pos, w, d, block_x, block_z)
 	var entrance_pos := _compute_entrance_position(pos, w, h, d, entrance_dir)
 
 	# --- Create visual door ---
-	var door_info := _create_door(entrance_pos, entrance_dir, color)
+	var door_info := _create_door(container, entrance_pos, entrance_dir, color)
 
 	# --- Create entrance trigger area ---
-	var entrance_area := _create_entrance_area(entrance_pos, entrance_dir)
+	var entrance_area := _create_entrance_area(container, entrance_pos, entrance_dir)
 
 	# Store building info for the main scene to use
 	buildings.append({
+		container = container,
 		node = mi,
 		door_pivot = door_info.pivot,
 		door_base_angle = door_info.base_angle,
@@ -288,7 +300,7 @@ func _create_building(pos: Vector3, w: float, h: float, d: float, color: Color, 
 		door_open = false,
 	})
 
-func _add_building_details(pos: Vector3, w: float, h: float, d: float, base_color: Color) -> void:
+func _add_building_details(parent: Node3D, pos: Vector3, w: float, h: float, d: float, base_color: Color) -> void:
 	var ground_y := pos.y - h * 0.5
 	var window_color := Color(0.22, 0.28, 0.38, 1.0)
 	var window_mat := StandardMaterial3D.new()
@@ -332,7 +344,7 @@ func _add_building_details(pos: Vector3, w: float, h: float, d: float, base_colo
 				wmi.mesh = wmesh
 				wmi.position = wpos
 				wmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-				add_child(wmi)
+				parent.add_child(wmi)
 
 	# Rooftop ledge
 	var ledge_color := Color(
@@ -349,7 +361,7 @@ func _add_building_details(pos: Vector3, w: float, h: float, d: float, base_colo
 	var ledge := MeshInstance3D.new()
 	ledge.mesh = ledge_mesh
 	ledge.position = Vector3(pos.x, pos.y + h * 0.5 + 0.1, pos.z)
-	add_child(ledge)
+	parent.add_child(ledge)
 
 	# Horizontal trim line at mid-height
 	if num_floors >= 2:
@@ -373,7 +385,7 @@ func _add_building_details(pos: Vector3, w: float, h: float, d: float, base_colo
 				pos.z + face.z * (d * 0.5 + 0.03)
 			)
 			tmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			add_child(tmi)
+			parent.add_child(tmi)
 
 ## Pick the building face closest to the edge of the block (nearest road).
 func _pick_entrance_side(pos: Vector3, w: float, d: float, block_x: float, block_z: float) -> Vector3:
@@ -405,7 +417,7 @@ func _compute_entrance_position(pos: Vector3, w: float, h: float, d: float, faci
 	else:
 		return Vector3(pos.x, ground_y, pos.z + facing.z * d * 0.5)
 
-func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color) -> Dictionary:
+func _create_door(parent: Node3D, entrance_pos: Vector3, facing: Vector3, building_color: Color) -> Dictionary:
 	var door_w := 1.0
 	var door_h := 2.0
 
@@ -416,7 +428,7 @@ func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color)
 	pivot.position = entrance_pos + hinge_offset + Vector3(facing.x * 0.05, 0.0, facing.z * 0.05)
 	var base_angle := atan2(facing.x, facing.z)
 	pivot.rotation.y = base_angle
-	add_child(pivot)
+	parent.add_child(pivot)
 
 	# --- Door mesh (child of pivot, offset so hinge edge aligns with pivot origin) ---
 	var door_mat := StandardMaterial3D.new()
@@ -458,11 +470,11 @@ func _create_door(entrance_pos: Vector3, facing: Vector3, building_color: Color)
 		door_h + 0.15,
 		facing.z * 0.4
 	)
-	add_child(awning_mi)
+	parent.add_child(awning_mi)
 
 	return {pivot = pivot, base_angle = base_angle}
 
-func _create_entrance_area(entrance_pos: Vector3, facing: Vector3) -> Area3D:
+func _create_entrance_area(parent: Node3D, entrance_pos: Vector3, facing: Vector3) -> Area3D:
 	var area := Area3D.new()
 	area.name = "EntranceArea"
 	var cs := CollisionShape3D.new()
@@ -476,7 +488,7 @@ func _create_entrance_area(entrance_pos: Vector3, facing: Vector3) -> Area3D:
 	area.add_child(cs)
 	# Centered on the door position (straddles inside and outside)
 	area.position = entrance_pos + Vector3(0.0, 1.25, 0.0)
-	add_child(area)
+	parent.add_child(area)
 	return area
 
 # ------------------------------------------------------------------
