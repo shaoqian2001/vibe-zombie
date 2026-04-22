@@ -89,9 +89,23 @@ func _ready() -> void:
 	_fov_overlay.name = "FovOverlay"
 	add_child(_fov_overlay)
 
-	# Spawn player near map rim — positions derived from the world's actual size
+	# Spawn player near map rim — positions derived from the world's actual size.
+	# Rim candidates are fixed points at the map edges; any of them can fall
+	# inside a building once the procedural grid fills blocks out to the rim,
+	# which would leave the player wedged between walls at start. Try each
+	# candidate in a random order, skip ones that overlap a building, and
+	# fall back to a scanned walkable position if the rim is fully blocked.
 	var rim_candidates := _build_rim_spawn_candidates()
-	var spawn_pos: Vector3 = rim_candidates[rng.randi() % rim_candidates.size()]
+	rim_candidates.shuffle()
+	var spawn_pos: Vector3 = rim_candidates[0]
+	var spawn_valid := false
+	for cand: Vector3 in rim_candidates:
+		if not _pos_inside_building(cand):
+			spawn_pos = cand
+			spawn_valid = true
+			break
+	if not spawn_valid:
+		spawn_pos = _find_clear_fallback_spawn(rng, rim_candidates[0])
 	player.global_position = spawn_pos
 
 	camera.set_target(player)
@@ -280,6 +294,21 @@ func _build_rim_spawn_candidates() -> Array:
 		Vector3( diag,   0.5, -diag),
 		Vector3(-diag,   0.5, -diag),
 	]
+
+## Random-sample a nearby spawn point that isn't wedged inside a building.
+## Used when every hand-placed rim candidate happens to land inside a
+## procedurally generated block — rare, but possible on larger maps.
+func _find_clear_fallback_spawn(rng: RandomNumberGenerator, hint: Vector3) -> Vector3:
+	for _i in range(60):
+		var jitter := Vector3(rng.randf_range(-10.0, 10.0), 0.0, rng.randf_range(-10.0, 10.0))
+		var cand := Vector3(hint.x + jitter.x, 0.5, hint.z + jitter.z)
+		if not _pos_inside_building(cand):
+			return cand
+	# Last resort: world origin. The ground plane is at y=0, so 0.5 keeps
+	# the capsule off it. The caller has already warned in logs if we
+	# reach this path.
+	push_warning("main.gd: could not find a building-free spawn near rim; defaulting to origin")
+	return Vector3(0, 0.5, 0)
 
 # ------------------------------------------------------------------
 # Enemy spawning
@@ -917,13 +946,27 @@ func _building_occludes(binfo: Dictionary, cam_pos: Vector3, player_pos: Vector3
 	return tmax >= tmin and tmax > 0.0 and tmin < 1.0
 
 func _set_building_alpha(binfo: Dictionary, alpha: float) -> void:
-	var node: MeshInstance3D = binfo.node
-	var mat: StandardMaterial3D = node.mesh.material
-	if mat == null:
+	# The rooftop ledge, windows, trim and awning are separate MeshInstance3D
+	# siblings of the building body, so fading just binfo.node leaves the
+	# roof fully opaque and still blocking the player. Walk the whole
+	# container subtree and fade every mesh's material together.
+	var root: Node3D = binfo.get("container", binfo.node)
+	if root == null:
 		return
-	if alpha < 1.0:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.albedo_color.a = alpha
-	else:
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-		mat.albedo_color.a = 1.0
+	_fade_mesh_tree(root, alpha)
+
+func _fade_mesh_tree(node: Node, alpha: float) -> void:
+	if node is MeshInstance3D:
+		var mi: MeshInstance3D = node
+		var prim := mi.mesh as PrimitiveMesh
+		if prim != null:
+			var mat := prim.material as StandardMaterial3D
+			if mat != null:
+				if alpha < 1.0:
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+					mat.albedo_color.a = alpha
+				else:
+					mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+					mat.albedo_color.a = 1.0
+	for child in node.get_children():
+		_fade_mesh_tree(child, alpha)
