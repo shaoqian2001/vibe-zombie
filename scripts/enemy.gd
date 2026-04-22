@@ -34,6 +34,13 @@ var _hp_bar_fg: MeshInstance3D
 
 func _ready() -> void:
 	add_to_group("enemy")
+	# FOV culling: hide and freeze AI while outside the player's view cone.
+	# Freezing is safe because take_damage() is a direct method call, and
+	# queue_free() is honoured regardless of process_mode; only _physics_process
+	# (wander/chase/attack ticks) pauses.
+	add_to_group(&"fov_cullable")
+	set_meta(&"fov_cull_radius", 0.6)
+	set_meta(&"fov_cull_disable_process", true)
 	_rng.randomize()
 	_pick_new_wander()
 	_build_model()

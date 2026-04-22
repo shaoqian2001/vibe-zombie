@@ -454,6 +454,10 @@ func _create_marker(pos: Vector3, color: Color) -> MeshInstance3D:
 	var root := Node3D.new()
 	root.position = pos
 	_main.add_child(root)
+	# FOV culling: the beam stretches from ground up to 3–4 m, so pick a
+	# radius that covers the prism + a small margin.
+	root.add_to_group(&"fov_cullable")
+	root.set_meta(&"fov_cull_radius", 1.5)
 
 	# Downward-pointing prism
 	var mat := StandardMaterial3D.new()
@@ -511,6 +515,8 @@ func _create_zone_visual(pos: Vector3, radius: float) -> MeshInstance3D:
 	mi.mesh = mesh
 	mi.position = Vector3(pos.x, 0.05, pos.z)
 	_main.add_child(mi)
+	mi.add_to_group(&"fov_cullable")
+	mi.set_meta(&"fov_cull_radius", radius + 0.5)
 	return mi
 
 func _cleanup_mission_objects() -> void:
