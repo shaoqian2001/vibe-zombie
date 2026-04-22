@@ -17,8 +17,6 @@ const BUILDING_BORDER  := Color(0.15, 0.15, 0.18)
 const MAP_BORDER_COLOR := Color(0.90, 0.85, 0.70)
 const PLAYER_COLOR     := Color(0.25, 0.65, 1.0)
 const PLAYER_OUTLINE   := Color(0.05, 0.08, 0.15)
-const PICKUP_COLOR     := Color(0.2, 0.8, 1.0)
-const DELIVERY_COLOR   := Color(1.0, 0.82, 0.15)
 
 class MapDrawer extends Control:
 	var view  # untyped ref back to the owning CanvasLayer script
@@ -28,17 +26,13 @@ class MapDrawer extends Control:
 
 var _world: Node3D
 var _player: Node3D
-var _pickup_building: Dictionary = {}
-var _delivery_building: Dictionary = {}
-var _has_package: bool = false
+var _mission_system: Node = null
 var _drawer: MapDrawer = null
 
-func configure(world: Node3D, player: Node3D, pickup: Dictionary, delivery: Dictionary, has_package: bool) -> void:
+func configure(world: Node3D, player: Node3D, mission_system: Node) -> void:
 	_world = world
 	_player = player
-	_pickup_building = pickup
-	_delivery_building = delivery
-	_has_package = has_package
+	_mission_system = mission_system
 	if _drawer:
 		_drawer.queue_redraw()
 
@@ -51,21 +45,18 @@ func _process(_delta: float) -> void:
 		_drawer.queue_redraw()
 
 func _build_ui() -> void:
-	# Dim overlay — catches clicks so the world behind does not receive them
 	var dim := ColorRect.new()
 	dim.color = BG_DIM_COLOR
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(dim)
 
-	# Drawer covers the full viewport; _render_map picks out a centered square region
 	_drawer = MapDrawer.new()
 	_drawer.view = self
 	_drawer.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_drawer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_drawer)
 
-	# Title / hint at the very top of the screen
 	var title := Label.new()
 	title.text = "MAP   —   Press M to close"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -88,7 +79,6 @@ func _render_map(ctrl: Control) -> void:
 		return
 
 	var vp := ctrl.size
-	# Compute the largest square that fits within the viewport honouring margins
 	var avail_h := vp.y - TOP_MARGIN - BOTTOM_MARGIN
 	var avail_w := vp.x - SIDE_MIN_MARGIN * 2.0
 	var map_side := minf(avail_h, avail_w)
@@ -98,7 +88,6 @@ func _render_map(ctrl: Control) -> void:
 	var oy := TOP_MARGIN + (avail_h - map_side) * 0.5
 	var rect := Rect2(ox, oy, map_side, map_side)
 
-	# Grass background
 	ctrl.draw_rect(rect, GRASS_COLOR, true)
 
 	var world_half: float = _world.map_half
@@ -112,7 +101,6 @@ func _render_map(ctrl: Control) -> void:
 	var total := nb * cell_size
 	var grid_origin := -total * 0.5
 
-	# Sidewalks (lighter) and roads between blocks
 	for row in range(nb):
 		for col in range(nb):
 			var bx := grid_origin + col * cell_size
@@ -127,7 +115,6 @@ func _render_map(ctrl: Control) -> void:
 				_world_rect(bx, bz + block_size, bx + cell_size, bz + block_size + road_w, center, s),
 				ROAD_COLOR, true)
 
-	# Buildings
 	for binfo in _world.buildings:
 		var bpos: Vector3 = binfo.node.position
 		var hw: float = binfo.width * 0.5
@@ -136,18 +123,19 @@ func _render_map(ctrl: Control) -> void:
 		ctrl.draw_rect(br, BUILDING_COLOR, true)
 		ctrl.draw_rect(br, BUILDING_BORDER, false, 1.0)
 
-	# Outer map border on top of contents
 	ctrl.draw_rect(rect, MAP_BORDER_COLOR, false, 2.0)
 
-	# Mission markers — only show whichever objective is currently active
-	if not _has_package and not _pickup_building.is_empty():
-		var pp: Vector3 = _pickup_building.node.position
-		_draw_marker(ctrl, _world_point(pp.x, pp.z, center, s), PICKUP_COLOR)
-	if _has_package and not _delivery_building.is_empty():
-		var dp: Vector3 = _delivery_building.node.position
-		_draw_marker(ctrl, _world_point(dp.x, dp.z, center, s), DELIVERY_COLOR)
+	# Mission markers from the mission system
+	if _mission_system and _mission_system.has_method("get_map_markers"):
+		var markers: Array = _mission_system.get_map_markers()
+		for m in markers:
+			var mpos: Vector3 = m.position
+			var screen_pos := _world_point(mpos.x, mpos.z, center, s)
+			var color: Color = m.color
+			var label_text: String = m.get("label", "")
+			_draw_marker(ctrl, screen_pos, color, label_text)
 
-	# Player arrow — facing direction from player's transform
+	# Player arrow
 	var ppos: Vector3 = _player.global_position
 	var pscreen := _world_point(ppos.x, ppos.z, center, s)
 	var forward: Vector3 = _player.global_transform.basis.z
@@ -157,9 +145,17 @@ func _render_map(ctrl: Control) -> void:
 	fwd2 = fwd2.normalized()
 	_draw_player_arrow(ctrl, pscreen, fwd2)
 
-func _draw_marker(ctrl: Control, pos: Vector2, color: Color) -> void:
-	ctrl.draw_circle(pos, 7.0, color)
-	ctrl.draw_arc(pos, 7.0, 0.0, TAU, 24, Color(0, 0, 0, 0.8), 1.5)
+func _draw_marker(ctrl: Control, pos: Vector2, color: Color, label_text: String) -> void:
+	ctrl.draw_circle(pos, 8.0, color)
+	ctrl.draw_arc(pos, 8.0, 0.0, TAU, 24, Color(0, 0, 0, 0.8), 2.0)
+	# Pulsing outer ring
+	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.004)
+	ctrl.draw_arc(pos, 12.0 + pulse * 3.0, 0.0, TAU, 24, Color(color.r, color.g, color.b, 0.4), 1.5)
+	if label_text != "":
+		var font := ThemeDB.fallback_font
+		var font_size := 11
+		var text_size := font.get_string_size(label_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
+		ctrl.draw_string(font, pos + Vector2(-text_size.x * 0.5, -14.0), label_text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, Color(1, 1, 1, 0.9))
 
 func _draw_player_arrow(ctrl: Control, pos: Vector2, forward: Vector2) -> void:
 	var size := 9.0
