@@ -109,8 +109,10 @@ func process(delta: float) -> void:
 
 	# Animate marker
 	if _current_marker and is_instance_valid(_current_marker):
-		_current_marker.rotation.y += delta * 1.5
-		_current_marker.position.y += sin(Time.get_ticks_msec() * 0.003) * delta * 0.5
+		var root: Node3D = _current_marker.get_meta("marker_root", null)
+		if root and is_instance_valid(root):
+			root.rotation.y += delta * 1.5
+			root.position.y += sin(Time.get_ticks_msec() * 0.003) * delta * 0.3
 
 func get_objective_text() -> String:
 	if current_mission_index < 0 or current_mission_index >= missions.size():
@@ -154,6 +156,29 @@ func is_rescue_active() -> bool:
 
 func check_rescue(player_pos: Vector3) -> bool:
 	return _rescue_visible and player_pos.distance_to(_rescue_pos) < 3.0
+
+func get_map_markers() -> Array:
+	var markers: Array = []
+	if current_mission_index < 0 or current_mission_index >= missions.size():
+		if _rescue_visible:
+			markers.append({position = _rescue_pos, color = Color(0.1, 1.0, 0.2), label = "RESCUE"})
+		return markers
+
+	var mission: Dictionary = missions[current_mission_index]
+	match mission.type:
+		MissionType.DELIVERY:
+			if not mission.get("picked_up", false):
+				markers.append({position = mission.pickup_pos, color = Color(0.2, 0.8, 1.0), label = "PICKUP"})
+			else:
+				markers.append({position = mission.delivery_pos, color = Color(1.0, 0.82, 0.15), label = "DELIVER"})
+		MissionType.HOLD_ZONE:
+			markers.append({position = mission.position, color = Color(0.9, 0.4, 0.1), label = "HOLD"})
+		MissionType.ELIMINATION:
+			markers.append({position = mission.position, color = Color(1.0, 0.2, 0.2), label = "ELIMINATE"})
+
+	if _rescue_visible:
+		markers.append({position = _rescue_pos, color = Color(0.1, 1.0, 0.2), label = "RESCUE"})
+	return markers
 
 # ------------------------------------------------------------------
 # Internal
@@ -428,21 +453,52 @@ func _create_trigger_area(pos: Vector3, radius: float) -> Area3D:
 	return area
 
 func _create_marker(pos: Vector3, color: Color) -> MeshInstance3D:
+	var root := Node3D.new()
+	root.position = pos
+	_main.add_child(root)
+	# FOV culling: the beam stretches from ground up to 3–4 m, so pick a
+	# radius that covers the prism + a small margin.
+	root.add_to_group(&"fov_cullable")
+	root.set_meta(&"fov_cull_radius", 1.5)
+
+	# Downward-pointing prism
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(color.r, color.g, color.b, 0.85)
+	mat.albedo_color = Color(color.r, color.g, color.b, 0.9)
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 
 	var mesh := PrismMesh.new()
-	mesh.size = Vector3(1.2, 1.8, 1.2)
+	mesh.size = Vector3(1.8, 2.5, 1.8)
 	mesh.material = mat
 
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.position = pos
-	mi.rotation_degrees.x = 180
-	_main.add_child(mi)
-	return mi
+	var prism := MeshInstance3D.new()
+	prism.mesh = mesh
+	prism.rotation_degrees.x = 180
+	root.add_child(prism)
+
+	# Vertical light beam from ground to marker
+	var beam_mat := StandardMaterial3D.new()
+	beam_mat.albedo_color = Color(color.r, color.g, color.b, 0.3)
+	beam_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beam_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var beam_height: float = pos.y
+	var beam_mesh := CylinderMesh.new()
+	beam_mesh.top_radius = 0.15
+	beam_mesh.bottom_radius = 0.15
+	beam_mesh.height = beam_height
+	beam_mesh.material = beam_mat
+
+	var beam := MeshInstance3D.new()
+	beam.mesh = beam_mesh
+	beam.position.y = -beam_height * 0.5
+	root.add_child(beam)
+
+	# Use the root's MeshInstance3D-like reference for animation — return the prism
+	# but store the root so cleanup works via the parent
+	prism.set_meta("marker_root", root)
+	return prism
 
 func _create_zone_visual(pos: Vector3, radius: float) -> MeshInstance3D:
 	var mat := StandardMaterial3D.new()
@@ -461,6 +517,8 @@ func _create_zone_visual(pos: Vector3, radius: float) -> MeshInstance3D:
 	mi.mesh = mesh
 	mi.position = Vector3(pos.x, 0.05, pos.z)
 	_main.add_child(mi)
+	mi.add_to_group(&"fov_cullable")
+	mi.set_meta(&"fov_cull_radius", radius + 0.5)
 	return mi
 
 func _cleanup_mission_objects() -> void:
@@ -473,5 +531,9 @@ func _cleanup_mission_objects() -> void:
 	_current_zone_visual = null
 
 	if _current_marker and is_instance_valid(_current_marker):
-		_current_marker.queue_free()
+		var root: Node3D = _current_marker.get_meta("marker_root", null)
+		if root and is_instance_valid(root):
+			root.queue_free()
+		else:
+			_current_marker.queue_free()
 	_current_marker = null

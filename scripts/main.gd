@@ -15,6 +15,7 @@ const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
 const MapView = preload("res://scripts/map_view.gd")
 const FovOverlay = preload("res://scripts/fov_overlay.gd")
+const FovCuller = preload("res://scripts/fov_culler.gd")
 const MissionSystem = preload("res://scripts/mission_system.gd")
 const DebugPanel = preload("res://scripts/debug_panel.gd")
 
@@ -70,6 +71,7 @@ var _inventory_open: bool = false
 var _map_view: CanvasLayer = null
 var _map_open: bool = false
 var _fov_overlay: CanvasLayer = null
+var _fov_culler: Node = null
 
 # State
 var _nearby_building: Dictionary = {}   # building whose door area the player overlaps
@@ -151,6 +153,20 @@ func _ready() -> void:
 
 	camera.set_target(player)
 	_fov_overlay.configure(player, camera)
+
+	# FOV culler hides everything (buildings, enemies, pickups, mission
+	# markers, zone rings) that falls outside the FOV sector used by the
+	# overlay. This avoids wasted draw calls — entities are fully skipped
+	# by the renderer rather than drawn and then shaded black by the fog.
+	# The culler must be created after the overlay, before gameplay
+	# entities spawn, so the first visibility pass runs against a fully
+	# populated world.
+	_fov_culler = Node.new()
+	_fov_culler.set_script(FovCuller)
+	_fov_culler.name = "FovCuller"
+	add_child(_fov_culler)
+	_fov_culler.configure(player, _fov_overlay)
+
 	_create_ui()
 	_setup_hud()
 
@@ -413,7 +429,7 @@ func _open_map() -> void:
 	_map_view.set_script(MapView)
 	_map_view.name = "MapView"
 	add_child(_map_view)
-	_map_view.configure(world, player, {}, {}, false)
+	_map_view.configure(world, player, _mission_system)
 
 func _close_map() -> void:
 	_map_open = false
@@ -1057,7 +1073,10 @@ func _update_building_occlusion() -> void:
 	var now_occluded: Array = []
 	for binfo in world.buildings:
 		var node: MeshInstance3D = binfo.node
-		if not node.visible:
+		# Skip buildings hidden by the FOV culler (container invisible) or
+		# by the interior-view toggle (node.visible = false): neither
+		# renders, so occlusion fade is wasted work.
+		if not node.is_visible_in_tree():
 			continue
 		# Check if the building's AABB intersects the line from camera to player
 		if _building_occludes(binfo, cam_pos, player_pos):
