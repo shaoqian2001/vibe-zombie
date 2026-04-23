@@ -100,6 +100,11 @@ func _ready() -> void:
 	if NetworkManager.is_networked:
 		_owns_input = is_multiplayer_authority()
 	_cache_body_parts()
+	# Single-player has no main.gd handoff that would call refresh_authority(),
+	# so camera lookup and weapon/aim-line building wouldn't otherwise run —
+	# which previously left _camera null and froze movement input.
+	if not NetworkManager.is_networked:
+		refresh_authority()
 
 func _cache_body_parts() -> void:
 	_arm_left = get_node_or_null("ArmLeft") as Node3D
