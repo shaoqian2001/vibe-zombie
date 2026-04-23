@@ -15,6 +15,8 @@ const WEAPONS := {
 		"tracer_color": Color(1.0, 0.9, 0.3, 0.8),
 		"hit_mode": "single",
 		"hit_tolerance": 1.2,
+		"recoil": 2.5,
+		"repel": 2.0,
 	},
 	"shotgun": {
 		"damage": 15.0,
@@ -28,6 +30,8 @@ const WEAPONS := {
 		"hit_mode": "fan",
 		"fan_angle": 20.0,
 		"fan_rays": 5,
+		"recoil": 8.0,
+		"repel": 9.0,
 	},
 	"smg": {
 		"damage": 5.0,
@@ -40,6 +44,8 @@ const WEAPONS := {
 		"tracer_color": Color(1.0, 1.0, 0.5, 0.7),
 		"hit_mode": "single",
 		"hit_tolerance": 1.0,
+		"recoil": 1.2,
+		"repel": 0.7,
 	},
 	"grenade_launcher": {
 		"damage": 30.0,
@@ -52,6 +58,8 @@ const WEAPONS := {
 		"tracer_color": Color(1.0, 0.4, 0.1, 0.9),
 		"hit_mode": "explosive",
 		"explosion_radius": 5.0,
+		"recoil": 5.5,
+		"repel": 7.0,
 	},
 	"bat": {
 		"damage": 20.0,
@@ -64,6 +72,8 @@ const WEAPONS := {
 		"tracer_color": Color(0.6, 0.4, 0.2, 0.5),
 		"hit_mode": "melee",
 		"sweep_angle": 90.0,
+		"recoil": 0.0,
+		"repel": 4.5,
 	},
 }
 

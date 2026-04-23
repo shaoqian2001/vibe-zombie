@@ -19,6 +19,9 @@ var health: float = HEALTH_MAX
 var is_dead: bool = false
 var god_mode: bool = false
 
+# Higher = player absorbs more recoil / knockback from own gunfire.
+var recoil_resistance: float = 1.0
+
 signal died
 
 var stamina: float = STAMINA_MAX
@@ -60,6 +63,24 @@ var _aim_line: MeshInstance3D = null
 var _aim_dot: MeshInstance3D = null
 var aim_line_enabled: bool = true
 
+# Body part references for procedural animation (walking, shooting kick).
+var _arm_left: Node3D = null
+var _arm_right: Node3D = null
+var _leg_left: Node3D = null
+var _leg_right: Node3D = null
+var _torso: Node3D = null
+# Rest-pose transforms captured at _ready so animation is relative to the scene setup.
+var _arm_left_rest := Transform3D.IDENTITY
+var _arm_right_rest := Transform3D.IDENTITY
+var _leg_left_rest := Transform3D.IDENTITY
+var _leg_right_rest := Transform3D.IDENTITY
+var _torso_rest := Transform3D.IDENTITY
+# Walk cycle phase (radians) — advances with horizontal speed so legs swing while moving.
+var _walk_phase: float = 0.0
+# Countdown timer driving the shooting arm kick-back animation (seconds).
+var _shoot_anim_timer: float = 0.0
+const SHOOT_ANIM_DURATION := 0.18
+
 # Network state — true if this peer owns this player (or in single-player).
 var _owns_input: bool = true
 
@@ -68,12 +89,29 @@ const NET_SYNC_HZ := 20.0
 const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
 var _net_sync_timer := 0.0
 
+# Derived on receivers to drive animation (authority's `velocity` isn't synced).
+var _remote_last_pos: Vector3 = Vector3.ZERO
+var _remote_last_sync_time: float = 0.0
+
 func _ready() -> void:
 	# In MP, the player node has multiplayer_authority set by the spawner code
 	# in main.gd to the owning peer's id. In single-player the default
 	# (server-only) authority applies and _owns_input stays true.
 	if NetworkManager.is_networked:
 		_owns_input = is_multiplayer_authority()
+	_cache_body_parts()
+
+func _cache_body_parts() -> void:
+	_arm_left = get_node_or_null("ArmLeft") as Node3D
+	_arm_right = get_node_or_null("ArmRight") as Node3D
+	_leg_left = get_node_or_null("LegLeft") as Node3D
+	_leg_right = get_node_or_null("LegRight") as Node3D
+	_torso = get_node_or_null("Torso") as Node3D
+	if _arm_left: _arm_left_rest = _arm_left.transform
+	if _arm_right: _arm_right_rest = _arm_right.transform
+	if _leg_left: _leg_left_rest = _leg_left.transform
+	if _leg_right: _leg_right_rest = _leg_right.transform
+	if _torso: _torso_rest = _torso.transform
 
 ## Called by main.gd after it sets set_multiplayer_authority() on this player,
 ## to make sure `_owns_input` matches the authoritative state (in case Player._ready
@@ -102,8 +140,10 @@ func _physics_process(delta: float) -> void:
 	if is_dead:
 		return
 
-	# Remote players: just consume synced transform — no input or physics.
+	# Remote players: just consume synced transform — animate limbs from the
+	# synced horizontal velocity so they're not frozen mid-stride.
 	if not _owns_input:
+		_update_animation(delta)
 		return
 
 	_apply_gravity(delta)
@@ -115,6 +155,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	_update_gun(delta)
 	_update_aim_line()
+	_update_animation(delta)
 	_sync_hud()
 
 	# Push transform to remote peers (client-authoritative on own player).
@@ -133,6 +174,15 @@ func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 		global_position = global_position.lerp(pos, 0.5)
 	rotation.y = yaw
 	_is_sprinting = sprinting
+	# Estimate horizontal velocity from the position stream so the animation
+	# rig on remote copies can drive the walk cycle at the right cadence.
+	var now := Time.get_ticks_msec() / 1000.0
+	if _remote_last_sync_time > 0.0:
+		var dt: float = max(now - _remote_last_sync_time, 0.001)
+		velocity.x = (pos.x - _remote_last_pos.x) / dt
+		velocity.z = (pos.z - _remote_last_pos.z) / dt
+	_remote_last_pos = pos
+	_remote_last_sync_time = now
 
 func take_damage(amount: float) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
@@ -722,6 +772,16 @@ func _fire_bullet() -> void:
 			_fire_single()
 			_spawn_muzzle_flash()
 
+	# Visual kick on the arms — melee still gets a swing cue.
+	_shoot_anim_timer = SHOOT_ANIM_DURATION
+
+	# Physical recoil — shove the player backward along their facing. Melee has
+	# zero recoil in WeaponData, so this is effectively a gun-only effect.
+	var recoil_force: float = _weapon_stats.get("recoil", 0.0)
+	if recoil_force > 0.0 and recoil_resistance > 0.0:
+		var kick := recoil_force / recoil_resistance
+		velocity -= _get_forward() * kick
+
 func _fire_single() -> void:
 	var forward := _get_forward()
 	var weapon_range: float = _weapon_stats.get("range", 40.0)
@@ -744,12 +804,16 @@ func _fire_single() -> void:
 	var result := _cast_ray(ray_origin, ray_end)
 	var hit_enemy := false
 
+	var repel_force: float = _weapon_stats.get("repel", 0.0)
+
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
 		if hit_body.has_method("take_damage"):
 			hit_body.take_damage(damage)
 			hit_enemy = true
 			_spawn_hit_sparks(result.position)
+			if hit_body.has_method("apply_repel"):
+				hit_body.apply_repel(forward, repel_force)
 
 	if not hit_enemy:
 		var best_enemy: CharacterBody3D = null
@@ -777,6 +841,8 @@ func _fire_single() -> void:
 		if best_enemy != null:
 			best_enemy.take_damage(damage)
 			_spawn_hit_sparks(best_enemy.global_position + Vector3(0, 0.9, 0))
+			if best_enemy.has_method("apply_repel"):
+				best_enemy.apply_repel(forward, repel_force)
 
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
 
@@ -820,10 +886,18 @@ func _fire_fan() -> void:
 		if angle_to <= half_angle:
 			hit_enemies.append(enemy_body)
 
+	var repel_force: float = _weapon_stats.get("repel", 0.0)
 	for enemy_body in hit_enemies:
 		if is_instance_valid(enemy_body):
 			enemy_body.take_damage(damage)
 			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
+			if enemy_body.has_method("apply_repel"):
+				# Push each pellet victim away from the shooter, not along the
+				# weapon's center axis. Close-range shotgun blasts then kick the
+				# flanking targets outward rather than all in one direction.
+				var away := enemy_body.global_position - global_position
+				away.y = 0.0
+				enemy_body.apply_repel(away, repel_force)
 
 	_spawn_sector_flash(ray_origin, forward, weapon_range, half_angle)
 
@@ -876,6 +950,7 @@ func _fire_explosive() -> void:
 	_spawn_tracer(ray_origin, impact_pos)
 	_spawn_explosion(impact_pos, radius)
 
+	var repel_force: float = _weapon_stats.get("repel", 0.0)
 	for node in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(node) or not node is CharacterBody3D:
 			continue
@@ -886,6 +961,10 @@ func _fire_explosive() -> void:
 		if dist <= radius:
 			var falloff: float = 1.0 - (dist / radius) * 0.5
 			enemy_body.take_damage(damage * falloff)
+			if enemy_body.has_method("apply_repel"):
+				var away := enemy_body.global_position - impact_pos
+				away.y = 0.0
+				enemy_body.apply_repel(away, repel_force * falloff)
 
 func _spawn_explosion(pos: Vector3, radius: float) -> void:
 	var mat := StandardMaterial3D.new()
@@ -927,6 +1006,7 @@ func _fire_melee() -> void:
 	var damage: float = _weapon_stats.get("damage", 20.0)
 	var sweep_angle: float = _weapon_stats.get("sweep_angle", 90.0)
 	var half_sweep := deg_to_rad(sweep_angle * 0.5)
+	var repel_force: float = _weapon_stats.get("repel", 0.0)
 
 	var origin := global_position + Vector3(0, 0.9, 0)
 	var hit_count := 0
@@ -949,6 +1029,8 @@ func _fire_melee() -> void:
 			enemy_body.take_damage(damage)
 			hit_count += 1
 			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
+			if enemy_body.has_method("apply_repel"):
+				enemy_body.apply_repel(to_enemy, repel_force)
 
 	_spawn_swing_arc(origin, forward, weapon_range, half_sweep)
 
@@ -1110,6 +1192,54 @@ func _rotate_to_face_mouse(delta: float) -> void:
 		return
 	var target_angle := atan2(dir.x, dir.z)
 	rotation.y = lerp_angle(rotation.y, target_angle, ROTATION_SPEED * delta)
+
+func _update_animation(delta: float) -> void:
+	# Horizontal speed drives the walk cycle; scale the cycle faster and bigger
+	# when sprinting so sprint visibly reads.
+	var horiz_speed := Vector2(velocity.x, velocity.z).length()
+	var speed_ratio := clampf(horiz_speed / SPEED, 0.0, 2.0)
+	# Cycle frequency in radians/sec — ~2 full swings/sec at walking speed.
+	var cycle_rate := 10.0 * speed_ratio
+	_walk_phase = fposmod(_walk_phase + cycle_rate * delta, TAU)
+
+	var swing_amp := deg_to_rad(lerpf(3.0, 38.0, clampf(speed_ratio, 0.0, 1.5)))
+	var bob_amp := lerpf(0.0, 0.04, clampf(speed_ratio, 0.0, 1.5))
+
+	var leg_swing := sin(_walk_phase) * swing_amp
+	# Arms swing opposite to legs for natural gait.
+	var arm_swing := -sin(_walk_phase) * swing_amp * 0.75
+	var bob := absf(sin(_walk_phase)) * bob_amp
+
+	# Leg mesh height 0.65, origin at center → hip is at local +y 0.325.
+	# Arm mesh height 0.55, origin at center → shoulder is at local +y 0.275.
+	_set_pivoted_rotation(_leg_left, _leg_left_rest, 0.325, leg_swing)
+	_set_pivoted_rotation(_leg_right, _leg_right_rest, 0.325, -leg_swing)
+
+	# Shooting kick-back: raise the arms up briefly when a shot fires.
+	_shoot_anim_timer = max(_shoot_anim_timer - delta, 0.0)
+	var kick := 0.0
+	if SHOOT_ANIM_DURATION > 0.0 and _shoot_anim_timer > 0.0:
+		var kick_t := _shoot_anim_timer / SHOOT_ANIM_DURATION
+		# Ease: snap up, settle down.
+		kick = sin(kick_t * PI) * deg_to_rad(35.0)
+
+	_set_pivoted_rotation(_arm_left, _arm_left_rest, 0.275, arm_swing - kick)
+	# The right arm holds the weapon — it takes the full kick.
+	_set_pivoted_rotation(_arm_right, _arm_right_rest, 0.275, -arm_swing - kick)
+
+	if _torso:
+		var torso_xf := _torso_rest
+		torso_xf.origin.y = _torso_rest.origin.y + bob
+		_torso.transform = torso_xf
+
+func _set_pivoted_rotation(node: Node3D, rest: Transform3D, pivot_y: float, angle: float) -> void:
+	# Rotate `node` around the local point (0, pivot_y, 0) — e.g. the shoulder on
+	# an arm mesh whose origin is at its midpoint. Formula: T(P) · R · T(-P).
+	if node == null:
+		return
+	var rot := Basis(Vector3.RIGHT, angle)
+	var pivot := Vector3(0.0, pivot_y, 0.0)
+	node.transform = rest * Transform3D(rot, pivot - rot * pivot)
 
 func _sync_hud() -> void:
 	if hud:

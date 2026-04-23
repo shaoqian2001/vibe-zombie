@@ -32,6 +32,14 @@ const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
 var max_hp := 30.0
 var hp := 30.0
 
+# Higher = less repel when hit. Per-enemy so tougher zombies can shrug off shots.
+var repel_resistance: float = 1.0
+# Extra horizontal velocity from knockback. Decays every physics tick.
+var _repel_velocity: Vector3 = Vector3.ZERO
+# How fast the repel impulse bleeds off (units/sec of velocity, per second).
+const REPEL_DECAY := 14.0
+const REPEL_MAX_SPEED := 18.0
+
 # Wander state
 var _wander_dir := Vector3.ZERO
 var _wander_timer := 0.0
@@ -138,6 +146,13 @@ func _physics_process(delta: float) -> void:
 		var target_angle := atan2(move_dir.x, move_dir.z)
 		rotation.y = lerp_angle(rotation.y, target_angle, 6.0 * delta)
 
+	# Layer knockback on top of AI movement so hits visibly shove the zombie.
+	# Decay first so a fresh impulse isn't reduced the same frame it's applied.
+	if _repel_velocity.length_squared() > 0.0001:
+		velocity.x += _repel_velocity.x
+		velocity.z += _repel_velocity.z
+		_repel_velocity = _repel_velocity.move_toward(Vector3.ZERO, REPEL_DECAY * delta)
+
 	move_and_slide()
 
 	# Keep HP bar updated
@@ -183,6 +198,37 @@ func _request_damage(amount: float) -> void:
 	if not is_multiplayer_authority():
 		return
 	_apply_damage(amount)
+
+func apply_repel(direction: Vector3, force: float) -> void:
+	# Authority-only state mutation: client hits forward via RPC. Host resolves
+	# the impulse; resulting positions propagate through the existing transform
+	# sync loop, so no extra network chatter is needed.
+	if NetworkManager.is_networked and not is_multiplayer_authority():
+		rpc_id(1, "_request_repel", direction, force)
+		return
+	_apply_repel(direction, force)
+
+@rpc("any_peer", "call_remote", "reliable")
+func _request_repel(direction: Vector3, force: float) -> void:
+	if not is_multiplayer_authority():
+		return
+	_apply_repel(direction, force)
+
+func _apply_repel(direction: Vector3, force: float) -> void:
+	if force <= 0.0 or repel_resistance <= 0.0:
+		return
+	var dir := direction
+	dir.y = 0.0
+	if dir.length_squared() < 0.0001:
+		return
+	dir = dir.normalized()
+	var impulse := dir * (force / repel_resistance)
+	_repel_velocity += impulse
+	# Clamp so stacked impulses (e.g. every shotgun pellet) don't launch the
+	# zombie into orbit.
+	var speed := _repel_velocity.length()
+	if speed > REPEL_MAX_SPEED:
+		_repel_velocity = _repel_velocity * (REPEL_MAX_SPEED / speed)
 
 func _apply_damage(amount: float) -> void:
 	hp = max(hp - amount, 0.0)
