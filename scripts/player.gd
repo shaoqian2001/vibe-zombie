@@ -801,8 +801,8 @@ func _update_aim_line() -> void:
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
 
 	match hit_mode:
-		"fan":
-			_draw_fan_aim(im, muzzle_pos)
+		"pellet":
+			_draw_pellet_aim(im, muzzle_pos)
 		"melee":
 			_draw_melee_aim(im, muzzle_pos)
 		"explosive":
@@ -828,22 +828,23 @@ func _draw_single_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
 		_aim_dot.visible = true
 		_aim_dot.global_position = aim_end
 
-func _draw_fan_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
+func _draw_pellet_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
+	# Show the outer edges of the pellet cone plus a central aim line so
+	# the player can judge both where the tightest grouping will land and
+	# how wide the spread is.
 	var forward := _get_forward()
-	var weapon_range: float = _weapon_stats.get("range", 12.0)
-	var fan_angle: float = _weapon_stats.get("fan_angle", 35.0)
-	var fan_rays: int = _weapon_stats.get("fan_rays", 7)
+	var weapon_range: float = _weapon_stats.get("range", 15.0)
+	var spread_deg: float = _weapon_stats.get("pellet_spread", 8.0)
+	var spread_rad := deg_to_rad(spread_deg)
 
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
-	for i in range(fan_rays):
-		var t := float(i) / float(fan_rays - 1) if fan_rays > 1 else 0.5
-		var angle := deg_to_rad(lerpf(-fan_angle, fan_angle, t))
+	for i in range(3):
+		var t := float(i) * 0.5  # 0.0 (-edge), 0.5 (centre), 1.0 (+edge)
+		var angle: float = lerpf(-spread_rad, spread_rad, t)
 		var dir := forward.rotated(Vector3.UP, angle)
 		var ray_end := muzzle_pos + dir * weapon_range
-
 		var result := _cast_ray(muzzle_pos, ray_end)
 		var end_point: Vector3 = result.position if result else ray_end
-
 		im.surface_add_vertex(muzzle_pos)
 		im.surface_add_vertex(end_point)
 	im.surface_end()
@@ -892,8 +893,8 @@ func _try_reload() -> void:
 func _fire_bullet() -> void:
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
 	match hit_mode:
-		"fan":
-			_fire_fan()
+		"pellet":
+			_fire_pellet()
 			_spawn_muzzle_flash()
 		"explosive":
 			_fire_explosive()
@@ -978,93 +979,67 @@ func _fire_single() -> void:
 
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
 
-func _fire_fan() -> void:
+func _fire_pellet() -> void:
+	# Real shotguns fire a shell of 9–15 buckshot pellets that spread in a
+	# cone. Each pellet is its own raycast: damage is only applied to the
+	# body the pellet directly hits, so total damage scales with how many
+	# pellets land on a given target — point-blank is devastating, while a
+	# target on the edge of the cone at max range might only get clipped
+	# by one or two. One shell = one pull of the trigger = one ammo tick.
 	var forward := _get_forward()
-	var weapon_range: float = _weapon_stats.get("range", 12.0)
-	var damage: float = _weapon_stats.get("damage", 15.0)
-	var fan_angle: float = _weapon_stats.get("fan_angle", 20.0)
-	var fan_rays: int = _weapon_stats.get("fan_rays", 5)
-	var half_angle := deg_to_rad(fan_angle)
+	var weapon_range: float = _weapon_stats.get("range", 15.0)
+	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0)
+	var spread_deg: float = _weapon_stats.get("pellet_spread", 8.0)
+	var count_min: int = _weapon_stats.get("pellet_count_min", 9)
+	var count_max: int = _weapon_stats.get("pellet_count_max", 15)
+	var pellet_count := randi_range(count_min, count_max)
+	var spread_rad := deg_to_rad(spread_deg)
 
 	var ray_origin := _get_muzzle_world_pos()
 
-	# Visual tracers (for feedback only)
-	for i in range(fan_rays):
-		var t := float(i) / float(fan_rays - 1) if fan_rays > 1 else 0.5
-		var angle := deg_to_rad(lerpf(-fan_angle, fan_angle, t))
-		var dir := forward.rotated(Vector3.UP, angle)
-		var ray_end := ray_origin + dir * weapon_range
+	# Deduplicate the spark VFX per victim so a zombie absorbing a dozen
+	# pellets gets one meaty spark burst instead of a dozen overlapping
+	# ones. Damage itself is still applied per-pellet.
+	var spark_points: Dictionary = {}
 
+	for i in range(pellet_count):
+		# Wider on the horizontal axis than vertical — most of the visible
+		# spread in a top-down view comes from yaw, so scale pitch down to
+		# keep pellets from punching into the ground or flying over heads.
+		var rand_yaw := randf_range(-spread_rad, spread_rad)
+		var rand_pitch := randf_range(-spread_rad * 0.3, spread_rad * 0.3)
+		var dir := forward.rotated(Vector3.UP, rand_yaw)
+		var right := dir.cross(Vector3.UP)
+		if right.length_squared() > 0.0001:
+			right = right.normalized()
+			dir = dir.rotated(right, rand_pitch)
+		dir = dir.normalized()
+
+		var ray_end := ray_origin + dir * weapon_range
 		var result := _cast_ray(ray_origin, ray_end)
 		var tracer_end: Vector3 = result.position if result else ray_end
+
+		if result and result.collider is CharacterBody3D:
+			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
+			if hit_body.has_method("take_damage"):
+				hit_body.take_damage(damage_per_pellet)
+				spark_points[hit_body] = result.position
+
 		_spawn_tracer(ray_origin, tracer_end)
 
-	# True AoE sector hit detection
-	var hit_enemies: Array[CharacterBody3D] = []
-	for node in get_tree().get_nodes_in_group("enemy"):
-		if not is_instance_valid(node) or not node is CharacterBody3D:
-			continue
-		var enemy_body: CharacterBody3D = node as CharacterBody3D
-		if not enemy_body.has_method("take_damage"):
-			continue
-
-		var to_enemy: Vector3 = enemy_body.global_position - global_position
-		to_enemy.y = 0.0
-		var dist: float = to_enemy.length()
-		if dist > weapon_range or dist < 0.1:
-			continue
-
-		var angle_to: float = forward.angle_to(to_enemy.normalized())
-		if angle_to <= half_angle:
-			hit_enemies.append(enemy_body)
-
+	# Apply repel once per victim (per trigger pull) so a zombie soaking a
+	# dozen pellets gets a single solid shove rather than being launched. The
+	# pellet spread makes the per-pellet direction noisy; using the shot's
+	# forward axis is also more predictable at close range.
 	var repel_force: float = _weapon_stats.get("repel", 0.0)
-	for enemy_body in hit_enemies:
-		if is_instance_valid(enemy_body):
-			enemy_body.take_damage(damage)
-			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
-			if enemy_body.has_method("apply_repel"):
-				# Push each pellet victim away from the shooter, not along the
-				# weapon's center axis. Close-range shotgun blasts then kick the
-				# flanking targets outward rather than all in one direction.
-				var away := enemy_body.global_position - global_position
-				away.y = 0.0
-				enemy_body.apply_repel(away, repel_force)
+	for hit_body: CharacterBody3D in spark_points.keys():
+		if is_instance_valid(hit_body) and hit_body.has_method("apply_repel"):
+			var away := hit_body.global_position - global_position
+			away.y = 0.0
+			hit_body.apply_repel(away, repel_force)
 
-	_spawn_sector_flash(ray_origin, forward, weapon_range, half_angle)
-
-func _spawn_sector_flash(origin: Vector3, forward: Vector3, sector_range: float, half_angle: float) -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.6, 0.2, 0.25)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.no_depth_test = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-
-	var im_mesh := ImmediateMesh.new()
-	var steps := 8
-	im_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
-	for i in range(steps):
-		var t0 := float(i) / float(steps)
-		var t1 := float(i + 1) / float(steps)
-		var a0: float = lerpf(-half_angle, half_angle, t0)
-		var a1: float = lerpf(-half_angle, half_angle, t1)
-		var d0 := forward.rotated(Vector3.UP, a0) * sector_range
-		var d1 := forward.rotated(Vector3.UP, a1) * sector_range
-		im_mesh.surface_add_vertex(origin)
-		im_mesh.surface_add_vertex(origin + d0)
-		im_mesh.surface_add_vertex(origin + d1)
-	im_mesh.surface_end()
-
-	var mi := MeshInstance3D.new()
-	mi.mesh = im_mesh
-	mi.material_override = mat
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	get_tree().root.add_child(mi)
-
-	var tw := get_tree().create_tween()
-	tw.tween_property(mat, "albedo_color:a", 0.0, 0.12)
-	tw.tween_callback(mi.queue_free)
+	for pos: Vector3 in spark_points.values():
+		_spawn_hit_sparks(pos)
 
 func _fire_explosive() -> void:
 	var forward := _get_forward()
