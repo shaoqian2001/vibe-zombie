@@ -26,9 +26,8 @@ const WEAPONS := {
 		"bullet_speed": INF,
 		"tracer_color": Color(1.0, 0.5, 0.2, 0.8),
 		"hit_mode": "pellet",
-		"pellet_count_min": 9,
-		"pellet_count_max": 15,
-		"pellet_spread": 8.0,
+		"pellet_count": 12,
+		"pellet_spread": 4.0,
 	},
 	"smg": {
 		"damage": 5.0,

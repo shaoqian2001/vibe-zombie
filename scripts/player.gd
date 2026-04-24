@@ -720,7 +720,7 @@ func _fire_single() -> void:
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
 
 func _fire_pellet() -> void:
-	# Real shotguns fire a shell of 9–15 buckshot pellets that spread in a
+	# Real shotguns fire a shell of ~12 buckshot pellets that spread in a
 	# cone. Each pellet is its own raycast: damage is only applied to the
 	# body the pellet directly hits, so total damage scales with how many
 	# pellets land on a given target — point-blank is devastating, while a
@@ -729,10 +729,8 @@ func _fire_pellet() -> void:
 	var forward := _get_forward()
 	var weapon_range: float = _weapon_stats.get("range", 15.0)
 	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0)
-	var spread_deg: float = _weapon_stats.get("pellet_spread", 8.0)
-	var count_min: int = _weapon_stats.get("pellet_count_min", 9)
-	var count_max: int = _weapon_stats.get("pellet_count_max", 15)
-	var pellet_count := randi_range(count_min, count_max)
+	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0)
+	var pellet_count: int = _weapon_stats.get("pellet_count", 12)
 	var spread_rad := deg_to_rad(spread_deg)
 
 	var ray_origin := _get_muzzle_world_pos()
@@ -743,11 +741,13 @@ func _fire_pellet() -> void:
 	var spark_points: Dictionary = {}
 
 	for i in range(pellet_count):
-		# Wider on the horizontal axis than vertical — most of the visible
-		# spread in a top-down view comes from yaw, so scale pitch down to
-		# keep pellets from punching into the ground or flying over heads.
+		# Yaw (horizontal "spread") sweeps the full cone since the game's
+		# top-down camera makes lateral dispersion the visible one. Pitch
+		# (vertical "recoil" off the aim line) is kept very small so
+		# pellets stay on the plane the zombies actually occupy rather
+		# than punching into the ground or flying over their heads.
 		var rand_yaw := randf_range(-spread_rad, spread_rad)
-		var rand_pitch := randf_range(-spread_rad * 0.3, spread_rad * 0.3)
+		var rand_pitch := randf_range(-spread_rad * 0.1, spread_rad * 0.1)
 		var dir := forward.rotated(Vector3.UP, rand_yaw)
 		var right := dir.cross(Vector3.UP)
 		if right.length_squared() > 0.0001:
