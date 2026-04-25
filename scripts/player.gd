@@ -54,6 +54,8 @@ var _shotgun_node: Node3D = null
 var _smg_node: Node3D = null
 var _grenade_launcher_node: Node3D = null
 var _bat_node: Node3D = null
+var _weapon_reload_player: AudioStreamPlayer = null
+var _audio_cache: Dictionary = {}
 
 # Aim line
 var _aim_line: MeshInstance3D = null
@@ -72,6 +74,7 @@ func _ready() -> void:
 	_build_smg()
 	_build_grenade_launcher()
 	_build_bat()
+	_setup_weapon_audio()
 	_pistol_node.visible = false
 	_shotgun_node.visible = false
 	_smg_node.visible = false
@@ -507,6 +510,94 @@ func _draw_fan_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
 	im.surface_end()
 
 # ------------------------------------------------------------------
+# Weapon audio
+# ------------------------------------------------------------------
+
+func _setup_weapon_audio() -> void:
+	_weapon_reload_player = AudioStreamPlayer.new()
+	_weapon_reload_player.name = "WeaponReloadAudio"
+	_weapon_reload_player.volume_db = -2.0
+	add_child(_weapon_reload_player)
+
+func _play_weapon_fire_sound() -> void:
+	_play_weapon_sound_one_shot(
+		"fire_sound",
+		"fire_volume_db",
+		"fire_pitch_min",
+		"fire_pitch_max",
+		0.0
+	)
+
+func _play_weapon_reload_sound() -> void:
+	_play_weapon_sound_on_player(
+		_weapon_reload_player,
+		"reload_sound",
+		"reload_volume_db",
+		"reload_pitch_min",
+		"reload_pitch_max",
+		-2.0
+	)
+
+func _play_weapon_sound_one_shot(
+	sound_key: String,
+	volume_key: String,
+	pitch_min_key: String,
+	pitch_max_key: String,
+	default_volume: float
+) -> void:
+	var sound_path: String = _weapon_stats.get(sound_key, "")
+	if sound_path == "":
+		return
+	var stream := _get_audio_stream(sound_path)
+	if stream == null:
+		return
+
+	var player := AudioStreamPlayer.new()
+	player.name = "WeaponFireAudio"
+	player.stream = stream
+	player.volume_db = float(_weapon_stats.get(volume_key, default_volume))
+	player.pitch_scale = randf_range(
+		float(_weapon_stats.get(pitch_min_key, 0.96)),
+		float(_weapon_stats.get(pitch_max_key, 1.04))
+	)
+	player.finished.connect(player.queue_free)
+	add_child(player)
+	player.play()
+
+func _play_weapon_sound_on_player(
+	player: AudioStreamPlayer,
+	sound_key: String,
+	volume_key: String,
+	pitch_min_key: String,
+	pitch_max_key: String,
+	default_volume: float
+) -> void:
+	if player == null:
+		return
+	var sound_path: String = _weapon_stats.get(sound_key, "")
+	if sound_path == "":
+		return
+	var stream := _get_audio_stream(sound_path)
+	if stream == null:
+		return
+	player.stream = stream
+	player.volume_db = float(_weapon_stats.get(volume_key, default_volume))
+	player.pitch_scale = randf_range(
+		float(_weapon_stats.get(pitch_min_key, 0.96)),
+		float(_weapon_stats.get(pitch_max_key, 1.04))
+	)
+	player.play()
+
+func _get_audio_stream(sound_path: String) -> AudioStream:
+	if not _audio_cache.has(sound_path):
+		var stream := load(sound_path)
+		if stream is AudioStream:
+			_audio_cache[sound_path] = stream
+		else:
+			return null
+	return _audio_cache[sound_path] as AudioStream
+
+# ------------------------------------------------------------------
 # Gun mechanics
 # ------------------------------------------------------------------
 
@@ -521,6 +612,11 @@ func _update_gun(delta: float) -> void:
 			_is_reloading = false
 			ammo = _weapon_stats.get("magazine_size", 8)
 
+	# Auto-fire while the shoot button is held — the per-weapon fire rate is
+	# already enforced via _shoot_timer inside _try_shoot().
+	if Input.is_action_pressed("shoot"):
+		_try_shoot()
+
 func _try_shoot() -> void:
 	if not _armed or _is_reloading or _shoot_timer > 0.0:
 		return
@@ -534,6 +630,7 @@ func _try_shoot() -> void:
 	if not is_melee:
 		ammo -= 1
 	_shoot_timer = WeaponData.shoot_cooldown(_current_weapon)
+	_play_weapon_fire_sound()
 	_fire_bullet()
 
 func _try_reload() -> void:
@@ -546,6 +643,7 @@ func _try_reload() -> void:
 		return
 	_is_reloading = true
 	_reload_timer = _weapon_stats.get("reload_time", 1.2)
+	_play_weapon_reload_sound()
 
 func _fire_bullet() -> void:
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")

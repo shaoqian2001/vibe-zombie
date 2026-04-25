@@ -13,8 +13,12 @@ extends Node3D
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
+const BACKGROUND_MUSIC := preload("res://assets/audio/music/horror_ambience.ogg")
 
-const DEV_MODE := true
+const DEV_MODE_DEFAULT := true
+var _dev_mode_active: bool = DEV_MODE_DEFAULT
+var _normal_enemies_topped_up: bool = false
+var _enemy_rng: RandomNumberGenerator = null
 
 # Map rim spawn positions (near edges of the 152×152m map)
 const RIM_SPAWN_CANDIDATES := [
@@ -63,6 +67,7 @@ var _game_manual: CanvasLayer = null
 var _inventory: CanvasLayer = null
 var _manual_open: bool = false
 var _inventory_open: bool = false
+var _background_music_player: AudioStreamPlayer = null
 
 # State
 var _nearby_building: Dictionary = {}   # building whose door area the player overlaps
@@ -90,6 +95,8 @@ var _marker_time := 0.0
 func _ready() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
+	_enemy_rng = RandomNumberGenerator.new()
+	_enemy_rng.randomize()
 
 	# Spawn player near map rim
 	var spawn_pos: Vector3 = RIM_SPAWN_CANDIDATES[rng.randi() % RIM_SPAWN_CANDIDATES.size()]
@@ -99,8 +106,9 @@ func _ready() -> void:
 	player.add_to_group("player")
 	_create_ui()
 	_setup_hud()
+	_start_background_music()
 
-	if DEV_MODE:
+	if _dev_mode_active:
 		player.god_mode = true
 		if _hud and _hud.has_method("show_dev_mode"):
 			_hud.show_dev_mode()
@@ -114,6 +122,56 @@ func _ready() -> void:
 	_connect_entrance_areas()
 
 	player.died.connect(_on_player_died)
+
+func _start_background_music() -> void:
+	if _background_music_player:
+		return
+	_background_music_player = AudioStreamPlayer.new()
+	_background_music_player.name = "BackgroundMusic"
+	_background_music_player.stream = BACKGROUND_MUSIC
+	_background_music_player.volume_db = -22.0
+	_background_music_player.finished.connect(_on_background_music_finished)
+	add_child(_background_music_player)
+	_background_music_player.play()
+
+func _on_background_music_finished() -> void:
+	if _background_music_player and _mission_state == MissionState.ACTIVE:
+		_background_music_player.play()
+
+func _toggle_dev_mode() -> void:
+	_dev_mode_active = not _dev_mode_active
+	player.god_mode = _dev_mode_active
+	if _dev_mode_active:
+		if _hud and _hud.has_method("show_dev_mode"):
+			_hud.show_dev_mode()
+	else:
+		if _hud and _hud.has_method("hide_dev_mode"):
+			_hud.hide_dev_mode()
+		# Top up to the normal enemy count the first time dev mode is disabled,
+		# so the player can immediately experience full-density combat.
+		if not _normal_enemies_topped_up:
+			_normal_enemies_topped_up = true
+			_top_up_to_normal_enemy_count()
+
+func _top_up_to_normal_enemy_count() -> void:
+	if _enemy_rng == null:
+		return
+	var enemy_script := preload("res://scripts/enemy.gd")
+	var current: int = get_tree().get_nodes_in_group("enemy").size()
+	var target: int = BASE_ENEMY_COUNT_NORMAL
+	if current >= target:
+		return
+	var grid_origin := -ENEMY_CELL_SIZE * 5 * 0.5
+	var idx_offset: int = current
+	for i in range(target - current):
+		var pos := _random_walkable_pos(_enemy_rng, grid_origin)
+		if pos.distance_to(player.global_position) < 8.0:
+			pos = _random_walkable_pos(_enemy_rng, grid_origin)
+		var enemy := CharacterBody3D.new()
+		enemy.set_script(enemy_script)
+		enemy.name = "Enemy_TopUp_%d" % (idx_offset + i)
+		enemy.global_position = pos
+		add_child(enemy)
 
 func _process(delta: float) -> void:
 	if _mission_state != MissionState.ACTIVE:
@@ -138,6 +196,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return  # block other input while overlay is open
 	if event.is_action_pressed("interact"):
 		_handle_interact()
+	elif event.is_action_pressed("toggle_dev_mode"):
+		_toggle_dev_mode()
 
 # ------------------------------------------------------------------
 # HUD (armor / health / stamina bars)
@@ -219,8 +279,8 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var grid_origin := -total * 0.5
 	var idx := 0
 
-	var base_count := BASE_ENEMY_COUNT_DEV if DEV_MODE else BASE_ENEMY_COUNT_NORMAL
-	var hotspot_count := HOTSPOT_ENEMY_COUNT_DEV if DEV_MODE else HOTSPOT_ENEMY_COUNT_NORMAL
+	var base_count := BASE_ENEMY_COUNT_DEV if _dev_mode_active else BASE_ENEMY_COUNT_NORMAL
+	var hotspot_count := HOTSPOT_ENEMY_COUNT_DEV if _dev_mode_active else HOTSPOT_ENEMY_COUNT_NORMAL
 
 	for i in range(base_count):
 		var pos := _random_walkable_pos(rng, grid_origin)

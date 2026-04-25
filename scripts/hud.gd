@@ -186,6 +186,12 @@ func show_dev_mode() -> void:
 	_dev_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_container.add_child(_dev_label)
 
+func hide_dev_mode() -> void:
+	if _dev_label == null:
+		return
+	_dev_label.queue_free()
+	_dev_label = null
+
 func _update_bars() -> void:
 	if _armor_fill:
 		_armor_fill.size.x = BAR_WIDTH * (armor / max_armor)

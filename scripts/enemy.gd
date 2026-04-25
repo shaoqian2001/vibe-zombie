@@ -2,6 +2,8 @@ extends CharacterBody3D
 
 ## A zombie enemy that wanders, chases and attacks the player.
 
+const ENEMY_ATTACK_SOUND := preload("res://assets/audio/enemies/zombie_attack.wav")
+
 const SPEED := 2.0
 const CHASE_SPEED := 3.5
 const ACCELERATION := 8.0
@@ -27,6 +29,7 @@ var _rng := RandomNumberGenerator.new()
 # Attack state
 var _attack_timer := 0.0
 var _player_ref: CharacterBody3D = null
+var _attack_audio_player: AudioStreamPlayer3D = null
 
 # HP bar references
 var _hp_bar_bg: MeshInstance3D
@@ -38,6 +41,7 @@ func _ready() -> void:
 	_pick_new_wander()
 	_build_model()
 	_build_hp_bar()
+	_setup_attack_audio()
 	await get_tree().process_frame
 	_player_ref = _find_player()
 
@@ -106,8 +110,25 @@ func _try_attack() -> void:
 	if _player_ref == null or not is_instance_valid(_player_ref):
 		return
 	_attack_timer = ATTACK_COOLDOWN
+	_play_attack_sound()
 	if _player_ref.has_method("take_damage"):
 		_player_ref.take_damage(ATTACK_DAMAGE)
+
+func _setup_attack_audio() -> void:
+	_attack_audio_player = AudioStreamPlayer3D.new()
+	_attack_audio_player.name = "AttackAudio"
+	_attack_audio_player.stream = ENEMY_ATTACK_SOUND
+	_attack_audio_player.volume_db = 4.0
+	# Boost unit_size so the sound stays audible from the isometric camera distance.
+	_attack_audio_player.unit_size = 25.0
+	_attack_audio_player.max_distance = 60.0
+	add_child(_attack_audio_player)
+
+func _play_attack_sound() -> void:
+	if _attack_audio_player == null:
+		return
+	_attack_audio_player.pitch_scale = _rng.randf_range(0.88, 1.12)
+	_attack_audio_player.play()
 
 func _find_player() -> CharacterBody3D:
 	var players := get_tree().get_nodes_in_group("player")
