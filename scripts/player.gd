@@ -19,12 +19,6 @@ var health: float = HEALTH_MAX
 var is_dead: bool = false
 var god_mode: bool = false
 
-# Recoil: backward XZ impulse pushed onto the player every trigger pull,
-# decayed exponentially in _physics_process so a single shot is barely a
-# rock and rapid fire (SMG) accumulates into a real shove.
-const RECOIL_DECAY := 9.0
-var _recoil_velocity: Vector3 = Vector3.ZERO
-
 signal died
 
 var stamina: float = STAMINA_MAX
