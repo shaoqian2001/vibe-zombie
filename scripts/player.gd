@@ -70,9 +70,13 @@ var _leg_left: Node3D = null
 var _leg_right: Node3D = null
 var _torso: Node3D = null
 # Shoulders are the animated pivots — rotating them swings the entire arm
-# chain (upper arm → forearm → hand → weapon grip) as one.
+# chain (upper arm → forearm → hand → weapon grip) as one. Elbows pivot
+# the forearm independently for poses that need a tighter bend (chest-high
+# rifle hold, cocked melee swing).
 var _right_shoulder: Node3D = null
 var _left_shoulder: Node3D = null
+var _right_elbow: Node3D = null
+var _left_elbow: Node3D = null
 # Weapons are parented to this anchor on the right hand so they follow the
 # full walk / kick animation without any extra bookkeeping.
 var _right_weapon_grip: Node3D = null
@@ -82,14 +86,77 @@ var _leg_right_rest := Transform3D.IDENTITY
 var _torso_rest := Transform3D.IDENTITY
 var _right_shoulder_rest := Transform3D.IDENTITY
 var _left_shoulder_rest := Transform3D.IDENTITY
+var _right_elbow_rest := Transform3D.IDENTITY
+var _left_elbow_rest := Transform3D.IDENTITY
+# Whether each arm is currently bracing the weapon. Drives walk-cycle
+# amplitude — a free arm pendulums broadly, a braced arm barely moves.
+var _right_arm_braced: bool = false
+var _left_arm_braced: bool = false
+# Current pose's kick parameters, refreshed by _apply_weapon_pose.
+var _kick_pitch_deg: float = 0.0
+var _kick_elbow_deg: float = 0.0
+var _kick_duration: float = 0.18
 # Walk cycle phase (radians) — advances with horizontal speed so legs swing while moving.
 var _walk_phase: float = 0.0
 # Countdown timer driving the shooting arm kick-back animation (seconds).
 var _shoot_anim_timer: float = 0.0
+# Default duration when no weapon-specific kick is configured.
 const SHOOT_ANIM_DURATION := 0.22
-# Pre-pose: arms extended forward in a two-handed weapon hold. Rotating the
-# shoulder node by this amount around X makes its local -Y axis point forward.
-const SHOULDER_FORWARD_PITCH := -1.4  # ~-80°, in radians — arm reaches out & slightly down.
+
+## Per-weapon arm poses + kick parameters. Angles are in degrees.
+## - shoulder_pitch: rotation around X. Negative pitches the arm forward/down.
+## - shoulder_yaw:   rotation around Y. Negative pulls inward toward chest.
+## - elbow_bend:     rotation around X at the elbow. Positive bends the forearm
+##                   toward the body.
+## - braced:         when true, walk cycle dampens this arm to a 4° sway. When
+##                   false, the arm hangs and pendulums ~18° like a real gait.
+## kick_pitch / kick_elbow describe the delta applied to the right arm during
+## the fire animation (negative pitch raises the barrel; the bat uses a large
+## negative pitch + elbow extension to chop forward from a cocked pose).
+const WEAPON_POSES := {
+	"unarmed": {
+		"right": { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": 12.0, "braced": false },
+		"left":  { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": 12.0, "braced": false },
+		"kick_pitch": 0.0, "kick_elbow": 0.0, "kick_duration": 0.0,
+	},
+	"pistol": {
+		# Right hand extends forward at chest height. Off-hand hangs naturally
+		# at the side and pendulums while walking.
+		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "elbow_bend": 8.0,  "braced": true },
+		"left":  { "shoulder_pitch": -8.0,  "shoulder_yaw": 0.0,  "elbow_bend": 18.0, "braced": false },
+		"kick_pitch": 14.0, "kick_elbow": 6.0, "kick_duration": 0.18,
+	},
+	"shotgun": {
+		# Held high at chest with both hands — buttstock tucked toward the
+		# shoulder, support hand reaching across to the forend.
+		"right": { "shoulder_pitch": -62.0, "shoulder_yaw": -6.0,  "elbow_bend": 28.0, "braced": true },
+		"left":  { "shoulder_pitch": -55.0, "shoulder_yaw":  22.0, "elbow_bend": 55.0, "braced": true },
+		"kick_pitch": 22.0, "kick_elbow": 9.0, "kick_duration": 0.28,
+	},
+	"smg": {
+		# Compact two-handed grip: tighter elbow on both arms.
+		"right": { "shoulder_pitch": -68.0, "shoulder_yaw": -5.0,  "elbow_bend": 32.0, "braced": true },
+		"left":  { "shoulder_pitch": -52.0, "shoulder_yaw":  26.0, "elbow_bend": 60.0, "braced": true },
+		"kick_pitch": 8.0, "kick_elbow": 3.0, "kick_duration": 0.10,
+	},
+	"grenade_launcher": {
+		# Heavier than the shotgun — held a bit lower with more elbow flex.
+		"right": { "shoulder_pitch": -60.0, "shoulder_yaw": -6.0,  "elbow_bend": 26.0, "braced": true },
+		"left":  { "shoulder_pitch": -52.0, "shoulder_yaw":  20.0, "elbow_bend": 50.0, "braced": true },
+		"kick_pitch": 26.0, "kick_elbow": 10.0, "kick_duration": 0.32,
+	},
+	"bat": {
+		# Cocked back over the right shoulder ready to swing. Off-hand hangs
+		# at the side. Negative kick_pitch + elbow extension is the swing.
+		# grip_align "along_arm" keeps the bat extending out of the wrist
+		# along the arm direction (instead of aiming along player +Z like a
+		# gun) so cocking back actually puts the bat over the shoulder.
+		"right": { "shoulder_pitch":  35.0, "shoulder_yaw": -22.0, "elbow_bend": 78.0, "braced": false },
+		"left":  { "shoulder_pitch":  -8.0, "shoulder_yaw":   0.0, "elbow_bend": 14.0, "braced": false },
+		"kick_pitch": -110.0, "kick_elbow": -65.0, "kick_duration": 0.42,
+		"grip_align": "along_arm",
+	},
+}
 
 # Network state — true if this peer owns this player (or in single-player).
 var _owns_input: bool = true
@@ -148,8 +215,9 @@ func _build_arm_rigs() -> void:
 	_left_shoulder = _build_arm_chain(
 		"LeftShoulder", Vector3(-0.24, 1.32, 0.02), sleeve_mat, skin_mat, false
 	)
-	_right_shoulder_rest = _right_shoulder.transform
-	_left_shoulder_rest = _left_shoulder.transform
+	# Start in the unarmed pose — both arms hanging naturally. Equipping a
+	# weapon will overwrite the rest transforms via _apply_weapon_pose.
+	_apply_weapon_pose("unarmed")
 
 ## Returns the shoulder Node3D. The shoulder is the animation pivot; its
 ## child chain encodes the bone lengths and pre-pose. The weapon grip (for
@@ -163,11 +231,8 @@ func _build_arm_chain(
 	var shoulder := Node3D.new()
 	shoulder.name = chain_name
 	shoulder.position = shoulder_pos
-	# Pre-pose: rotate the whole arm down-forward so it extends in front of
-	# the chest instead of dangling at the side. Yaw is intentionally zero —
-	# adding an inward yaw here stacks poorly with the elbow/grip counter-
-	# rotation and cants the muzzle a few degrees off-axis.
-	shoulder.rotation.x = SHOULDER_FORWARD_PITCH
+	# Rotation is set by _apply_weapon_pose so the rest pose matches the
+	# weapon being held (or the unarmed default). Just leave it identity here.
 	add_child(shoulder)
 
 	var upper_len := 0.24
@@ -182,14 +247,17 @@ func _build_arm_chain(
 	upper.position = Vector3(0, -upper_len * 0.5, 0)
 	shoulder.add_child(upper)
 
-	# Elbow: small inward bend so the forearm angles toward the player's
-	# center line. On the right side we additionally route weapons through
-	# a WeaponGrip so the hand mesh and weapon share a parent.
+	# Elbow: bend angle is set per pose by _apply_weapon_pose. The right
+	# elbow is recorded for the WeaponGrip counter-rotation; both elbows
+	# are referenced for the shoot animation.
 	var elbow := Node3D.new()
 	elbow.name = "Elbow"
 	elbow.position = Vector3(0, -upper_len, 0)
-	elbow.rotation.x = deg_to_rad(12.0)
 	shoulder.add_child(elbow)
+	if is_right:
+		_right_elbow = elbow
+	else:
+		_left_elbow = elbow
 
 	var fore_len := 0.22
 	var fore_mesh := CylinderMesh.new()
@@ -219,19 +287,72 @@ func _build_arm_chain(
 	wrist.add_child(hand)
 
 	if is_right:
-		# WeaponGrip: because the shoulder is pitched -80° around X, the
-		# wrist's local -Y axis points forward in world. Weapons are built
-		# with +Z as muzzle direction, so we counter-rotate +80° around X
-		# here to realign. Offset forward a hair so the grip sits in front
-		# of the hand mesh instead of inside it.
+		# WeaponGrip: weapons are designed with +Z as the muzzle direction,
+		# so the grip's basis must invert the cumulative shoulder + elbow
+		# rotation to keep the muzzle aimed along the player's +Z axis.
+		# _apply_weapon_pose recomputes this whenever the equipped weapon
+		# (and therefore the rest pose) changes.
 		var grip := Node3D.new()
 		grip.name = "WeaponGrip"
 		grip.position = Vector3(0, -0.02, 0.02)
-		grip.rotation.x = -SHOULDER_FORWARD_PITCH - deg_to_rad(12.0)
 		wrist.add_child(grip)
 		_right_weapon_grip = grip
 
 	return shoulder
+
+## Set both arms to a weapon-specific rest pose and refresh the WeaponGrip
+## so the muzzle keeps pointing along the player's +Z. Called from
+## _build_arm_rigs (initial unarmed pose) and from _equip_weapon. Falls
+## back to the unarmed pose if the weapon name has no entry.
+func _apply_weapon_pose(weapon_name: String) -> void:
+	if _right_shoulder == null or _left_shoulder == null:
+		return
+	var pose: Dictionary = WEAPON_POSES.get(weapon_name, WEAPON_POSES["unarmed"])
+	var right: Dictionary = pose["right"]
+	var left: Dictionary = pose["left"]
+
+	_pose_arm(_right_shoulder, _right_elbow, right)
+	_pose_arm(_left_shoulder, _left_elbow, left)
+
+	_right_shoulder_rest = _right_shoulder.transform
+	_left_shoulder_rest = _left_shoulder.transform
+	if _right_elbow:
+		_right_elbow_rest = _right_elbow.transform
+	if _left_elbow:
+		_left_elbow_rest = _left_elbow.transform
+
+	_right_arm_braced = right.get("braced", false)
+	_left_arm_braced = left.get("braced", false)
+
+	# Re-align the grip so the weapon sits naturally for the chosen pose:
+	#   • "player_forward" (default, used by guns): basis = inverse of the
+	#     accumulated shoulder + elbow rotation, so the muzzle aims along
+	#     the player's +Z regardless of how the arm is posed.
+	#   • "along_arm" (used by melee like the bat): basis = +90° rotation
+	#     around X, mapping the weapon's +Z axis to the wrist's -Y, so the
+	#     bat extends out of the wrist along the arm's direction. Cocking
+	#     the arm back over the shoulder then naturally cocks the bat too.
+	if _right_weapon_grip and _right_elbow:
+		var grip_align: String = pose.get("grip_align", "player_forward")
+		if grip_align == "along_arm":
+			_right_weapon_grip.basis = Basis(Vector3.RIGHT, PI * 0.5)
+		else:
+			var combined: Basis = _right_shoulder.basis * _right_elbow.basis
+			_right_weapon_grip.basis = combined.inverse()
+
+	_kick_pitch_deg = pose.get("kick_pitch", 0.0)
+	_kick_elbow_deg = pose.get("kick_elbow", 0.0)
+	_kick_duration = pose.get("kick_duration", SHOOT_ANIM_DURATION)
+
+func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
+	if shoulder:
+		shoulder.rotation = Vector3(
+			deg_to_rad(pose.get("shoulder_pitch", 0.0)),
+			deg_to_rad(pose.get("shoulder_yaw", 0.0)),
+			0.0,
+		)
+	if elbow:
+		elbow.rotation = Vector3(deg_to_rad(pose.get("elbow_bend", 0.0)), 0.0, 0.0)
 
 ## Called by main.gd after it sets set_multiplayer_authority() on this player,
 ## to make sure `_owns_input` matches the authoritative state (in case Player._ready
@@ -400,6 +521,12 @@ func _equip_weapon(idx: int) -> void:
 	_smg_node.visible = (_current_weapon == "smg")
 	_grenade_launcher_node.visible = (_current_weapon == "grenade_launcher")
 	_bat_node.visible = (_current_weapon == "bat")
+
+	# Re-pose the arms so the body actually mimics holding this weapon —
+	# pistol shooters extend the firing hand and let the off-hand hang,
+	# rifle/shotgun shooters bring the support hand across, the bat sits
+	# cocked back over the shoulder, and so on.
+	_apply_weapon_pose(_current_weapon)
 
 func _get_forward() -> Vector3:
 	var fwd := global_transform.basis.z
@@ -905,8 +1032,10 @@ func _fire_bullet() -> void:
 			_fire_single()
 			_spawn_muzzle_flash()
 
-	# Visual kick on the arms — melee still gets a swing cue.
-	_shoot_anim_timer = SHOOT_ANIM_DURATION
+	# Visual kick on the arms — melee still gets a swing cue. Each weapon's
+	# pose sets its own kick duration (the bat needs a longer arc than a
+	# pistol shot) so use that instead of the default.
+	_shoot_anim_timer = max(_kick_duration, 0.05)
 
 	# Physical recoil — shove the player backward along their facing. Melee has
 	# zero recoil in WeaponData, so this is effectively a gun-only effect.
@@ -1309,49 +1438,63 @@ func _update_animation(delta: float) -> void:
 	var cycle_rate := 10.0 * speed_ratio
 	_walk_phase = fposmod(_walk_phase + cycle_rate * delta, TAU)
 
-	var leg_swing_amp := deg_to_rad(lerpf(3.0, 38.0, clampf(speed_ratio, 0.0, 1.5)))
-	var arm_swing_amp := deg_to_rad(lerpf(1.5, 14.0, clampf(speed_ratio, 0.0, 1.5)))
-	var bob_amp := lerpf(0.0, 0.04, clampf(speed_ratio, 0.0, 1.5))
+	var clamped_ratio: float = clampf(speed_ratio, 0.0, 1.5)
+	var leg_swing_amp := deg_to_rad(lerpf(3.0, 38.0, clamped_ratio))
+	# A free arm hangs and pendulums broadly with the gait; a braced arm is
+	# locked to the weapon and barely moves.
+	var braced_arm_amp := deg_to_rad(lerpf(0.5, 4.0, clamped_ratio))
+	var free_arm_amp := deg_to_rad(lerpf(2.0, 18.0, clamped_ratio))
+	var bob_amp := lerpf(0.0, 0.04, clamped_ratio)
 
 	var leg_swing := sin(_walk_phase) * leg_swing_amp
-	# Arms sway opposite to legs for natural gait; dampened since they're
-	# braced in a weapon-hold pose.
-	var arm_sway := -sin(_walk_phase) * arm_swing_amp
 	var bob := absf(sin(_walk_phase)) * bob_amp
+	# Each arm sways opposite to its same-side leg for a natural gait.
+	var right_amp := braced_arm_amp if _right_arm_braced else free_arm_amp
+	var left_amp := braced_arm_amp if _left_arm_braced else free_arm_amp
+	var right_sway := -sin(_walk_phase) * right_amp
+	var left_sway :=  sin(_walk_phase) * left_amp
 
 	# Legs still pivot at the hip on their scene-baked transform (origin at
 	# leg center, mesh height 0.65 → hip offset 0.325).
 	_set_pivoted_rotation(_leg_left, _leg_left_rest, 0.325, leg_swing)
 	_set_pivoted_rotation(_leg_right, _leg_right_rest, 0.325, -leg_swing)
 
-	# Shooting kick-back: the right shoulder snaps back and up on fire, then
-	# settles. Two-phase ease (fast out, slow return) reads as gun recoil.
+	# Fire animation: the right shoulder + elbow drive the kick. For guns
+	# this is a small barrel-rise + brief return; for the bat it's a large
+	# negative pitch (swing forward from cocked) plus elbow extension. The
+	# left arm absorbs half the kick only when it's bracing the weapon.
 	_shoot_anim_timer = max(_shoot_anim_timer - delta, 0.0)
-	var kick_pitch := 0.0
-	if SHOOT_ANIM_DURATION > 0.0 and _shoot_anim_timer > 0.0:
-		var elapsed := SHOOT_ANIM_DURATION - _shoot_anim_timer
-		var t: float = clampf(elapsed / SHOOT_ANIM_DURATION, 0.0, 1.0)
+	var kick_env := 0.0
+	if _kick_duration > 0.0 and _shoot_anim_timer > 0.0:
+		var elapsed: float = _kick_duration - _shoot_anim_timer
+		var t: float = clampf(elapsed / _kick_duration, 0.0, 1.0)
 		# Fast snap to peak at ~25% of the cycle, slower return.
 		var peak_t := 0.25
-		var env: float
 		if t < peak_t:
-			env = t / peak_t
+			kick_env = t / peak_t
 		else:
-			env = 1.0 - (t - peak_t) / (1.0 - peak_t)
-		# Negative pitch raises the barrel (rest already pitches arm down).
-		kick_pitch = env * deg_to_rad(-22.0)
+			kick_env = 1.0 - (t - peak_t) / (1.0 - peak_t)
+	var kick_pitch := kick_env * deg_to_rad(_kick_pitch_deg)
+	var kick_elbow := kick_env * deg_to_rad(_kick_elbow_deg)
 
-	# Drive the shoulders. Because their rest pose already pitches the arm
-	# forward (SHOULDER_FORWARD_PITCH), we just add a delta rotation on top.
 	if _right_shoulder:
 		_right_shoulder.transform = _right_shoulder_rest * Transform3D(
-			Basis(Vector3.RIGHT, arm_sway + kick_pitch), Vector3.ZERO
+			Basis(Vector3.RIGHT, right_sway + kick_pitch), Vector3.ZERO
+		)
+	if _right_elbow:
+		_right_elbow.transform = _right_elbow_rest * Transform3D(
+			Basis(Vector3.RIGHT, kick_elbow), Vector3.ZERO
 		)
 	if _left_shoulder:
-		# Left arm sways opposite to the right, and absorbs half the kick so
-		# the support hand follows the weapon.
+		var left_kick: float = kick_pitch * (0.5 if _left_arm_braced else 0.0)
 		_left_shoulder.transform = _left_shoulder_rest * Transform3D(
-			Basis(Vector3.RIGHT, -arm_sway + kick_pitch * 0.5), Vector3.ZERO
+			Basis(Vector3.RIGHT, left_sway + left_kick), Vector3.ZERO
+		)
+	if _left_elbow and _left_arm_braced:
+		# The support hand follows roughly half the elbow extension during
+		# kick so the off-hand stays glued to the weapon's forend.
+		_left_elbow.transform = _left_elbow_rest * Transform3D(
+			Basis(Vector3.RIGHT, kick_elbow * 0.5), Vector3.ZERO
 		)
 
 	if _torso:
