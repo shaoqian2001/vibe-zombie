@@ -67,13 +67,10 @@ func _physics_process(delta: float) -> void:
 
 	_attack_timer = max(_attack_timer - delta, 0.0)
 
-	# AI mode depends on whether the player can currently see this enemy.
-	# When the player can't see them, zombies don't magically know where
-	# the player is — they wander aimlessly instead of chasing. They do
-	# still attack from contact range, because at that point the player
-	# is on top of them (zombie has hold of you whether or not you're
-	# looking).
-	var seen_by_player := _is_seen_by_player()
+	# Zombie behaviour is independent of whether the player can see the
+	# zombie — the zombie tracks the player by ear/smell. The FOV culler
+	# only changes how the zombie is *drawn*; here we always run the
+	# normal chase / attack / wander state machine.
 
 	var move_dir := Vector3.ZERO
 	var current_speed := SPEED
@@ -82,18 +79,18 @@ func _physics_process(delta: float) -> void:
 		var dist := global_position.distance_to(_player_ref.global_position)
 
 		if dist < ATTACK_RANGE:
-			# Contact range — stop and attack regardless of visibility
+			# In attack range — stop and attack
 			move_dir = Vector3.ZERO
 			_try_attack()
-		elif seen_by_player and dist < DETECT_RANGE:
-			# Chase only while the player has eyes on us
+		elif dist < DETECT_RANGE:
+			# Chase player
 			var to_player := _player_ref.global_position - global_position
 			to_player.y = 0.0
 			if to_player.length() > 0.1:
 				move_dir = to_player.normalized()
 			current_speed = CHASE_SPEED
 		else:
-			# Out of sight or out of range — wander
+			# Too far — wander
 			_wander_timer -= delta
 			if _wander_timer <= 0.0:
 				_pick_new_wander()
@@ -128,16 +125,6 @@ func _physics_process(delta: float) -> void:
 
 	# Keep HP bar updated
 	_update_hp_bar()
-
-# True while the FOV culler classifies this enemy as IN the player's
-# view sector. Defaults to true so a freshly-spawned enemy that hasn't
-# been classified yet behaves normally for one tick.
-func _is_seen_by_player() -> bool:
-	if not has_meta(&"fov_cull_last_state"):
-		return true
-	# State.IN is the first value of the enum (0). Hard-coded here to
-	# avoid importing the FovCuller class for one comparison.
-	return int(get_meta(&"fov_cull_last_state")) == 0
 
 func take_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 	hp = max(hp - amount, 0.0)
