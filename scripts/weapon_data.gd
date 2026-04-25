@@ -2,6 +2,14 @@ class_name WeaponData
 
 # Weapon lookup table — add new entries as weapons are introduced.
 # Each key is the weapon name; the value is a dictionary of stats.
+#
+# Knockback / recoil note:
+#   • knockback is the world-unit/sec impulse applied to a target on hit
+#     (per-bullet for single rounds, per-pellet for the shotgun, full
+#     impulse for explosive splash).
+#   • recoil is the world-unit/sec impulse pushed back into the player
+#     each time the trigger is pulled. Both are kept very small so a
+#     pistol "barely" repels the target and barely kicks the shooter.
 
 const WEAPONS := {
 	"pistol": {
@@ -15,6 +23,8 @@ const WEAPONS := {
 		"tracer_color": Color(1.0, 0.9, 0.3, 0.8),
 		"hit_mode": "single",
 		"hit_tolerance": 1.2,
+		"knockback": 0.5,
+		"recoil": 0.2,
 	},
 	"shotgun": {
 		"damage": 5.0,
@@ -28,6 +38,8 @@ const WEAPONS := {
 		"hit_mode": "pellet",
 		"pellet_count": 12,
 		"pellet_spread": 4.0,
+		"knockback": 0.15,  # per pellet — ~1.8 cumulative on a point-blank target
+		"recoil": 1.5,
 	},
 	"smg": {
 		"damage": 5.0,
@@ -40,6 +52,8 @@ const WEAPONS := {
 		"tracer_color": Color(1.0, 1.0, 0.5, 0.7),
 		"hit_mode": "single",
 		"hit_tolerance": 1.0,
+		"knockback": 0.25,
+		"recoil": 0.08,  # per shot — accumulates with rapid fire
 	},
 	"grenade_launcher": {
 		"damage": 30.0,
@@ -52,6 +66,8 @@ const WEAPONS := {
 		"tracer_color": Color(1.0, 0.4, 0.1, 0.9),
 		"hit_mode": "explosive",
 		"explosion_radius": 5.0,
+		"knockback": 4.0,
+		"recoil": 1.0,
 	},
 	"bat": {
 		"damage": 20.0,
@@ -64,6 +80,8 @@ const WEAPONS := {
 		"tracer_color": Color(0.6, 0.4, 0.2, 0.5),
 		"hit_mode": "melee",
 		"sweep_angle": 90.0,
+		"knockback": 1.5,
+		"recoil": 0.0,
 	},
 }
 

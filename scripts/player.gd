@@ -55,6 +55,13 @@ var _smg_node: Node3D = null
 var _grenade_launcher_node: Node3D = null
 var _bat_node: Node3D = null
 
+# Recoil: world-unit/sec impulse pushed back along -forward each time we
+# pull the trigger. Decays exponentially so even a strong shotgun kick
+# settles in well under half a second. Pistol uses a value tiny enough
+# to "barely" rock the player back.
+const RECOIL_DECAY := 9.0
+var _recoil_velocity: Vector3 = Vector3.ZERO
+
 # Aim line
 var _aim_line: MeshInstance3D = null
 var _aim_dot: MeshInstance3D = null
@@ -83,11 +90,25 @@ func _physics_process(delta: float) -> void:
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
 	_apply_movement(move_dir, current_speed, delta)
+	# Layer recoil on top of input-driven movement and let it decay so
+	# the kick is a brief shove, not a sustained push.
+	velocity.x += _recoil_velocity.x
+	velocity.z += _recoil_velocity.z
+	var decay := exp(-RECOIL_DECAY * delta)
+	_recoil_velocity.x *= decay
+	_recoil_velocity.z *= decay
 	_rotate_to_face_mouse(delta)
 	move_and_slide()
 	_update_gun(delta)
 	_update_aim_line()
 	_sync_hud()
+
+func _apply_recoil() -> void:
+	var strength: float = _weapon_stats.get("recoil", 0.0)
+	if strength <= 0.0:
+		return
+	var fwd := _get_forward()
+	_recoil_velocity -= fwd * strength
 
 func take_damage(amount: float) -> void:
 	if is_dead or god_mode:
@@ -647,6 +668,7 @@ func _try_reload() -> void:
 	_reload_timer = _weapon_stats.get("reload_time", 1.2)
 
 func _fire_bullet() -> void:
+	_apply_recoil()
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
 	match hit_mode:
 		"pellet":
@@ -667,6 +689,7 @@ func _fire_single() -> void:
 	var damage: float = _weapon_stats.get("damage", 10.0)
 	var tolerance: float = _weapon_stats.get("hit_tolerance", 1.2)
 	var spread_deg: float = _weapon_stats.get("spread", 0.0)
+	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	if spread_deg > 0.0:
 		var spread_rad := deg_to_rad(spread_deg)
@@ -679,6 +702,7 @@ func _fire_single() -> void:
 
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * weapon_range
+	var impulse := forward * knockback
 
 	var result := _cast_ray(ray_origin, ray_end)
 	var hit_enemy := false
@@ -686,7 +710,7 @@ func _fire_single() -> void:
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
 		if hit_body.has_method("take_damage"):
-			hit_body.take_damage(damage)
+			hit_body.take_damage(damage, impulse)
 			hit_enemy = true
 			_spawn_hit_sparks(result.position)
 
@@ -714,7 +738,7 @@ func _fire_single() -> void:
 				best_enemy = enemy_body
 
 		if best_enemy != null:
-			best_enemy.take_damage(damage)
+			best_enemy.take_damage(damage, impulse)
 			_spawn_hit_sparks(best_enemy.global_position + Vector3(0, 0.9, 0))
 
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
@@ -731,6 +755,7 @@ func _fire_pellet() -> void:
 	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0)
 	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0)
 	var pellet_count: int = _weapon_stats.get("pellet_count", 12)
+	var knockback_per_pellet: float = _weapon_stats.get("knockback", 0.0)
 	var spread_rad := deg_to_rad(spread_deg)
 
 	var ray_origin := _get_muzzle_world_pos()
@@ -762,7 +787,7 @@ func _fire_pellet() -> void:
 		if result and result.collider is CharacterBody3D:
 			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
 			if hit_body.has_method("take_damage"):
-				hit_body.take_damage(damage_per_pellet)
+				hit_body.take_damage(damage_per_pellet, dir * knockback_per_pellet)
 				spark_points[hit_body] = result.position
 
 		_spawn_tracer(ray_origin, tracer_end)
@@ -775,6 +800,7 @@ func _fire_explosive() -> void:
 	var weapon_range: float = _weapon_stats.get("range", 25.0)
 	var damage: float = _weapon_stats.get("damage", 30.0)
 	var radius: float = _weapon_stats.get("explosion_radius", 5.0)
+	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * weapon_range
@@ -795,7 +821,16 @@ func _fire_explosive() -> void:
 		var dist: float = enemy_body.global_position.distance_to(impact_pos)
 		if dist <= radius:
 			var falloff: float = 1.0 - (dist / radius) * 0.5
-			enemy_body.take_damage(damage * falloff)
+			# Radial knockback away from the impact, scaled the same way
+			# as damage so close zombies fly further than ones near the
+			# blast edge.
+			var away := enemy_body.global_position - impact_pos
+			away.y = 0.0
+			if away.length_squared() > 0.0001:
+				away = away.normalized()
+			else:
+				away = Vector3.ZERO
+			enemy_body.take_damage(damage * falloff, away * knockback * falloff)
 
 func _spawn_explosion(pos: Vector3, radius: float) -> void:
 	var mat := StandardMaterial3D.new()
@@ -837,6 +872,7 @@ func _fire_melee() -> void:
 	var damage: float = _weapon_stats.get("damage", 20.0)
 	var sweep_angle: float = _weapon_stats.get("sweep_angle", 90.0)
 	var half_sweep := deg_to_rad(sweep_angle * 0.5)
+	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	var origin := global_position + Vector3(0, 0.9, 0)
 	var hit_count := 0
@@ -856,7 +892,11 @@ func _fire_melee() -> void:
 
 		var angle_to: float = forward.angle_to(to_enemy.normalized())
 		if angle_to <= half_sweep:
-			enemy_body.take_damage(damage)
+			# Bat shove is roughly in the swing direction (the player's
+			# forward), with a touch of away-from-player so the zombie
+			# stumbles back rather than into the swing.
+			var swing_dir: Vector3 = (forward + to_enemy.normalized() * 0.5).normalized()
+			enemy_body.take_damage(damage, swing_dir * knockback)
 			hit_count += 1
 			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
 
