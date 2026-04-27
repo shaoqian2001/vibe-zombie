@@ -6,23 +6,22 @@ extends Node
 ## each into one of three states based on whether its XZ position falls
 ## inside the player's view sector and how far away it is from the head:
 ##
-##   • IN      — inside the sector. Rendered at full opacity.
-##   • FADED   — outside the sector but still within memory range.
-##               Rendered at a dimmed alpha so the player can see where
-##               static scenery and recently-seen zombies were, like the
-##               "ghosted" memory tiles in Project Zomboid.
+##   • IN      — inside the sector. Rendered at full brightness.
+##   • FADED   — outside the sector but still within memory range. The
+##               albedo RGB is multiplied down so the entity reads as
+##               "in shadow" — opaque, but darkened. Alpha and the
+##               transparency mode are deliberately NOT touched, so
+##               buildings outside the player's view stay solid (you
+##               can't see through them) instead of ghostly.
 ##   • HIDDEN  — outside the sector and past memory range. Skipped by the
 ##               renderer entirely. Only applied to entities tagged as
 ##               "moving" (enemies); static scenery never fully hides
 ##               because the player remembers where buildings stand.
 ##
-## Material alpha is applied recursively across each node's subtree —
+## Brightness is applied recursively across each node's subtree —
 ## buildings have their body, roof ledge, windows, trim, awning and door
-## meshes all fade together — and is only written on state transitions,
+## meshes all dim together — and is only written on state transitions,
 ## not every frame, so the per-frame cost is a cheap classification pass.
-## When process-pausing is enabled, entities freeze in their last FOV
-## position the moment they fall out of the sector, so a FADED zombie is
-## a genuine snapshot of where it was last seen.
 ##
 ## Per-entity metadata:
 ##   • fov_cull_radius          — bounding-sphere radius (default 0.5).
@@ -44,14 +43,16 @@ const META_CENTER          := &"fov_cull_center"
 const META_TYPE            := &"fov_cull_entity_type"
 const META_MEMORY_RANGE    := &"fov_cull_memory_range"
 const META_LAST_STATE      := &"fov_cull_last_state"
+const META_ORIGINAL_ALBEDO := &"fov_original_albedo"
 const GROUP                := &"fov_cullable"
 
 enum State { IN, FADED, HIDDEN }
 
-## Alpha applied to FADED entities. Tuned to read as "remembered but
-## not currently visible" — low enough to feel ghosted, high enough to
-## let the player still parse outlines.
-const FADE_ALPHA := 0.35
+## Brightness multiplier applied to FADED entities' albedo RGB. Their
+## alpha stays at 1.0 — the FADED look is "stuff in shadow", not "stuff
+## seen through gauze". Lower = darker; tuned to read as "outside the
+## player's vision" while still leaving silhouettes legible.
+const FADE_DIM_FACTOR := 0.4
 
 var _player: Node3D = null
 var _fov_overlay: Node = null
@@ -134,31 +135,52 @@ static func _apply_state(node: Node3D, state: int) -> void:
 	match state:
 		State.IN:
 			node.visible = true
-			_set_alpha_tree(node, 1.0, false)
+			_apply_brightness(node, false)
 		State.FADED:
 			node.visible = true
-			_set_alpha_tree(node, FADE_ALPHA, true)
+			_apply_brightness(node, true)
 		State.HIDDEN:
 			node.visible = false
 
-# Recursively set every descendant MeshInstance3D's material alpha.
-# `transparent` toggles between TRANSPARENCY_ALPHA (for the FADED ghost
-# look) and TRANSPARENCY_DISABLED (restoring opaque rendering).
-static func _set_alpha_tree(node: Node, alpha: float, transparent: bool) -> void:
+# Recursively darken every descendant MeshInstance3D so FADED entities
+# read as "in shadow" rather than "see-through". The bright original
+# albedo is snapshotted on first encounter and restored exactly on the
+# IN transition. We always also reset transparency to OPAQUE+alpha 1.0,
+# so any prior occlusion-fade alpha is cleared the moment a building
+# leaves the FOV — and main.gd's occlusion code re-applies alpha 0.25
+# only on buildings that are currently IN, so the two systems can't
+# stomp each other.
+static func _apply_brightness(node: Node, dimmed: bool) -> void:
 	if node is MeshInstance3D:
 		var mi: MeshInstance3D = node
 		var prim := mi.mesh as PrimitiveMesh
 		if prim != null:
 			var mat := prim.material as StandardMaterial3D
 			if mat != null:
-				if transparent:
-					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-					mat.albedo_color.a = alpha
+				if not mi.has_meta(META_ORIGINAL_ALBEDO):
+					# Cache the bright RGB once. Force alpha to 1.0 in
+					# the snapshot — even if the live alpha is mid-
+					# occlusion-fade right now, that transient blend
+					# isn't part of the "original" look.
+					mi.set_meta(META_ORIGINAL_ALBEDO, Color(
+						mat.albedo_color.r,
+						mat.albedo_color.g,
+						mat.albedo_color.b,
+						1.0
+					))
+				var orig: Color = mi.get_meta(META_ORIGINAL_ALBEDO)
+				if dimmed:
+					mat.albedo_color = Color(
+						orig.r * FADE_DIM_FACTOR,
+						orig.g * FADE_DIM_FACTOR,
+						orig.b * FADE_DIM_FACTOR,
+						1.0
+					)
 				else:
-					mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-					mat.albedo_color.a = 1.0
+					mat.albedo_color = orig
+				mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
 	for child in node.get_children():
-		_set_alpha_tree(child, alpha, transparent)
+		_apply_brightness(child, dimmed)
 
 # Returns true if any part of a bounding-sphere of `radius` at `p_xz`
 # falls inside the player's view sector. Passing radius=0 degenerates to
