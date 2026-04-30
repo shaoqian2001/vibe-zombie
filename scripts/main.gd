@@ -236,6 +236,10 @@ func _spawn_remote_player(peer_id: int, pos: Vector3) -> CharacterBody3D:
 		p.refresh_authority()
 	p.global_position = pos
 	p.add_to_group("player")
+	# Remote players are visible-but-far-away characters from this peer's
+	# point of view, so they should darken with the FOV like zombies do.
+	# (The local player skips this in FovCuller.configure().)
+	FovCuller.apply_shader_to_subtree(p)
 	_player_nodes[peer_id] = p
 	return p
 
@@ -996,6 +1000,10 @@ func _create_interior(binfo: Dictionary) -> void:
 		iw, id, binfo.height,
 		building_ground, facing, binfo.color
 	)
+	# Drape interior walls and props in the same FOV-shadow overlay so
+	# the player's vision sector reads consistently from outdoors to
+	# indoors (otherwise the room would suddenly snap to fully bright).
+	FovCuller.apply_shader_to_subtree(_current_interior)
 
 func _destroy_interior() -> void:
 	if _current_interior:

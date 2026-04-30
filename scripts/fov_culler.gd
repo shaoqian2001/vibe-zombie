@@ -1,33 +1,37 @@
 extends Node
 
-## Project-Zomboid-style vision fade.
+## Vision-shadow system.
 ##
-## Every frame, iterates nodes in the `fov_cullable` group and classifies
-## each into one of three states based on whether its XZ position falls
-## inside the player's view sector and how far away it is from the head:
+## Casts a soft, world-space shadow over every fragment that falls
+## outside the player's view sector — buildings, roads, sidewalks,
+## enemies, pickups and mission markers all darken together. The shadow
+## is rendered by `shaders/vision_shadow.gdshader`, applied as a
+## material_overlay on every relevant MeshInstance3D, with uniforms
+## driven by this script from the player's per-frame pose.
 ##
-##   • IN      — inside the sector. Rendered at full opacity.
-##   • FADED   — outside the sector but still within memory range.
-##               Rendered at a dimmed alpha so the player can see where
-##               static scenery and recently-seen zombies were, like the
-##               "ghosted" memory tiles in Project Zomboid.
-##   • HIDDEN  — outside the sector and past memory range. Skipped by the
-##               renderer entirely. Only applied to entities tagged as
-##               "moving" (enemies); static scenery never fully hides
-##               because the player remembers where buildings stand.
+## Smoothness is built into the shader: the angular and distance edges
+## of the sector use smoothstep bands, so an entity sliding from inside
+## to outside the cone fades gradually rather than popping. As the
+## player rotates, surfaces near the angular boundary cross through the
+## same smoothstep, giving a temporal fade for free.
 ##
-## Material alpha is applied recursively across each node's subtree —
-## buildings have their body, roof ledge, windows, trim, awning and door
-## meshes all fade together — and is only written on state transitions,
-## not every frame, so the per-frame cost is a cheap classification pass.
-## When process-pausing is enabled, entities freeze in their last FOV
-## position the moment they fall out of the sector, so a FADED zombie is
-## a genuine snapshot of where it was last seen.
+## The classifier still publishes a discrete IN / FADED / HIDDEN state
+## per cullable node, because gameplay code reads it:
+##   • enemy.gd uses State.IN to decide when to chase rather than wander.
+##   • main.gd uses State.IN to suppress occlusion fading for buildings
+##     that the shader is already darkening.
 ##
-## Per-entity metadata:
+## A cullable node is currently considered:
+##   • IN     — inside the sector (gameplay treats it as visible).
+##   • FADED  — outside the sector but within memory range. Visually it's
+##              just shadow; gameplay treats it as "not currently seen."
+##   • HIDDEN — outside the sector and past memory range. Only applied
+##              to entities tagged "moving" (enemies); these stop being
+##              rendered entirely so an off-screen zombie cannot leak its
+##              silhouette through the shadow.
+##
+## Per-entity metadata read from the `fov_cullable` group:
 ##   • fov_cull_radius          — bounding-sphere radius (default 0.5).
-##   • fov_cull_disable_process — if true, set process_mode to DISABLED
-##                                while outside the FOV. Default false.
 ##   • fov_cull_center          — optional Vector2 XZ override for nodes
 ##                                whose own global_position isn't the
 ##                                logical culling centre (e.g. a Node3D
@@ -39,31 +43,90 @@ extends Node
 ##                                roughly 1.6× view_distance.
 
 const META_RADIUS          := &"fov_cull_radius"
-const META_DISABLE_PROCESS := &"fov_cull_disable_process"
 const META_CENTER          := &"fov_cull_center"
 const META_TYPE            := &"fov_cull_entity_type"
 const META_MEMORY_RANGE    := &"fov_cull_memory_range"
 const META_LAST_STATE      := &"fov_cull_last_state"
 const GROUP                := &"fov_cullable"
+## Tag a Node3D with this meta to skip the shadow overlay on its subtree
+## (e.g. the local player's own body — it sits at the FOV apex and
+## shouldn't darken itself).
+const META_SHADOW_EXEMPT   := &"vision_shadow_exempt"
 
 enum State { IN, FADED, HIDDEN }
 
-## Alpha applied to FADED entities. Tuned to read as "remembered but
-## not currently visible" — low enough to feel ghosted, high enough to
-## let the player still parse outlines.
-const FADE_ALPHA := 0.35
+# ---------------------------------------------------------------------
+# Shader / overlay configuration
+# ---------------------------------------------------------------------
+#
+# The angular / distance smoothstep bands set how soft the FOV edge is.
+# Wider bands feel more cinematic and forgive fast camera turns, but
+# also leak more light/zombie-silhouette across the boundary. These
+# defaults give an obvious-but-not-jarring transition over roughly
+# 10° of yaw and 4 m of depth.
+const SHADER_PATH      := "res://shaders/vision_shadow.gdshader"
+const ANGLE_BAND_RAD   := 0.18   # ~10° each side of the sector edge
+const DIST_BAND        := 4.0    # 4 world-units around the far edge
+const SHADOW_ALPHA     := 0.85   # peak darkness of out-of-vision shadow
 
 var _player: Node3D = null
 var _fov_overlay: Node = null
 
+# A single ShaderMaterial shared by every mesh's material_overlay slot.
+# Updating its uniforms once a frame is enough to drive the whole world.
+static var _shadow_material: ShaderMaterial = null
+
 func configure(player: Node3D, fov_overlay: Node) -> void:
 	_player = player
 	_fov_overlay = fov_overlay
+	# Mark the player so apply_shader_to_subtree() called on parent nodes
+	# later won't accidentally pull the player's own meshes into the shadow.
+	if _player != null:
+		_player.set_meta(META_SHADOW_EXEMPT, true)
 
 ## Convenience for other systems (e.g. building occlusion) that need to
 ## know the current state of a cullable node without re-computing it.
 static func current_state(node: Node3D) -> int:
 	return int(node.get_meta(META_LAST_STATE, State.IN))
+
+## Lazily build the shared shadow material. Returns null if the shader
+## resource is missing (e.g. during very early bootstrap), which lets
+## callers no-op safely.
+static func get_shadow_material() -> ShaderMaterial:
+	if _shadow_material != null:
+		return _shadow_material
+	var shader := load(SHADER_PATH) as Shader
+	if shader == null:
+		push_warning("FovCuller: missing %s; vision shadow disabled" % SHADER_PATH)
+		return null
+	_shadow_material = ShaderMaterial.new()
+	_shadow_material.shader = shader
+	_shadow_material.set_shader_parameter("angle_band", ANGLE_BAND_RAD)
+	_shadow_material.set_shader_parameter("dist_band", DIST_BAND)
+	_shadow_material.set_shader_parameter("shadow_alpha", SHADOW_ALPHA)
+	return _shadow_material
+
+## Walk a Node3D subtree and attach the shared shadow material to every
+## MeshInstance3D's material_overlay slot. Skips subtrees rooted at any
+## node tagged META_SHADOW_EXEMPT so the local player can opt out.
+static func apply_shader_to_subtree(root: Node) -> void:
+	var mat := get_shadow_material()
+	if mat == null:
+		return
+	_apply_shader_recursive(root, mat)
+
+static func _apply_shader_recursive(node: Node, mat: ShaderMaterial) -> void:
+	if node is Node3D and node.has_meta(META_SHADOW_EXEMPT):
+		return
+	if node is MeshInstance3D:
+		var mi: MeshInstance3D = node
+		# Don't trample an existing overlay — some assets (HP bars, glow
+		# discs) deliberately use their own. Only fill the slot when it's
+		# untouched, so a single recursive sweep stays idempotent.
+		if mi.material_overlay == null:
+			mi.material_overlay = mat
+	for child in node.get_children():
+		_apply_shader_recursive(child, mat)
 
 func _process(_delta: float) -> void:
 	if _player == null or _fov_overlay == null:
@@ -84,10 +147,22 @@ func _process(_delta: float) -> void:
 	var half_rad := deg_to_rad(fov_deg * 0.5)
 	var default_memory_range := view_dist * 1.6
 
+	# Push the live sector into the shared shadow material so every mesh
+	# in the world re-derives its per-fragment shadow this frame.
+	var mat := get_shadow_material()
+	if mat != null:
+		mat.set_shader_parameter("player_pos", ppos)
+		mat.set_shader_parameter("facing", facing)
+		mat.set_shader_parameter("half_angle", half_rad)
+		mat.set_shader_parameter("view_distance", view_dist)
+
 	var tree := get_tree()
 	if tree == null:
 		return
 
+	# Classifier: still publishes IN/FADED/HIDDEN for gameplay queries
+	# (zombie chase mode, building-occlusion suppression). Visual fading
+	# is owned by the shader, so we no longer touch material alpha here.
 	for node in tree.get_nodes_in_group(GROUP):
 		if not is_instance_valid(node):
 			continue
@@ -96,7 +171,6 @@ func _process(_delta: float) -> void:
 			continue
 
 		var radius: float = float(n3.get_meta(META_RADIUS, 0.5))
-		var disable_process: bool = bool(n3.get_meta(META_DISABLE_PROCESS, false))
 		var entity_type: String = str(n3.get_meta(META_TYPE, "static"))
 		var memory_range: float = float(n3.get_meta(META_MEMORY_RANGE, default_memory_range))
 
@@ -114,11 +188,6 @@ func _process(_delta: float) -> void:
 			_apply_state(n3, state)
 			n3.set_meta(META_LAST_STATE, state)
 
-		if disable_process:
-			var want_mode: int = Node.PROCESS_MODE_INHERIT if state == State.IN else Node.PROCESS_MODE_DISABLED
-			if n3.process_mode != want_mode:
-				n3.process_mode = want_mode
-
 static func _classify(p_xz: Vector2, radius: float, head_xz: Vector2,
                       facing: Vector2, half_rad: float, view_dist: float,
                       entity_type: String, memory_range: float) -> int:
@@ -131,34 +200,10 @@ static func _classify(p_xz: Vector2, radius: float, head_xz: Vector2,
 	return State.FADED
 
 static func _apply_state(node: Node3D, state: int) -> void:
-	match state:
-		State.IN:
-			node.visible = true
-			_set_alpha_tree(node, 1.0, false)
-		State.FADED:
-			node.visible = true
-			_set_alpha_tree(node, FADE_ALPHA, true)
-		State.HIDDEN:
-			node.visible = false
-
-# Recursively set every descendant MeshInstance3D's material alpha.
-# `transparent` toggles between TRANSPARENCY_ALPHA (for the FADED ghost
-# look) and TRANSPARENCY_DISABLED (restoring opaque rendering).
-static func _set_alpha_tree(node: Node, alpha: float, transparent: bool) -> void:
-	if node is MeshInstance3D:
-		var mi: MeshInstance3D = node
-		var prim := mi.mesh as PrimitiveMesh
-		if prim != null:
-			var mat := prim.material as StandardMaterial3D
-			if mat != null:
-				if transparent:
-					mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-					mat.albedo_color.a = alpha
-				else:
-					mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-					mat.albedo_color.a = 1.0
-	for child in node.get_children():
-		_set_alpha_tree(child, alpha, transparent)
+	# Visual darkening is the shader's job — the only thing we still own
+	# here is hard-hiding moving entities that drift past memory range,
+	# so an off-screen zombie can't leak a silhouette through the shadow.
+	node.visible = state != State.HIDDEN
 
 # Returns true if any part of a bounding-sphere of `radius` at `p_xz`
 # falls inside the player's view sector. Passing radius=0 degenerates to
