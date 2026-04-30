@@ -56,6 +56,7 @@ const SIDEWALK_COLOR := Color(0.55, 0.55, 0.52)
 const GRASS_COLOR   := Color(0.32, 0.46, 0.24)
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
+const FovCuller = preload("res://scripts/fov_culler.gd")
 
 var _rng := RandomNumberGenerator.new()
 
@@ -78,6 +79,11 @@ func _ready() -> void:
 	_generate_boundary_walls()
 	_generate_city_grid()
 	_add_sun_and_sky()
+	# Vision-shadow overlay covers the entire static world: ground,
+	# sidewalks, roads, building bodies, windows, ledges, awnings, doors.
+	# Anything created here picks up the shadow shader in one sweep so the
+	# FOV-edge fade matches across every surface the player can see.
+	FovCuller.apply_shader_to_subtree(self)
 
 # ------------------------------------------------------------------
 # Ground
