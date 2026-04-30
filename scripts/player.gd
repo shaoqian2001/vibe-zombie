@@ -55,10 +55,117 @@ var _smg_node: Node3D = null
 var _grenade_launcher_node: Node3D = null
 var _bat_node: Node3D = null
 
+# Recoil: world-unit/sec impulse pushed back along -forward each time we
+# pull the trigger. Decays exponentially so even a strong shotgun kick
+# settles in well under half a second. Pistol uses a value tiny enough
+# to "barely" rock the player back.
+const RECOIL_DECAY := 9.0
+var _recoil_velocity: Vector3 = Vector3.ZERO
+
 # Aim line
 var _aim_line: MeshInstance3D = null
 var _aim_dot: MeshInstance3D = null
 var aim_line_enabled: bool = true
+
+# Body part references for procedural animation (walking, shooting kick).
+# The right/left arms are skeletal rigs built in code (see _build_arm_rigs)
+# so weapons can be parented to the hand and actually track arm motion.
+var _leg_left: Node3D = null
+var _leg_right: Node3D = null
+var _torso: Node3D = null
+# Shoulders are the animated pivots — rotating them swings the entire arm
+# chain (upper arm → forearm → hand → weapon grip) as one. Elbows pivot
+# the forearm independently for poses that need a tighter bend (chest-high
+# rifle hold, cocked melee swing).
+var _right_shoulder: Node3D = null
+var _left_shoulder: Node3D = null
+var _right_elbow: Node3D = null
+var _left_elbow: Node3D = null
+# Weapons are parented to this anchor on the left hand (dominant trigger
+# hand) so they follow the full walk / kick animation without any extra
+# bookkeeping.
+var _weapon_grip: Node3D = null
+# Rest-pose transforms captured at _ready so animation is relative to the scene setup.
+var _leg_left_rest := Transform3D.IDENTITY
+var _leg_right_rest := Transform3D.IDENTITY
+var _torso_rest := Transform3D.IDENTITY
+var _right_shoulder_rest := Transform3D.IDENTITY
+var _left_shoulder_rest := Transform3D.IDENTITY
+var _right_elbow_rest := Transform3D.IDENTITY
+var _left_elbow_rest := Transform3D.IDENTITY
+# Whether each arm is currently bracing the weapon. Drives walk-cycle
+# amplitude — a free arm pendulums broadly, a braced arm barely moves.
+var _right_arm_braced: bool = false
+var _left_arm_braced: bool = false
+# Current pose's kick parameters, refreshed by _apply_weapon_pose.
+var _kick_pitch_deg: float = 0.0
+var _kick_elbow_deg: float = 0.0
+var _kick_duration: float = 0.18
+# Walk cycle phase (radians) — advances with horizontal speed so legs swing while moving.
+var _walk_phase: float = 0.0
+# Countdown timer driving the shooting arm kick-back animation (seconds).
+var _shoot_anim_timer: float = 0.0
+# Default duration when no weapon-specific kick is configured.
+const SHOOT_ANIM_DURATION := 0.22
+
+## Per-weapon arm poses + kick parameters. Angles are in degrees.
+## - shoulder_pitch: rotation around X. Negative pitches the arm forward/down.
+## - shoulder_yaw:   rotation around Y. Negative pulls inward toward chest.
+## - elbow_bend:     rotation around X at the elbow. Positive bends the forearm
+##                   toward the body.
+## - braced:         when true, walk cycle dampens this arm to a 4° sway. When
+##                   false, the arm hangs and pendulums ~18° like a real gait.
+## kick_pitch / kick_elbow describe the delta applied to the right arm during
+## the fire animation (negative pitch raises the barrel; the bat uses a large
+## negative pitch + elbow extension to chop forward from a cocked pose).
+const WEAPON_POSES := {
+	"unarmed": {
+		"left":  { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": 12.0, "braced": false },
+		"right": { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": 12.0, "braced": false },
+		"kick_pitch": 0.0, "kick_elbow": 0.0, "kick_duration": 0.0,
+	},
+	"pistol": {
+		# Left (dominant) hand extends forward at chest. Off-hand hangs
+		# naturally at the side and pendulums while walking.
+		"left":  { "shoulder_pitch": -75.0, "shoulder_yaw":  3.0, "elbow_bend": 8.0,  "braced": true },
+		"right": { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": 18.0, "braced": false },
+		"kick_pitch": 14.0, "kick_elbow": 6.0, "kick_duration": 0.18,
+	},
+	"smg": {
+		# SMG is one-handed in this game — left holds the trigger, right
+		# arm hangs and pendulums.
+		"left":  { "shoulder_pitch": -68.0, "shoulder_yaw":  3.0, "elbow_bend": 18.0, "braced": true },
+		"right": { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": 18.0, "braced": false },
+		"kick_pitch": 8.0, "kick_elbow": 3.0, "kick_duration": 0.10,
+	},
+	"shotgun": {
+		# Two-handed: the left hand grips the stock at chest level, the
+		# right hand reaches diagonally across to the forend out in front.
+		# Yaws pull both shoulders toward the centre line; the right elbow
+		# bends deeply so the hand actually reaches the weapon body
+		# instead of trailing alongside it.
+		"left":  { "shoulder_pitch": -55.0, "shoulder_yaw":  12.0, "elbow_bend": 30.0, "braced": true },
+		"right": { "shoulder_pitch": -65.0, "shoulder_yaw": -48.0, "elbow_bend": 60.0, "braced": true },
+		"kick_pitch": 22.0, "kick_elbow": 9.0, "kick_duration": 0.28,
+	},
+	"grenade_launcher": {
+		# Heavier than the shotgun — held a bit lower with more elbow flex.
+		"left":  { "shoulder_pitch": -52.0, "shoulder_yaw":  12.0, "elbow_bend": 28.0, "braced": true },
+		"right": { "shoulder_pitch": -62.0, "shoulder_yaw": -45.0, "elbow_bend": 56.0, "braced": true },
+		"kick_pitch": 26.0, "kick_elbow": 10.0, "kick_duration": 0.32,
+	},
+	"bat": {
+		# Cocked back over the left shoulder ready to swing. Off-hand hangs
+		# at the side. Negative kick_pitch + elbow extension is the swing.
+		# grip_align "along_arm" keeps the bat extending out of the wrist
+		# along the arm direction (instead of aiming along player +Z like a
+		# gun) so cocking back actually puts the bat over the shoulder.
+		"left":  { "shoulder_pitch":  35.0, "shoulder_yaw":  22.0, "elbow_bend": 78.0, "braced": false },
+		"right": { "shoulder_pitch":  -8.0, "shoulder_yaw":   0.0, "elbow_bend": 14.0, "braced": false },
+		"kick_pitch": -110.0, "kick_elbow": -65.0, "kick_duration": 0.42,
+		"grip_align": "along_arm",
+	},
+}
 
 # Network state — true if this peer owns this player (or in single-player).
 var _owns_input: bool = true
@@ -68,12 +175,195 @@ const NET_SYNC_HZ := 20.0
 const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
 var _net_sync_timer := 0.0
 
+# Derived on receivers to drive animation (authority's `velocity` isn't synced).
+var _remote_last_pos: Vector3 = Vector3.ZERO
+var _remote_last_sync_time: float = 0.0
+
 func _ready() -> void:
 	# In MP, the player node has multiplayer_authority set by the spawner code
 	# in main.gd to the owning peer's id. In single-player the default
 	# (server-only) authority applies and _owns_input stays true.
 	if NetworkManager.is_networked:
 		_owns_input = is_multiplayer_authority()
+	_cache_body_parts()
+	# Single-player has no main.gd handoff that would call refresh_authority(),
+	# so camera lookup and weapon/aim-line building wouldn't otherwise run —
+	# which previously left _camera null and froze movement input.
+	if not NetworkManager.is_networked:
+		refresh_authority()
+
+func _cache_body_parts() -> void:
+	_leg_left = get_node_or_null("LegLeft") as Node3D
+	_leg_right = get_node_or_null("LegRight") as Node3D
+	_torso = get_node_or_null("Torso") as Node3D
+	if _leg_left: _leg_left_rest = _leg_left.transform
+	if _leg_right: _leg_right_rest = _leg_right.transform
+	if _torso: _torso_rest = _torso.transform
+	_build_arm_rigs()
+
+## Build a two-bone arm (shoulder → upper arm → elbow → forearm → hand) for
+## each side, replacing the flat cylinder arms baked into Player.tscn. The
+## right hand gets a WeaponGrip child — weapons parent to that and then
+## follow every shoulder swing/kick frame-accurately.
+func _build_arm_rigs() -> void:
+	var old_left := get_node_or_null("ArmLeft")
+	if old_left: old_left.queue_free()
+	var old_right := get_node_or_null("ArmRight")
+	if old_right: old_right.queue_free()
+
+	var skin_mat := StandardMaterial3D.new()
+	skin_mat.albedo_color = Color(0.82, 0.68, 0.55, 1)
+	skin_mat.roughness = 0.85
+	var sleeve_mat := StandardMaterial3D.new()
+	sleeve_mat.albedo_color = Color(0.22, 0.35, 0.18, 1)  # matches torso
+	sleeve_mat.roughness = 0.85
+
+	_right_shoulder = _build_arm_chain(
+		"RightShoulder", Vector3(0.24, 1.32, 0.02), sleeve_mat, skin_mat, true
+	)
+	_left_shoulder = _build_arm_chain(
+		"LeftShoulder", Vector3(-0.24, 1.32, 0.02), sleeve_mat, skin_mat, false
+	)
+	# Start in the unarmed pose — both arms hanging naturally. Equipping a
+	# weapon will overwrite the rest transforms via _apply_weapon_pose.
+	_apply_weapon_pose("unarmed")
+
+## Returns the shoulder Node3D. The shoulder is the animation pivot; its
+## child chain encodes the bone lengths and pre-pose. The weapon grip (for
+## the right side) or hand anchor (left) is tagged in meta so callers can
+## fetch it without hard-coding paths.
+func _build_arm_chain(
+	chain_name: String, shoulder_pos: Vector3,
+	sleeve_mat: StandardMaterial3D, skin_mat: StandardMaterial3D,
+	is_right: bool
+) -> Node3D:
+	var shoulder := Node3D.new()
+	shoulder.name = chain_name
+	shoulder.position = shoulder_pos
+	# Rotation is set by _apply_weapon_pose so the rest pose matches the
+	# weapon being held (or the unarmed default). Just leave it identity here.
+	add_child(shoulder)
+
+	var upper_len := 0.27
+	var upper_mesh := CylinderMesh.new()
+	upper_mesh.top_radius = 0.055
+	upper_mesh.bottom_radius = 0.05
+	upper_mesh.height = upper_len
+	upper_mesh.material = sleeve_mat
+	var upper := MeshInstance3D.new()
+	upper.name = "UpperArm"
+	upper.mesh = upper_mesh
+	upper.position = Vector3(0, -upper_len * 0.5, 0)
+	shoulder.add_child(upper)
+
+	# Elbow: bend angle is set per pose by _apply_weapon_pose. The right
+	# elbow is recorded for the WeaponGrip counter-rotation; both elbows
+	# are referenced for the shoot animation.
+	var elbow := Node3D.new()
+	elbow.name = "Elbow"
+	elbow.position = Vector3(0, -upper_len, 0)
+	shoulder.add_child(elbow)
+	if is_right:
+		_right_elbow = elbow
+	else:
+		_left_elbow = elbow
+
+	var fore_len := 0.26
+	var fore_mesh := CylinderMesh.new()
+	fore_mesh.top_radius = 0.05
+	fore_mesh.bottom_radius = 0.045
+	fore_mesh.height = fore_len
+	fore_mesh.material = skin_mat
+	var fore := MeshInstance3D.new()
+	fore.name = "Forearm"
+	fore.mesh = fore_mesh
+	fore.position = Vector3(0, -fore_len * 0.5, 0)
+	elbow.add_child(fore)
+
+	var wrist := Node3D.new()
+	wrist.name = "Wrist"
+	wrist.position = Vector3(0, -fore_len, 0)
+	elbow.add_child(wrist)
+
+	var hand_mesh := BoxMesh.new()
+	hand_mesh.size = Vector3(0.09, 0.12, 0.07)
+	hand_mesh.material = skin_mat
+	var hand := MeshInstance3D.new()
+	hand.name = "Hand"
+	hand.mesh = hand_mesh
+	# Drop the hand slightly along the forearm axis so its top meets the wrist.
+	hand.position = Vector3(0, -0.05, 0)
+	wrist.add_child(hand)
+
+	if not is_right:
+		# WeaponGrip lives on the LEFT hand — the dominant / trigger hand.
+		# Weapons are designed with +Z as the muzzle direction, so the
+		# grip's basis must invert the cumulative shoulder + elbow rotation
+		# (for guns) to keep the muzzle aimed along the player's +Z axis.
+		# _apply_weapon_pose recomputes this whenever the equipped weapon
+		# (and therefore the rest pose) changes.
+		var grip := Node3D.new()
+		grip.name = "WeaponGrip"
+		grip.position = Vector3(0, -0.02, 0.02)
+		wrist.add_child(grip)
+		_weapon_grip = grip
+
+	return shoulder
+
+## Set both arms to a weapon-specific rest pose and refresh the WeaponGrip
+## so the muzzle keeps pointing along the player's +Z. Called from
+## _build_arm_rigs (initial unarmed pose) and from _equip_weapon. Falls
+## back to the unarmed pose if the weapon name has no entry.
+func _apply_weapon_pose(weapon_name: String) -> void:
+	if _right_shoulder == null or _left_shoulder == null:
+		return
+	var pose: Dictionary = WEAPON_POSES.get(weapon_name, WEAPON_POSES["unarmed"])
+	var right: Dictionary = pose["right"]
+	var left: Dictionary = pose["left"]
+
+	_pose_arm(_right_shoulder, _right_elbow, right)
+	_pose_arm(_left_shoulder, _left_elbow, left)
+
+	_right_shoulder_rest = _right_shoulder.transform
+	_left_shoulder_rest = _left_shoulder.transform
+	if _right_elbow:
+		_right_elbow_rest = _right_elbow.transform
+	if _left_elbow:
+		_left_elbow_rest = _left_elbow.transform
+
+	_right_arm_braced = right.get("braced", false)
+	_left_arm_braced = left.get("braced", false)
+
+	# Re-align the grip so the weapon sits naturally for the chosen pose:
+	#   • "player_forward" (default, used by guns): basis = inverse of the
+	#     accumulated shoulder + elbow rotation, so the muzzle aims along
+	#     the player's +Z regardless of how the arm is posed.
+	#   • "along_arm" (used by melee like the bat): basis = +90° rotation
+	#     around X, mapping the weapon's +Z axis to the wrist's -Y, so the
+	#     bat extends out of the wrist along the arm's direction. Cocking
+	#     the arm back over the shoulder then naturally cocks the bat too.
+	# Grip lives on the left arm, so we invert the left chain.
+	if _weapon_grip and _left_elbow:
+		var grip_align: String = pose.get("grip_align", "player_forward")
+		if grip_align == "along_arm":
+			_weapon_grip.basis = Basis(Vector3.RIGHT, PI * 0.5)
+		else:
+			var combined: Basis = _left_shoulder.basis * _left_elbow.basis
+			_weapon_grip.basis = combined.inverse()
+
+	_kick_pitch_deg = pose.get("kick_pitch", 0.0)
+	_kick_elbow_deg = pose.get("kick_elbow", 0.0)
+	_kick_duration = pose.get("kick_duration", SHOOT_ANIM_DURATION)
+
+func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
+	if shoulder:
+		shoulder.rotation = Vector3(
+			deg_to_rad(pose.get("shoulder_pitch", 0.0)),
+			deg_to_rad(pose.get("shoulder_yaw", 0.0)),
+			0.0,
+		)
+	if elbow:
+		elbow.rotation = Vector3(deg_to_rad(pose.get("elbow_bend", 0.0)), 0.0, 0.0)
 
 ## Called by main.gd after it sets set_multiplayer_authority() on this player,
 ## to make sure `_owns_input` matches the authoritative state (in case Player._ready
@@ -102,8 +392,10 @@ func _physics_process(delta: float) -> void:
 	if is_dead:
 		return
 
-	# Remote players: just consume synced transform — no input or physics.
+	# Remote players: just consume synced transform — animate limbs from the
+	# synced horizontal velocity so they're not frozen mid-stride.
 	if not _owns_input:
+		_update_animation(delta)
 		return
 
 	_apply_gravity(delta)
@@ -111,10 +403,18 @@ func _physics_process(delta: float) -> void:
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
 	_apply_movement(move_dir, current_speed, delta)
+	# Layer recoil on top of input-driven movement and let it decay so
+	# the kick is a brief shove, not a sustained push.
+	velocity.x += _recoil_velocity.x
+	velocity.z += _recoil_velocity.z
+	var decay := exp(-RECOIL_DECAY * delta)
+	_recoil_velocity.x *= decay
+	_recoil_velocity.z *= decay
 	_rotate_to_face_mouse(delta)
 	move_and_slide()
 	_update_gun(delta)
 	_update_aim_line()
+	_update_animation(delta)
 	_sync_hud()
 
 	# Push transform to remote peers (client-authoritative on own player).
@@ -133,6 +433,24 @@ func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 		global_position = global_position.lerp(pos, 0.5)
 	rotation.y = yaw
 	_is_sprinting = sprinting
+	# Estimate horizontal velocity from the position stream so the animation
+	# rig on remote copies can drive the walk cycle at the right cadence.
+	var now := Time.get_ticks_msec() / 1000.0
+	if _remote_last_sync_time > 0.0:
+		var dt: float = max(now - _remote_last_sync_time, 0.001)
+		velocity.x = (pos.x - _remote_last_pos.x) / dt
+		velocity.z = (pos.z - _remote_last_pos.z) / dt
+	_remote_last_pos = pos
+	_remote_last_sync_time = now
+
+func _apply_recoil() -> void:
+	# Backward kick on the player's body for every trigger pull. Decays
+	# exponentially in _physics_process so single shots barely rock and
+	# rapid fire (SMG) accumulates into a noticeable shove.
+	var strength: float = _weapon_stats.get("recoil", 0.0)
+	if strength <= 0.0:
+		return
+	_recoil_velocity -= _get_forward() * strength
 
 func take_damage(amount: float) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
@@ -231,10 +549,26 @@ func _equip_weapon(idx: int) -> void:
 	_grenade_launcher_node.visible = (_current_weapon == "grenade_launcher")
 	_bat_node.visible = (_current_weapon == "bat")
 
+	# Re-pose the arms so the body actually mimics holding this weapon —
+	# pistol shooters extend the firing hand and let the off-hand hang,
+	# rifle/shotgun shooters bring the support hand across, the bat sits
+	# cocked back over the shoulder, and so on.
+	_apply_weapon_pose(_current_weapon)
+
 func _get_forward() -> Vector3:
 	var fwd := global_transform.basis.z
 	fwd.y = 0.0
 	return fwd.normalized()
+
+# ------------------------------------------------------------------
+# Weapon attachment — anchors every weapon mesh to the right hand so it
+# rides the arm rig during walk/kick/recoil animation. Falls back to the
+# player root if the rig hasn't been built yet (edge case on early bring-up).
+# ------------------------------------------------------------------
+
+func _attach_weapon(weapon: Node3D) -> void:
+	var parent: Node = _weapon_grip if _weapon_grip != null else self
+	parent.add_child(weapon)
 
 # ------------------------------------------------------------------
 # Pistol model
@@ -243,8 +577,10 @@ func _get_forward() -> Vector3:
 func _build_pistol() -> void:
 	_pistol_node = Node3D.new()
 	_pistol_node.name = "Pistol"
-	_pistol_node.position = Vector3(0.35, 1.0, 0.30)
-	add_child(_pistol_node)
+	# Parent to the hand so the pistol follows walk/kick animation. Origin is
+	# positioned so the pistol's grip mesh lines up with the hand.
+	_pistol_node.position = Vector3(0.0, 0.04, 0.0)
+	_attach_weapon(_pistol_node)
 
 	var grip_mat := StandardMaterial3D.new()
 	grip_mat.albedo_color = Color(0.15, 0.15, 0.15, 1)
@@ -289,8 +625,8 @@ func _build_pistol() -> void:
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
-	_shotgun_node.position = Vector3(0.35, 0.95, 0.30)
-	add_child(_shotgun_node)
+	_shotgun_node.position = Vector3(0.0, 0.0, 0.02)
+	_attach_weapon(_shotgun_node)
 
 	# Stock (wooden rear grip)
 	var stock_mat := StandardMaterial3D.new()
@@ -369,8 +705,8 @@ func _build_shotgun() -> void:
 func _build_smg() -> void:
 	_smg_node = Node3D.new()
 	_smg_node.name = "SMG"
-	_smg_node.position = Vector3(0.35, 1.0, 0.30)
-	add_child(_smg_node)
+	_smg_node.position = Vector3(0.0, 0.07, 0.02)
+	_attach_weapon(_smg_node)
 
 	var body_mat := StandardMaterial3D.new()
 	body_mat.albedo_color = Color(0.20, 0.20, 0.22, 1)
@@ -422,8 +758,8 @@ func _build_smg() -> void:
 func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
-	_grenade_launcher_node.position = Vector3(0.35, 0.95, 0.30)
-	add_child(_grenade_launcher_node)
+	_grenade_launcher_node.position = Vector3(0.0, 0.06, 0.06)
+	_attach_weapon(_grenade_launcher_node)
 
 	var body_mat := StandardMaterial3D.new()
 	body_mat.albedo_color = Color(0.28, 0.30, 0.22, 1)
@@ -478,8 +814,8 @@ func _build_grenade_launcher() -> void:
 func _build_bat() -> void:
 	_bat_node = Node3D.new()
 	_bat_node.name = "Bat"
-	_bat_node.position = Vector3(0.38, 0.95, 0.20)
-	add_child(_bat_node)
+	_bat_node.position = Vector3(0.0, 0.0, 0.10)
+	_attach_weapon(_bat_node)
 
 	var handle_mat := StandardMaterial3D.new()
 	handle_mat.albedo_color = Color(0.15, 0.12, 0.08, 1)
@@ -619,8 +955,8 @@ func _update_aim_line() -> void:
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
 
 	match hit_mode:
-		"fan":
-			_draw_fan_aim(im, muzzle_pos)
+		"pellet":
+			_draw_pellet_aim(im, muzzle_pos)
 		"melee":
 			_draw_melee_aim(im, muzzle_pos)
 		"explosive":
@@ -646,22 +982,23 @@ func _draw_single_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
 		_aim_dot.visible = true
 		_aim_dot.global_position = aim_end
 
-func _draw_fan_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
+func _draw_pellet_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
+	# Show the outer edges of the pellet cone plus a central aim line so
+	# the player can judge both where the tightest grouping will land and
+	# how wide the spread is.
 	var forward := _get_forward()
-	var weapon_range: float = _weapon_stats.get("range", 12.0)
-	var fan_angle: float = _weapon_stats.get("fan_angle", 35.0)
-	var fan_rays: int = _weapon_stats.get("fan_rays", 7)
+	var weapon_range: float = _weapon_stats.get("range", 15.0)
+	var spread_deg: float = _weapon_stats.get("pellet_spread", 8.0)
+	var spread_rad := deg_to_rad(spread_deg)
 
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
-	for i in range(fan_rays):
-		var t := float(i) / float(fan_rays - 1) if fan_rays > 1 else 0.5
-		var angle := deg_to_rad(lerpf(-fan_angle, fan_angle, t))
+	for i in range(3):
+		var t := float(i) * 0.5  # 0.0 (-edge), 0.5 (centre), 1.0 (+edge)
+		var angle: float = lerpf(-spread_rad, spread_rad, t)
 		var dir := forward.rotated(Vector3.UP, angle)
 		var ray_end := muzzle_pos + dir * weapon_range
-
 		var result := _cast_ray(muzzle_pos, ray_end)
 		var end_point: Vector3 = result.position if result else ray_end
-
 		im.surface_add_vertex(muzzle_pos)
 		im.surface_add_vertex(end_point)
 	im.surface_end()
@@ -708,10 +1045,11 @@ func _try_reload() -> void:
 	_reload_timer = _weapon_stats.get("reload_time", 1.2)
 
 func _fire_bullet() -> void:
+	_apply_recoil()
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
 	match hit_mode:
-		"fan":
-			_fire_fan()
+		"pellet":
+			_fire_pellet()
 			_spawn_muzzle_flash()
 		"explosive":
 			_fire_explosive()
@@ -722,12 +1060,23 @@ func _fire_bullet() -> void:
 			_fire_single()
 			_spawn_muzzle_flash()
 
+	# Visual kick on the arms — melee still gets a swing cue. Each weapon's
+	# pose sets its own kick duration (the bat needs a longer arc than a
+	# pistol shot) so use that instead of the default.
+	_shoot_anim_timer = max(_kick_duration, 0.05)
+
+	# Physical recoil — accumulates backward into _recoil_velocity, which
+	# the physics step layers onto velocity and decays. Melee has zero
+	# recoil in WeaponData so this is effectively a gun-only effect.
+	_apply_recoil()
+
 func _fire_single() -> void:
 	var forward := _get_forward()
 	var weapon_range: float = _weapon_stats.get("range", 40.0)
 	var damage: float = _weapon_stats.get("damage", 10.0)
 	var tolerance: float = _weapon_stats.get("hit_tolerance", 1.2)
 	var spread_deg: float = _weapon_stats.get("spread", 0.0)
+	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	if spread_deg > 0.0:
 		var spread_rad := deg_to_rad(spread_deg)
@@ -740,6 +1089,7 @@ func _fire_single() -> void:
 
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * weapon_range
+	var impulse := forward * knockback
 
 	var result := _cast_ray(ray_origin, ray_end)
 	var hit_enemy := false
@@ -747,7 +1097,7 @@ func _fire_single() -> void:
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
 		if hit_body.has_method("take_damage"):
-			hit_body.take_damage(damage)
+			hit_body.take_damage(damage, impulse)
 			hit_enemy = true
 			_spawn_hit_sparks(result.position)
 
@@ -775,96 +1125,69 @@ func _fire_single() -> void:
 				best_enemy = enemy_body
 
 		if best_enemy != null:
-			best_enemy.take_damage(damage)
+			best_enemy.take_damage(damage, impulse)
 			_spawn_hit_sparks(best_enemy.global_position + Vector3(0, 0.9, 0))
 
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
 
-func _fire_fan() -> void:
+func _fire_pellet() -> void:
+	# Real shotguns fire a shell of ~12 buckshot pellets that spread in a
+	# cone. Each pellet is its own raycast: damage is only applied to the
+	# body the pellet directly hits, so total damage scales with how many
+	# pellets land on a given target — point-blank is devastating, while a
+	# target on the edge of the cone at max range might only get clipped
+	# by one or two. One shell = one pull of the trigger = one ammo tick.
 	var forward := _get_forward()
-	var weapon_range: float = _weapon_stats.get("range", 12.0)
-	var damage: float = _weapon_stats.get("damage", 15.0)
-	var fan_angle: float = _weapon_stats.get("fan_angle", 20.0)
-	var fan_rays: int = _weapon_stats.get("fan_rays", 5)
-	var half_angle := deg_to_rad(fan_angle)
+	var weapon_range: float = _weapon_stats.get("range", 15.0)
+	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0)
+	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0)
+	var pellet_count: int = _weapon_stats.get("pellet_count", 12)
+	var knockback_per_pellet: float = _weapon_stats.get("knockback", 0.0)
+	var spread_rad := deg_to_rad(spread_deg)
 
 	var ray_origin := _get_muzzle_world_pos()
 
-	# Visual tracers (for feedback only)
-	for i in range(fan_rays):
-		var t := float(i) / float(fan_rays - 1) if fan_rays > 1 else 0.5
-		var angle := deg_to_rad(lerpf(-fan_angle, fan_angle, t))
-		var dir := forward.rotated(Vector3.UP, angle)
-		var ray_end := ray_origin + dir * weapon_range
+	# Deduplicate the spark VFX per victim so a zombie absorbing a dozen
+	# pellets gets one meaty spark burst instead of a dozen overlapping
+	# ones. Damage itself is still applied per-pellet.
+	var spark_points: Dictionary = {}
 
+	for i in range(pellet_count):
+		# Yaw (horizontal "spread") sweeps the full cone since the game's
+		# top-down camera makes lateral dispersion the visible one. Pitch
+		# (vertical "recoil" off the aim line) is kept very small so
+		# pellets stay on the plane the zombies actually occupy rather
+		# than punching into the ground or flying over their heads.
+		var rand_yaw := randf_range(-spread_rad, spread_rad)
+		var rand_pitch := randf_range(-spread_rad * 0.1, spread_rad * 0.1)
+		var dir := forward.rotated(Vector3.UP, rand_yaw)
+		var right := dir.cross(Vector3.UP)
+		if right.length_squared() > 0.0001:
+			right = right.normalized()
+			dir = dir.rotated(right, rand_pitch)
+		dir = dir.normalized()
+
+		var ray_end := ray_origin + dir * weapon_range
 		var result := _cast_ray(ray_origin, ray_end)
 		var tracer_end: Vector3 = result.position if result else ray_end
+
+		if result and result.collider is CharacterBody3D:
+			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
+			if hit_body.has_method("take_damage"):
+				hit_body.take_damage(damage_per_pellet, dir * knockback_per_pellet)
+				spark_points[hit_body] = result.position
+
 		_spawn_tracer(ray_origin, tracer_end)
 
-	# True AoE sector hit detection
-	var hit_enemies: Array[CharacterBody3D] = []
-	for node in get_tree().get_nodes_in_group("enemy"):
-		if not is_instance_valid(node) or not node is CharacterBody3D:
-			continue
-		var enemy_body: CharacterBody3D = node as CharacterBody3D
-		if not enemy_body.has_method("take_damage"):
-			continue
-
-		var to_enemy: Vector3 = enemy_body.global_position - global_position
-		to_enemy.y = 0.0
-		var dist: float = to_enemy.length()
-		if dist > weapon_range or dist < 0.1:
-			continue
-
-		var angle_to: float = forward.angle_to(to_enemy.normalized())
-		if angle_to <= half_angle:
-			hit_enemies.append(enemy_body)
-
-	for enemy_body in hit_enemies:
-		if is_instance_valid(enemy_body):
-			enemy_body.take_damage(damage)
-			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
-
-	_spawn_sector_flash(ray_origin, forward, weapon_range, half_angle)
-
-func _spawn_sector_flash(origin: Vector3, forward: Vector3, sector_range: float, half_angle: float) -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.6, 0.2, 0.25)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.no_depth_test = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-
-	var im_mesh := ImmediateMesh.new()
-	var steps := 8
-	im_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
-	for i in range(steps):
-		var t0 := float(i) / float(steps)
-		var t1 := float(i + 1) / float(steps)
-		var a0: float = lerpf(-half_angle, half_angle, t0)
-		var a1: float = lerpf(-half_angle, half_angle, t1)
-		var d0 := forward.rotated(Vector3.UP, a0) * sector_range
-		var d1 := forward.rotated(Vector3.UP, a1) * sector_range
-		im_mesh.surface_add_vertex(origin)
-		im_mesh.surface_add_vertex(origin + d0)
-		im_mesh.surface_add_vertex(origin + d1)
-	im_mesh.surface_end()
-
-	var mi := MeshInstance3D.new()
-	mi.mesh = im_mesh
-	mi.material_override = mat
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	get_tree().root.add_child(mi)
-
-	var tw := get_tree().create_tween()
-	tw.tween_property(mat, "albedo_color:a", 0.0, 0.12)
-	tw.tween_callback(mi.queue_free)
+	for pos: Vector3 in spark_points.values():
+		_spawn_hit_sparks(pos)
 
 func _fire_explosive() -> void:
 	var forward := _get_forward()
 	var weapon_range: float = _weapon_stats.get("range", 25.0)
 	var damage: float = _weapon_stats.get("damage", 30.0)
 	var radius: float = _weapon_stats.get("explosion_radius", 5.0)
+	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * weapon_range
@@ -885,7 +1208,16 @@ func _fire_explosive() -> void:
 		var dist: float = enemy_body.global_position.distance_to(impact_pos)
 		if dist <= radius:
 			var falloff: float = 1.0 - (dist / radius) * 0.5
-			enemy_body.take_damage(damage * falloff)
+			# Radial knockback away from the impact, scaled the same way
+			# as damage so close zombies fly further than ones near the
+			# blast edge.
+			var away := enemy_body.global_position - impact_pos
+			away.y = 0.0
+			if away.length_squared() > 0.0001:
+				away = away.normalized()
+			else:
+				away = Vector3.ZERO
+			enemy_body.take_damage(damage * falloff, away * knockback * falloff)
 
 func _spawn_explosion(pos: Vector3, radius: float) -> void:
 	var mat := StandardMaterial3D.new()
@@ -927,6 +1259,7 @@ func _fire_melee() -> void:
 	var damage: float = _weapon_stats.get("damage", 20.0)
 	var sweep_angle: float = _weapon_stats.get("sweep_angle", 90.0)
 	var half_sweep := deg_to_rad(sweep_angle * 0.5)
+	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	var origin := global_position + Vector3(0, 0.9, 0)
 	var hit_count := 0
@@ -946,7 +1279,11 @@ func _fire_melee() -> void:
 
 		var angle_to: float = forward.angle_to(to_enemy.normalized())
 		if angle_to <= half_sweep:
-			enemy_body.take_damage(damage)
+			# Bat shove is roughly in the swing direction (the player's
+			# forward), with a touch of away-from-player so the zombie
+			# stumbles back rather than into the swing.
+			var swing_dir: Vector3 = (forward + to_enemy.normalized() * 0.5).normalized()
+			enemy_body.take_damage(damage, swing_dir * knockback)
 			hit_count += 1
 			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
 
@@ -1110,6 +1447,92 @@ func _rotate_to_face_mouse(delta: float) -> void:
 		return
 	var target_angle := atan2(dir.x, dir.z)
 	rotation.y = lerp_angle(rotation.y, target_angle, ROTATION_SPEED * delta)
+
+func _update_animation(delta: float) -> void:
+	# Horizontal speed drives the walk cycle; scale the cycle faster and bigger
+	# when sprinting so sprint visibly reads.
+	var horiz_speed := Vector2(velocity.x, velocity.z).length()
+	var speed_ratio := clampf(horiz_speed / SPEED, 0.0, 2.0)
+	# Cycle frequency in radians/sec — ~2 full swings/sec at walking speed.
+	var cycle_rate := 10.0 * speed_ratio
+	_walk_phase = fposmod(_walk_phase + cycle_rate * delta, TAU)
+
+	var clamped_ratio: float = clampf(speed_ratio, 0.0, 1.5)
+	var leg_swing_amp := deg_to_rad(lerpf(3.0, 38.0, clamped_ratio))
+	# A free arm hangs and pendulums broadly with the gait; a braced arm is
+	# locked to the weapon and barely moves.
+	var braced_arm_amp := deg_to_rad(lerpf(0.5, 4.0, clamped_ratio))
+	var free_arm_amp := deg_to_rad(lerpf(2.0, 18.0, clamped_ratio))
+	var bob_amp := lerpf(0.0, 0.04, clamped_ratio)
+
+	var leg_swing := sin(_walk_phase) * leg_swing_amp
+	var bob := absf(sin(_walk_phase)) * bob_amp
+	# In a real walking gait, the arm on each side swings 180° out of phase
+	# with the leg on the same side (left arm forward when left leg is back).
+	# Left leg uses +sin → left arm uses -sin; right leg uses -sin → right
+	# arm uses +sin.
+	var right_amp := braced_arm_amp if _right_arm_braced else free_arm_amp
+	var left_amp := braced_arm_amp if _left_arm_braced else free_arm_amp
+	var left_sway := -sin(_walk_phase) * left_amp
+	var right_sway :=  sin(_walk_phase) * right_amp
+
+	# Legs still pivot at the hip on their scene-baked transform (origin at
+	# leg center, mesh height 0.65 → hip offset 0.325).
+	_set_pivoted_rotation(_leg_left, _leg_left_rest, 0.325, leg_swing)
+	_set_pivoted_rotation(_leg_right, _leg_right_rest, 0.325, -leg_swing)
+
+	# Fire animation: the LEFT shoulder + elbow drive the kick (it holds the
+	# trigger). For guns this is a small barrel-rise + brief return; for the
+	# bat it's a large negative pitch (swing forward from cocked) plus elbow
+	# extension. The right (support) arm absorbs half the kick only when
+	# it's bracing the weapon.
+	_shoot_anim_timer = max(_shoot_anim_timer - delta, 0.0)
+	var kick_env := 0.0
+	if _kick_duration > 0.0 and _shoot_anim_timer > 0.0:
+		var elapsed: float = _kick_duration - _shoot_anim_timer
+		var t: float = clampf(elapsed / _kick_duration, 0.0, 1.0)
+		# Fast snap to peak at ~25% of the cycle, slower return.
+		var peak_t := 0.25
+		if t < peak_t:
+			kick_env = t / peak_t
+		else:
+			kick_env = 1.0 - (t - peak_t) / (1.0 - peak_t)
+	var kick_pitch := kick_env * deg_to_rad(_kick_pitch_deg)
+	var kick_elbow := kick_env * deg_to_rad(_kick_elbow_deg)
+
+	if _left_shoulder:
+		_left_shoulder.transform = _left_shoulder_rest * Transform3D(
+			Basis(Vector3.RIGHT, left_sway + kick_pitch), Vector3.ZERO
+		)
+	if _left_elbow:
+		_left_elbow.transform = _left_elbow_rest * Transform3D(
+			Basis(Vector3.RIGHT, kick_elbow), Vector3.ZERO
+		)
+	if _right_shoulder:
+		var right_kick: float = kick_pitch * (0.5 if _right_arm_braced else 0.0)
+		_right_shoulder.transform = _right_shoulder_rest * Transform3D(
+			Basis(Vector3.RIGHT, right_sway + right_kick), Vector3.ZERO
+		)
+	if _right_elbow and _right_arm_braced:
+		# The support hand follows roughly half the elbow extension during
+		# kick so the off-hand stays glued to the weapon's forend.
+		_right_elbow.transform = _right_elbow_rest * Transform3D(
+			Basis(Vector3.RIGHT, kick_elbow * 0.5), Vector3.ZERO
+		)
+
+	if _torso:
+		var torso_xf := _torso_rest
+		torso_xf.origin.y = _torso_rest.origin.y + bob
+		_torso.transform = torso_xf
+
+func _set_pivoted_rotation(node: Node3D, rest: Transform3D, pivot_y: float, angle: float) -> void:
+	# Rotate `node` around the local point (0, pivot_y, 0) — e.g. the shoulder on
+	# an arm mesh whose origin is at its midpoint. Formula: T(P) · R · T(-P).
+	if node == null:
+		return
+	var rot := Basis(Vector3.RIGHT, angle)
+	var pivot := Vector3(0.0, pivot_y, 0.0)
+	node.transform = rest * Transform3D(rot, pivot - rot * pivot)
 
 func _sync_hud() -> void:
 	if hud:

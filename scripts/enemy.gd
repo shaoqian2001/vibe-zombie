@@ -41,6 +41,12 @@ var _rng := RandomNumberGenerator.new()
 var _attack_timer := 0.0
 var _player_ref: CharacterBody3D = null
 
+# Knockback: short-lived velocity impulse applied on top of AI movement
+# whenever take_damage(amount, impulse) is called. Decays exponentially
+# so even a small kick lasts only a fraction of a second.
+const KNOCKBACK_DECAY := 8.0
+var _knockback: Vector3 = Vector3.ZERO
+
 # HP bar references
 var _hp_bar_bg: MeshInstance3D
 var _hp_bar_fg: MeshInstance3D
@@ -59,13 +65,17 @@ func _ready() -> void:
 	if NetworkManager.is_networked:
 		set_multiplayer_authority(1)
 	_is_authority_cached = (not NetworkManager.is_networked) or is_multiplayer_authority()
-	# FOV culling: hide and freeze AI while outside the player's view cone.
-	# Freezing is safe because take_damage() is a direct method call, and
-	# queue_free() is honoured regardless of process_mode; only _physics_process
-	# (wander/chase/attack ticks) pauses.
+	# FOV culling: enemies are "moving" entities. They fade to a ghosted
+	# snapshot as soon as they leave the player's sector and disappear
+	# entirely once they're more than ~6 units past it ("a few meters
+	# behind you"). We do NOT freeze _physics_process — the enemy must
+	# keep moving while off-screen, just with a different behaviour mode
+	# (wander instead of chase, see _physics_process below) so the world
+	# isn't full of statues whenever the player turns their head.
 	add_to_group(&"fov_cullable")
 	set_meta(&"fov_cull_radius", 0.6)
-	set_meta(&"fov_cull_disable_process", true)
+	set_meta(&"fov_cull_entity_type", "moving")
+	set_meta(&"fov_cull_memory_range", 6.0)
 	_rng.randomize()
 	_pick_new_wander()
 	_build_model()
@@ -88,9 +98,13 @@ func _physics_process(delta: float) -> void:
 
 	_attack_timer = max(_attack_timer - delta, 0.0)
 
-	# Prefer the position computed by main.gd's parallel AI coordinator.
-	# Fall back to the local single-threaded search if no cache is available
-	# (e.g. single-player or first frame).
+	# Prefer the position computed by main.gd's parallel AI coordinator
+	# (host only). Fall back to a direct lookup when no cache is available
+	# — single-player, the first frame, or when the host hasn't filled it
+	# in yet for this enemy. Zombie AI is independent of player FOV — the
+	# zombie tracks by ear/smell, so it always chases/attacks/wanders
+	# regardless of whether the player is looking at it. The FOV culler
+	# only changes how the zombie is *drawn*.
 	var target_pos: Vector3 = cached_target_pos
 	if target_pos == Vector3.INF:
 		if _player_ref == null or not is_instance_valid(_player_ref):
@@ -109,14 +123,14 @@ func _physics_process(delta: float) -> void:
 			move_dir = Vector3.ZERO
 			_try_attack_at(target_pos)
 		elif dist < DETECT_RANGE:
-			# Chase target
+			# Chase the player — zombie always chases, FOV doesn't gate.
 			var to_target := target_pos - global_position
 			to_target.y = 0.0
 			if to_target.length() > 0.1:
 				move_dir = to_target.normalized()
 			current_speed = CHASE_SPEED
 		else:
-			# Wander
+			# Too far — wander
 			_wander_timer -= delta
 			if _wander_timer <= 0.0:
 				_pick_new_wander()
@@ -128,10 +142,19 @@ func _physics_process(delta: float) -> void:
 			_pick_new_wander()
 		move_dir = _wander_dir
 
-	# Movement
+	# AI-driven horizontal velocity
 	var target_xz := move_dir * current_speed
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
+
+	# Knockback impulse (decays exponentially). Added on top so a hit
+	# briefly shoves the zombie even mid-chase, but never overwhelms
+	# normal locomotion for long.
+	velocity.x += _knockback.x
+	velocity.z += _knockback.z
+	var decay := exp(-KNOCKBACK_DECAY * delta)
+	_knockback.x *= decay
+	_knockback.z *= decay
 
 	# Rotate to face movement
 	if move_dir.length() > 0.1:
@@ -169,25 +192,31 @@ func _sync_hp(new_hp: float) -> void:
 func _despawn() -> void:
 	queue_free()
 
-func take_damage(amount: float) -> void:
-	# In multiplayer, only the authority (host) mutates state. Clients forward
-	# the request via RPC so the host can apply, replicate and despawn.
+
+func take_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
+	# In multiplayer, only the authority (host) mutates state. Clients
+	# forward the request via RPC so the host can apply, replicate and
+	# despawn. The impulse rides along so knockback stays consistent.
 	if NetworkManager.is_networked and not is_multiplayer_authority():
-		rpc_id(1, "_request_damage", amount)
+		rpc_id(1, "_request_damage", amount, knockback)
 		return
-	_apply_damage(amount)
+	_apply_damage(amount, knockback)
 
 @rpc("any_peer", "call_remote", "reliable")
-func _request_damage(amount: float) -> void:
-	# Only authority handles damage requests.
+func _request_damage(amount: float, knockback: Vector3) -> void:
 	if not is_multiplayer_authority():
 		return
-	_apply_damage(amount)
+	_apply_damage(amount, knockback)
 
-func _apply_damage(amount: float) -> void:
+func _apply_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 	hp = max(hp - amount, 0.0)
 	if NetworkManager.is_networked:
 		rpc("_sync_hp", hp)
+	# Apply the bullet's impulse on the XZ plane only — getting shot
+	# shouldn't lift a zombie off the ground.
+	if knockback.length_squared() > 0.0:
+		_knockback.x += knockback.x
+		_knockback.z += knockback.z
 	if hp <= 0.0:
 		# Notify mission system of kill (host only — mission system is host-side)
 		var mission_nodes := get_tree().get_nodes_in_group("mission_system")

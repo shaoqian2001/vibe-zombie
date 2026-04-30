@@ -1098,22 +1098,29 @@ func _update_building_occlusion() -> void:
 	var cam_pos := camera.global_position
 	var player_pos := player.global_position
 
-	# Find buildings that occlude the player
+	# Find buildings that occlude the player. Skip any building that the
+	# FOV culler isn't currently rendering at full opacity: hidden-via-
+	# interior-view buildings don't render, and FADED buildings already
+	# have their alpha owned by the culler — stomping it here would make
+	# buildings flicker between the ghosted 0.35 and the occlusion 0.25
+	# as the player rotates.
 	var now_occluded: Array = []
 	for binfo in world.buildings:
 		var node: MeshInstance3D = binfo.node
-		# Skip buildings hidden by the FOV culler (container invisible) or
-		# by the interior-view toggle (node.visible = false): neither
-		# renders, so occlusion fade is wasted work.
 		if not node.is_visible_in_tree():
 			continue
-		# Check if the building's AABB intersects the line from camera to player
+		if not _building_in_fov(binfo):
+			continue
 		if _building_occludes(binfo, cam_pos, player_pos):
 			now_occluded.append(binfo)
 
-	# Restore buildings that are no longer occluding
+	# Restore buildings that are no longer occluding — but only while
+	# they're still IN the FOV. Once a building fades out of view the
+	# culler is the authoritative writer for its alpha, so resetting to
+	# 1.0 here would undo the fade for a frame before the culler caught
+	# up on its next transition.
 	for binfo in _occluded_buildings:
-		if binfo not in now_occluded:
+		if binfo not in now_occluded and _building_in_fov(binfo):
 			_set_building_alpha(binfo, 1.0)
 
 	# Make newly occluding buildings transparent
@@ -1121,6 +1128,12 @@ func _update_building_occlusion() -> void:
 		_set_building_alpha(binfo, OCCLUDE_ALPHA)
 
 	_occluded_buildings = now_occluded
+
+func _building_in_fov(binfo: Dictionary) -> bool:
+	var container: Node3D = binfo.get("container", null)
+	if container == null:
+		return true
+	return FovCuller.current_state(container) == FovCuller.State.IN
 
 func _building_occludes(binfo: Dictionary, cam_pos: Vector3, player_pos: Vector3) -> bool:
 	var bpos: Vector3 = binfo.node.position
