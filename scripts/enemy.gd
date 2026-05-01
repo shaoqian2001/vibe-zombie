@@ -108,19 +108,16 @@ func _physics_process(delta: float) -> void:
 	# Prefer the position computed by main.gd's parallel AI coordinator
 	# (host only). Fall back to a direct lookup when no cache is available
 	# — single-player, the first frame, or when the host hasn't filled it
-	# in yet for this enemy.
+	# in yet for this enemy. Zombie AI is independent of player FOV — the
+	# zombie tracks by ear/smell, so it always chases/attacks/wanders
+	# regardless of whether the player is looking at it. The FOV culler
+	# only changes how the zombie is *drawn*.
 	var target_pos: Vector3 = cached_target_pos
 	if target_pos == Vector3.INF:
 		if _player_ref == null or not is_instance_valid(_player_ref):
 			_player_ref = _find_player()
 		if _player_ref:
 			target_pos = _player_ref.global_position
-
-	# Visibility-aware AI: when the player can't see this enemy, the zombie
-	# doesn't magically know where the player is — it wanders instead of
-	# chasing. Contact-range attacks still trigger regardless (a zombie on
-	# top of you gets you whether or not you're looking).
-	var seen_by_player := _is_seen_by_player()
 
 	var move_dir := Vector3.ZERO
 	var current_speed := SPEED
@@ -129,18 +126,18 @@ func _physics_process(delta: float) -> void:
 		var dist := global_position.distance_to(target_pos)
 
 		if dist < ATTACK_RANGE:
-			# Contact range — stop and attack regardless of visibility
+			# In attack range — stop and attack
 			move_dir = Vector3.ZERO
 			_try_attack_at(target_pos)
-		elif seen_by_player and dist < DETECT_RANGE:
-			# Chase only while the player has eyes on us
+		elif dist < DETECT_RANGE:
+			# Chase the player — zombie always chases, FOV doesn't gate.
 			var to_target := target_pos - global_position
 			to_target.y = 0.0
 			if to_target.length() > 0.1:
 				move_dir = to_target.normalized()
 			current_speed = CHASE_SPEED
 		else:
-			# Out of sight or out of range — wander
+			# Too far — wander
 			_wander_timer -= delta
 			if _wander_timer <= 0.0:
 				_pick_new_wander()
@@ -202,15 +199,6 @@ func _sync_hp(new_hp: float) -> void:
 func _despawn() -> void:
 	queue_free()
 
-# True while the FOV culler classifies this enemy as IN the player's view
-# sector. Defaults to true so a freshly-spawned enemy that hasn't been
-# classified yet behaves normally for one tick.
-func _is_seen_by_player() -> bool:
-	if not has_meta(&"fov_cull_last_state"):
-		return true
-	# State.IN is the first value of the enum (0). Hard-coded here to
-	# avoid importing the FovCuller class for one comparison.
-	return int(get_meta(&"fov_cull_last_state")) == 0
 
 func take_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 	# In multiplayer, only the authority (host) mutates state. Clients
