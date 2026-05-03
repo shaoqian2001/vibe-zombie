@@ -1106,29 +1106,26 @@ func _update_building_occlusion() -> void:
 	var cam_pos := camera.global_position
 	var player_pos := player.global_position
 
-	# Find buildings that occlude the player. Skip any building that the
-	# FOV culler isn't currently rendering at full opacity: hidden-via-
-	# interior-view buildings don't render, and FADED buildings already
-	# have their alpha owned by the culler — stomping it here would make
-	# buildings flicker between the ghosted 0.35 and the occlusion 0.25
-	# as the player rotates.
+	# Find buildings that occlude the camera→player ray. Occlusion no
+	# longer cares about the FOV: with the shader-driven shadow system
+	# the FOV culler doesn't write alpha, so this code fully owns the
+	# transparency lifecycle. Letting buildings behind the player's
+	# sector also fade-out-when-occluding means the player can still
+	# see themselves through walls the camera angle puts in the way.
 	var now_occluded: Array = []
 	for binfo in world.buildings:
 		var node: MeshInstance3D = binfo.node
 		if not node.is_visible_in_tree():
 			continue
-		if not _building_in_fov(binfo):
-			continue
 		if _building_occludes(binfo, cam_pos, player_pos):
 			now_occluded.append(binfo)
 
-	# Restore buildings that are no longer occluding — but only while
-	# they're still IN the FOV. Once a building fades out of view the
-	# culler is the authoritative writer for its alpha, so resetting to
-	# 1.0 here would undo the fade for a frame before the culler caught
-	# up on its next transition.
+	# Restore alpha for any building that has stopped occluding. We
+	# always restore — gating on FOV here used to leak buildings that
+	# rotated out of the sector mid-occlusion, which left them stuck at
+	# 0.25 alpha and blinking as occlusion thrashed at the FOV edge.
 	for binfo in _occluded_buildings:
-		if binfo not in now_occluded and _building_in_fov(binfo):
+		if binfo not in now_occluded:
 			_set_building_alpha(binfo, 1.0)
 
 	# Make newly occluding buildings transparent
@@ -1136,12 +1133,6 @@ func _update_building_occlusion() -> void:
 		_set_building_alpha(binfo, OCCLUDE_ALPHA)
 
 	_occluded_buildings = now_occluded
-
-func _building_in_fov(binfo: Dictionary) -> bool:
-	var container: Node3D = binfo.get("container", null)
-	if container == null:
-		return true
-	return FovCuller.current_state(container) == FovCuller.State.IN
 
 func _building_occludes(binfo: Dictionary, cam_pos: Vector3, player_pos: Vector3) -> bool:
 	var bpos: Vector3 = binfo.node.position
