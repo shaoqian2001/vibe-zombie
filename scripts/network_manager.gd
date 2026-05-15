@@ -37,7 +37,7 @@ var is_host: bool = false
 var is_networked: bool = false
 var game_code: String = ""
 var game_seed: int = 0
-var map_size: int = 9              # world.num_blocks
+var map_size: int = 3              # world.num_blocks (each block ~100×200m)
 var max_players: int = 4           # 2..8
 var difficulty: int = Difficulty.MEDIUM
 
@@ -137,7 +137,7 @@ static func difficulty_name(d: int) -> String:
 
 func host_game(p_map_size: int, p_max_players: int, p_difficulty: int) -> String:
 	reset()
-	map_size = clampi(p_map_size, 5, 20)
+	map_size = clampi(p_map_size, 2, 6)
 	max_players = clampi(p_max_players, 2, 8)
 	difficulty = clampi(p_difficulty, 0, 3)
 	game_seed = int(Time.get_unix_time_from_system()) ^ (randi() << 1)
@@ -195,7 +195,7 @@ func reset() -> void:
 func set_map_size(v: int) -> void:
 	if not is_host:
 		return
-	map_size = clampi(v, 5, 20)
+	map_size = clampi(v, 2, 6)
 	lobby_config_changed.emit()
 	rpc("_sync_lobby_config", map_size, max_players, difficulty)
 

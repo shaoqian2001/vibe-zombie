@@ -23,7 +23,7 @@ var _join_panel: PanelContainer = null
 var _join_status_label: Label = null
 
 # Create-game working state (mirrors NetworkManager defaults)
-var _create_map_size: int = 9
+var _create_map_size: int = 3
 var _create_max_players: int = 4
 var _create_difficulty: int = NetworkManager.Difficulty.MEDIUM
 
@@ -135,10 +135,10 @@ func _show_create() -> void:
 	title.add_theme_color_override("font_color", Color(0.90, 0.85, 0.70))
 	vbox.add_child(title)
 
-	# --- Map size (5..20) ---
-	vbox.add_child(_make_section_label("Map Size (NxN city blocks)", s))
+	# --- Map size (2..6) — each block is ~100×200m ---
+	vbox.add_child(_make_section_label("Map Size (NxN city blocks, 100×200m each)", s))
 	var map_size_row := _make_stepper_row(s,
-		_create_map_size, 5, 20,
+		_create_map_size, 2, 6,
 		func(v: int) -> void: _create_map_size = v,
 		func(v: int) -> String: return "%d x %d  (%d blocks)" % [v, v, v * v]
 	)
