@@ -27,22 +27,26 @@ const BUILDING_TYPE_NAMES := [
 	"Office",
 	"Warehouse",
 	"Diner",
+	"Shop",
+	"Factory",
+	"Bank",
+	"Police Station",
+	"Hospital",
+	"School",
 ]
 
 const DOOR_ANIM_DURATION := 0.4
 const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 
-# Enemy spawning — base density scales with map area so larger worlds feel populated
-# without exploding the entity count. DEV_MODE keeps the playtest count tiny.
-const ENEMIES_PER_BLOCK_NORMAL := 2.0
-const ENEMIES_PER_BLOCK_DEV := 0.2
-const ENEMY_BLOCK_SIZE := 26.0
-const ENEMY_ROAD_WIDTH := 4.0
-const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
+# Enemy spawning — base density scales with map area so larger worlds feel
+# populated without exploding the entity count. Blocks are now ~100×200m so
+# the per-block enemy count goes up significantly; DEV_MODE keeps it tame.
+const ENEMIES_PER_BLOCK_NORMAL := 14.0
+const ENEMIES_PER_BLOCK_DEV := 2.0
 
 # Weapon pickup spawning — density scales with map size as well
-const WEAPON_PICKUPS_PER_BLOCK := 0.5
-const WEAPON_PICKUP_MIN_DIST := 15.0
+const WEAPON_PICKUPS_PER_BLOCK := 2.5
+const WEAPON_PICKUP_MIN_DIST := 20.0
 
 const PlayerScene = preload("res://scenes/Player.tscn")
 
@@ -460,17 +464,21 @@ func _close_map() -> void:
 # ------------------------------------------------------------------
 
 func _build_rim_spawn_candidates() -> Array:
-	var extent: float = world.num_blocks * world.CELL_SIZE * 0.5 - 4.0
-	var diag: float = extent * 0.9
+	# Blocks are rectangular now, so use each axis half-extent separately
+	# and pull the spawn slightly in from the boundary wall.
+	var ex: float = world.num_blocks * world.CELL_WIDTH * 0.5 - 4.0
+	var ez: float = world.num_blocks * world.CELL_DEPTH * 0.5 - 4.0
+	var dx := ex * 0.9
+	var dz := ez * 0.9
 	return [
-		Vector3( extent, 0.5,  0.0),
-		Vector3(-extent, 0.5,  0.0),
-		Vector3(  0.0,   0.5,  extent),
-		Vector3(  0.0,   0.5, -extent),
-		Vector3( diag,   0.5,  diag),
-		Vector3(-diag,   0.5,  diag),
-		Vector3( diag,   0.5, -diag),
-		Vector3(-diag,   0.5, -diag),
+		Vector3( ex,  0.5,  0.0),
+		Vector3(-ex,  0.5,  0.0),
+		Vector3(  0.0, 0.5,  ez),
+		Vector3(  0.0, 0.5, -ez),
+		Vector3( dx,  0.5,  dz),
+		Vector3(-dx,  0.5,  dz),
+		Vector3( dx,  0.5, -dz),
+		Vector3(-dx,  0.5, -dz),
 	]
 
 ## Random-sample a nearby spawn point that isn't wedged inside a building.
@@ -494,8 +502,6 @@ func _find_clear_fallback_spawn(rng: RandomNumberGenerator, hint: Vector3) -> Ve
 
 func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var nb: int = world.num_blocks
-	var total := ENEMY_CELL_SIZE * nb
-	var grid_origin := -total * 0.5
 
 	# Difficulty drives per-block enemy density when networked.
 	var per_block: float
@@ -508,9 +514,9 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var base_count := int(per_block * nb * nb)
 
 	for i in range(base_count):
-		var pos := _random_walkable_pos(rng, grid_origin)
-		if pos.distance_to(player.global_position) < 8.0:
-			pos = _random_walkable_pos(rng, grid_origin)
+		var pos := _random_walkable_pos(rng)
+		if pos.distance_to(player.global_position) < 12.0:
+			pos = _random_walkable_pos(rng)
 		_spawn_enemy_at(pos)
 
 func _spawn_enemy_at(pos: Vector3) -> CharacterBody3D:
@@ -539,27 +545,38 @@ func _remote_spawn_enemy(enemy_id: int, pos: Vector3) -> void:
 	enemy.global_position = pos
 	add_child(enemy)
 
-func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vector3:
-	var last_block: int = world.num_blocks - 1
-	var block_col := rng.randi_range(0, last_block)
-	var block_row := rng.randi_range(0, last_block)
-	var bx := grid_origin + block_col * ENEMY_CELL_SIZE
-	var bz := grid_origin + block_row * ENEMY_CELL_SIZE
+func _random_walkable_pos(rng: RandomNumberGenerator) -> Vector3:
+	# Pick a random block, then a random spot inside the block area or on
+	# one of the adjacent roads. Pulls block dimensions straight from the
+	# world so enemy distribution matches whatever block geometry it picks.
+	var nb: int = world.num_blocks
+	var block_w: float = world.BLOCK_WIDTH
+	var block_d: float = world.BLOCK_DEPTH
+	var road_w: float = world.ROAD_WIDTH
+	var cell_w: float = world.CELL_WIDTH
+	var cell_d: float = world.CELL_DEPTH
+	var grid_origin_x := -nb * cell_w * 0.5
+	var grid_origin_z := -nb * cell_d * 0.5
 
-	if rng.randf() < 0.5:
+	var block_col := rng.randi_range(0, nb - 1)
+	var block_row := rng.randi_range(0, nb - 1)
+	var bx := grid_origin_x + block_col * cell_w
+	var bz := grid_origin_z + block_row * cell_d
+
+	if rng.randf() < 0.4:
 		# On a road
 		if rng.randf() < 0.5:
-			var x := bx + ENEMY_BLOCK_SIZE + rng.randf_range(0.5, ENEMY_ROAD_WIDTH - 0.5)
-			var z := bz + rng.randf_range(0.0, ENEMY_CELL_SIZE)
+			var x := bx + block_w + rng.randf_range(0.5, road_w - 0.5)
+			var z := bz + rng.randf_range(0.0, cell_d)
 			return Vector3(x, 0.5, z)
 		else:
-			var x := bx + rng.randf_range(0.0, ENEMY_CELL_SIZE)
-			var z := bz + ENEMY_BLOCK_SIZE + rng.randf_range(0.5, ENEMY_ROAD_WIDTH - 0.5)
+			var x := bx + rng.randf_range(0.0, cell_w)
+			var z := bz + block_d + rng.randf_range(0.5, road_w - 0.5)
 			return Vector3(x, 0.5, z)
 	else:
-		# On sidewalk
-		var x := bx + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
-		var z := bz + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
+		# Inside / on the block
+		var x := bx + rng.randf_range(1.0, block_w - 1.0)
+		var z := bz + rng.randf_range(1.0, block_d - 1.0)
 		return Vector3(x, 0.5, z)
 
 # ------------------------------------------------------------------
@@ -568,8 +585,6 @@ func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vec
 
 func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 	var nb: int = world.num_blocks
-	var total := ENEMY_CELL_SIZE * nb
-	var grid_origin := -total * 0.5
 	var placed_positions: Array[Vector3] = []
 	var weapon_types := ["pistol", "shotgun", "smg", "grenade_launcher", "bat"]
 
@@ -580,7 +595,7 @@ func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 		var valid := false
 
 		for _attempt in range(20):
-			pos = _random_walkable_pos(rng, grid_origin)
+			pos = _random_walkable_pos(rng)
 			pos.y = 0.0
 
 			if pos.distance_to(player.global_position) < 10.0:

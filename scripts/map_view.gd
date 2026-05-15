@@ -12,11 +12,16 @@ const BG_DIM_COLOR     := Color(0.0, 0.0, 0.0, 0.72)
 const GRASS_COLOR      := Color(0.32, 0.46, 0.24)
 const ROAD_COLOR       := Color(0.18, 0.18, 0.20)
 const SIDEWALK_COLOR   := Color(0.55, 0.55, 0.52)
+const PARK_COLOR       := Color(0.30, 0.50, 0.22)
+const PARKING_COLOR    := Color(0.22, 0.22, 0.24)
+const PLAZA_COLOR      := Color(0.68, 0.65, 0.58)
 const BUILDING_COLOR   := Color(0.85, 0.82, 0.78)
 const BUILDING_BORDER  := Color(0.15, 0.15, 0.18)
 const MAP_BORDER_COLOR := Color(0.90, 0.85, 0.70)
 const PLAYER_COLOR     := Color(0.25, 0.65, 1.0)
 const PLAYER_OUTLINE   := Color(0.05, 0.08, 0.15)
+
+const BuildingCatalog  = preload("res://scripts/building_catalog.gd")
 
 class MapDrawer extends Control:
 	var view  # untyped ref back to the owning CanvasLayer script
@@ -81,39 +86,63 @@ func _render_map(ctrl: Control) -> void:
 	var vp := ctrl.size
 	var avail_h := vp.y - TOP_MARGIN - BOTTOM_MARGIN
 	var avail_w := vp.x - SIDE_MIN_MARGIN * 2.0
-	var map_side := minf(avail_h, avail_w)
-	if map_side <= 0.0:
+
+	# World is rectangular now — fit both axes independently and keep
+	# isotropic scaling so distances and shapes read truthfully.
+	var world_w: float = _world.map_half_x * 2.0
+	var world_h: float = _world.map_half_z * 2.0
+	var s: float = minf(avail_w / world_w, avail_h / world_h)
+	var map_w := world_w * s
+	var map_h := world_h * s
+	if map_w <= 0.0 or map_h <= 0.0:
 		return
-	var ox := (vp.x - map_side) * 0.5
-	var oy := TOP_MARGIN + (avail_h - map_side) * 0.5
-	var rect := Rect2(ox, oy, map_side, map_side)
+	var ox := (vp.x - map_w) * 0.5
+	var oy := TOP_MARGIN + (avail_h - map_h) * 0.5
+	var rect := Rect2(ox, oy, map_w, map_h)
 
 	ctrl.draw_rect(rect, GRASS_COLOR, true)
 
-	var world_half: float = _world.map_half
-	var s: float = map_side / (world_half * 2.0)
-	var center := Vector2(ox + map_side * 0.5, oy + map_side * 0.5)
+	var center := Vector2(ox + map_w * 0.5, oy + map_h * 0.5)
 
-	var block_size: float = _world.BLOCK_SIZE
+	var block_w: float = _world.BLOCK_WIDTH
+	var block_d: float = _world.BLOCK_DEPTH
 	var road_w: float = _world.ROAD_WIDTH
-	var cell_size: float = _world.CELL_SIZE
+	var cell_w: float = _world.CELL_WIDTH
+	var cell_d: float = _world.CELL_DEPTH
 	var nb: int = _world.num_blocks
-	var total := nb * cell_size
-	var grid_origin := -total * 0.5
+	var total_x := nb * cell_w
+	var total_z := nb * cell_d
+	var grid_origin_x := -total_x * 0.5
+	var grid_origin_z := -total_z * 0.5
 
+	# Block ground (colour depends on category)
+	var block_infos: Array = _world.block_infos
+	for info in block_infos:
+		var bx: float = info.origin.x
+		var bz: float = info.origin.z
+		var color := SIDEWALK_COLOR
+		match info.category:
+			BuildingCatalog.BlockCategory.PARK:
+				color = PARK_COLOR
+			BuildingCatalog.BlockCategory.PARKING_LOT:
+				color = PARKING_COLOR
+			BuildingCatalog.BlockCategory.PLAZA:
+				color = PLAZA_COLOR
+		ctrl.draw_rect(
+			_world_rect(bx, bz, bx + block_w, bz + block_d, center, s),
+			color, true)
+
+	# Roads
+	for col in range(nb):
+		var rx := grid_origin_x + col * cell_w + block_w
+		ctrl.draw_rect(
+			_world_rect(rx, grid_origin_z, rx + road_w, grid_origin_z + total_z, center, s),
+			ROAD_COLOR, true)
 	for row in range(nb):
-		for col in range(nb):
-			var bx := grid_origin + col * cell_size
-			var bz := grid_origin + row * cell_size
-			ctrl.draw_rect(
-				_world_rect(bx, bz, bx + block_size, bz + block_size, center, s),
-				SIDEWALK_COLOR, true)
-			ctrl.draw_rect(
-				_world_rect(bx + block_size, bz, bx + block_size + road_w, bz + cell_size, center, s),
-				ROAD_COLOR, true)
-			ctrl.draw_rect(
-				_world_rect(bx, bz + block_size, bx + cell_size, bz + block_size + road_w, center, s),
-				ROAD_COLOR, true)
+		var rz := grid_origin_z + row * cell_d + block_d
+		ctrl.draw_rect(
+			_world_rect(grid_origin_x, rz, grid_origin_x + total_x, rz + road_w, center, s),
+			ROAD_COLOR, true)
 
 	for binfo in _world.buildings:
 		var bpos: Vector3 = binfo.node.position

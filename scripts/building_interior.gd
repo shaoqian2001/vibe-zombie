@@ -6,7 +6,19 @@ extends Node3D
 ## its entrance aligns with the exterior entrance direction.
 ## No ceiling is generated so the isometric camera can see inside.
 
-enum BuildingType { CONVENIENCE_STORE, APARTMENT, OFFICE, WAREHOUSE, DINER }
+enum BuildingType {
+	CONVENIENCE_STORE,
+	APARTMENT,
+	OFFICE,
+	WAREHOUSE,
+	DINER,
+	SHOP,
+	FACTORY,
+	BANK,
+	POLICE_STATION,
+	HOSPITAL,
+	SCHOOL,
+}
 
 const WALL_COLOR     := Color(0.85, 0.83, 0.78)
 const FLOOR_COLOR    := Color(0.45, 0.40, 0.35)
@@ -71,6 +83,18 @@ func _generate_interior() -> void:
 			_furnish_warehouse()
 		BuildingType.DINER:
 			_furnish_diner()
+		BuildingType.SHOP:
+			_furnish_shop()
+		BuildingType.FACTORY:
+			_furnish_factory()
+		BuildingType.BANK:
+			_furnish_bank()
+		BuildingType.POLICE_STATION:
+			_furnish_police_station()
+		BuildingType.HOSPITAL:
+			_furnish_hospital()
+		BuildingType.SCHOOL:
+			_furnish_school()
 
 # ------------------------------------------------------------------
 # Structural elements
@@ -247,6 +271,143 @@ func _furnish_diner() -> void:
 	_add_box(Vector3(w * 0.42, 0.4, d * 0.15), Vector3(0.4, 0.8, 1.2), BOOTH_COLOR, true)
 	_add_box(Vector3(w * 0.25, 0.4, d * 0.15), Vector3(0.6, 0.8, 0.9), TABLE_COLOR, true)
 	_add_box(Vector3(0.0, 1.5, -d * 0.48), Vector3(1.5, 0.8, 0.1), Color(0.15, 0.15, 0.18), false)
+
+# ------------------------------------------------------------------
+# Furniture: Shop (slightly bigger than convenience store, retail floor)
+# ------------------------------------------------------------------
+
+func _furnish_shop() -> void:
+	var w := interior_width
+	var d := interior_depth
+
+	# Long checkout counter near the front
+	_add_box(Vector3(0.0, 0.5, d * 0.28), Vector3(w * 0.55, 1.0, 0.7), COUNTER_COLOR, true)
+	# Register
+	_add_box(Vector3(w * 0.18, 1.05, d * 0.28), Vector3(0.4, 0.3, 0.35), Color(0.12, 0.12, 0.12), false)
+
+	# Display racks in rows
+	var rows := int(maxf(2.0, floorf(d / 3.0)))
+	var cols := int(maxf(2.0, floorf(w / 3.0)))
+	for r in range(rows):
+		var z_pos := -d * 0.4 + r * (d * 0.55 / maxf(rows - 1, 1))
+		for c in range(cols):
+			var x_pos := -w * 0.35 + c * (w * 0.7 / maxf(cols - 1, 1))
+			_add_box(Vector3(x_pos, 0.55, z_pos), Vector3(0.7, 1.1, 1.1), SHELF_COLOR, true)
+
+	# Mannequin or display stand near entrance
+	_add_box(Vector3(w * 0.35, 0.9, d * 0.05), Vector3(0.5, 1.8, 0.5), Color(0.85, 0.78, 0.65), true)
+
+# ------------------------------------------------------------------
+# Furniture: Factory
+# ------------------------------------------------------------------
+
+func _furnish_factory() -> void:
+	var w := interior_width
+	var d := interior_depth
+
+	# Conveyor belt running the length
+	_add_box(Vector3(0.0, 0.5, 0.0), Vector3(w * 0.18, 0.18, d * 0.7), Color(0.30, 0.30, 0.32), true)
+	# Machinery banks on either side
+	for i in range(3):
+		var z_pos := -d * 0.35 + i * (d * 0.35)
+		_add_box(Vector3(-w * 0.3, 0.9, z_pos), Vector3(1.5, 1.8, 1.5), Color(0.45, 0.42, 0.40), true)
+		_add_box(Vector3( w * 0.3, 0.9, z_pos), Vector3(1.5, 1.8, 1.5), Color(0.45, 0.42, 0.40), true)
+		# Pipe stack above
+		_add_box(Vector3(-w * 0.3, 2.3, z_pos), Vector3(0.4, 1.4, 0.4), Color(0.55, 0.52, 0.48), false)
+	# Stack of pallets at the back
+	_add_box(Vector3(-w * 0.4, 0.2, -d * 0.45), Vector3(1.2, 0.4, 1.4), CRATE_COLOR, true)
+	_add_box(Vector3( w * 0.4, 0.2, -d * 0.45), Vector3(1.2, 0.4, 1.4), CRATE_COLOR, true)
+
+# ------------------------------------------------------------------
+# Furniture: Bank
+# ------------------------------------------------------------------
+
+func _furnish_bank() -> void:
+	var w := interior_width
+	var d := interior_depth
+
+	# Teller counter at the back
+	_add_box(Vector3(0.0, 0.55, -d * 0.32), Vector3(w * 0.7, 1.1, 0.6), Color(0.65, 0.55, 0.40), true)
+	# Glass partitions on top of counter
+	for i in range(3):
+		var x_pos := -w * 0.28 + i * (w * 0.28)
+		_add_box(Vector3(x_pos, 1.6, -d * 0.32), Vector3(0.06, 0.9, 0.6), Color(0.65, 0.75, 0.85, 0.6), false)
+	# Pedestal desks for customers
+	for i in range(2):
+		var x_pos := -w * 0.2 + i * (w * 0.4)
+		_add_box(Vector3(x_pos, 0.55, d * 0.1), Vector3(0.9, 1.1, 0.5), Color(0.45, 0.30, 0.20), true)
+	# Roped queue stanchions
+	for i in range(3):
+		_add_box(Vector3(-w * 0.25 + i * 0.6, 0.5, 0.0), Vector3(0.08, 1.0, 0.08), Color(0.55, 0.45, 0.30), false)
+
+# ------------------------------------------------------------------
+# Furniture: Police Station
+# ------------------------------------------------------------------
+
+func _furnish_police_station() -> void:
+	var w := interior_width
+	var d := interior_depth
+
+	# Reception desk
+	_add_box(Vector3(0.0, 0.55, d * 0.18), Vector3(w * 0.5, 1.1, 0.7), Color(0.45, 0.45, 0.50), true)
+	# Bulletin board / map on back wall
+	_add_box(Vector3(0.0, 1.8, -d * 0.48), Vector3(2.0, 1.2, 0.05), Color(0.20, 0.30, 0.45), false)
+	# Holding cell bars at one side
+	for i in range(5):
+		var z_pos := -d * 0.35 + i * 0.4
+		_add_box(Vector3(-w * 0.35, 1.2, z_pos), Vector3(0.08, 2.2, 0.08), Color(0.20, 0.20, 0.22), false)
+	_add_box(Vector3(-w * 0.42, 0.05, -d * 0.2), Vector3(0.2, 0.05, d * 0.45), Color(0.20, 0.20, 0.22), false)
+	# Cluster of officer desks
+	for i in range(2):
+		var x_pos := w * 0.15 + i * 0.0
+		_add_box(Vector3(w * 0.2, 0.4, -d * 0.1 + i * 1.4), Vector3(1.0, 0.8, 0.6), DESK_COLOR, true)
+
+# ------------------------------------------------------------------
+# Furniture: Hospital
+# ------------------------------------------------------------------
+
+func _furnish_hospital() -> void:
+	var w := interior_width
+	var d := interior_depth
+
+	# Long reception counter
+	_add_box(Vector3(0.0, 0.55, d * 0.25), Vector3(w * 0.55, 1.1, 0.7), Color(0.92, 0.92, 0.90), true)
+	# Waiting chairs in a row
+	for i in range(4):
+		var x_pos := -w * 0.35 + i * (w * 0.7 / 3.0)
+		_add_box(Vector3(x_pos, 0.25, d * 0.4), Vector3(0.5, 0.5, 0.5), Color(0.20, 0.35, 0.45), true)
+	# Beds at the back / sides
+	for i in range(3):
+		var z_pos := -d * 0.4 + i * (d * 0.25)
+		_add_box(Vector3(-w * 0.3, 0.35, z_pos), Vector3(0.9, 0.4, 2.0), Color(0.92, 0.92, 0.95), true)
+		_add_box(Vector3(-w * 0.3, 0.75, z_pos - 0.8), Vector3(0.9, 0.5, 0.4), Color(0.20, 0.45, 0.45), false)
+	# Cabinet
+	_add_box(Vector3(w * 0.4, 0.9, 0.0), Vector3(0.4, 1.7, 1.2), Color(0.95, 0.95, 0.93), true)
+	# Red cross on cabinet
+	_add_box(Vector3(w * 0.4 - 0.18, 1.0, 0.0), Vector3(0.05, 0.5, 0.12), Color(0.85, 0.15, 0.15), false)
+	_add_box(Vector3(w * 0.4 - 0.18, 1.0, 0.0), Vector3(0.05, 0.12, 0.5), Color(0.85, 0.15, 0.15), false)
+
+# ------------------------------------------------------------------
+# Furniture: School
+# ------------------------------------------------------------------
+
+func _furnish_school() -> void:
+	var w := interior_width
+	var d := interior_depth
+
+	# Teacher's desk at the front
+	_add_box(Vector3(0.0, 0.4, -d * 0.35), Vector3(1.6, 0.8, 0.8), DESK_COLOR, true)
+	# Blackboard
+	_add_box(Vector3(0.0, 1.7, -d * 0.48), Vector3(3.0, 1.2, 0.06), Color(0.10, 0.25, 0.18), false)
+	# Rows of student desks
+	var rows := int(maxf(3.0, floorf(d / 3.0)))
+	var cols := int(maxf(3.0, floorf(w / 2.5)))
+	for r in range(rows):
+		var z_pos := -d * 0.15 + r * (d * 0.5 / maxf(rows - 1, 1))
+		for c in range(cols):
+			var x_pos := -w * 0.35 + c * (w * 0.7 / maxf(cols - 1, 1))
+			_add_box(Vector3(x_pos, 0.4, z_pos), Vector3(0.7, 0.8, 0.5), DESK_COLOR, true)
+			_add_box(Vector3(x_pos, 0.22, z_pos + 0.45), Vector3(0.4, 0.45, 0.4), Color(0.40, 0.30, 0.22), true)
 
 # ------------------------------------------------------------------
 # Wall visibility (called by main.gd each frame while inside)
