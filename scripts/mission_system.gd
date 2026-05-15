@@ -9,6 +9,8 @@ signal mission_completed(mission_index: int)
 signal all_missions_completed
 signal player_rescued
 
+const FovCuller = preload("res://scripts/fov_culler.gd")
+
 enum MissionType { DELIVERY, HOLD_ZONE, ELIMINATION }
 
 const HOLD_ZONE_RADIUS := 6.0
@@ -498,6 +500,9 @@ func _create_marker(pos: Vector3, color: Color) -> MeshInstance3D:
 	# Use the root's MeshInstance3D-like reference for animation — return the prism
 	# but store the root so cleanup works via the parent
 	prism.set_meta("marker_root", root)
+	# Markers are tall, brightly-coloured beacons; let them shadow with
+	# the rest of the world when they fall outside the player's sector.
+	FovCuller.apply_shader_to_subtree(root)
 	return prism
 
 func _create_zone_visual(pos: Vector3, radius: float) -> MeshInstance3D:
@@ -519,6 +524,7 @@ func _create_zone_visual(pos: Vector3, radius: float) -> MeshInstance3D:
 	_main.add_child(mi)
 	mi.add_to_group(&"fov_cullable")
 	mi.set_meta(&"fov_cull_radius", radius + 0.5)
+	FovCuller.apply_shader_to_subtree(mi)
 	return mi
 
 func _cleanup_mission_objects() -> void:

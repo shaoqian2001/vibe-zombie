@@ -11,6 +11,8 @@ extends CharacterBody3D
 ##   - On death, the host calls _despawn() on every peer, so all copies of the
 ##     node disappear in lockstep.
 
+const FovCuller = preload("res://scripts/fov_culler.gd")
+
 const SPEED := 2.0
 const CHASE_SPEED := 3.5
 const ACCELERATION := 8.0
@@ -80,6 +82,11 @@ func _ready() -> void:
 	_pick_new_wander()
 	_build_model()
 	_build_hp_bar()
+	# Drape every body part in the same vision-shadow overlay the world
+	# uses, so a zombie smoothly darkens as it leaves the player's sector
+	# instead of snapping. The HP bar opts out via its own material_overlay
+	# set in _build_hp_bar (see apply_shader_to_subtree's idempotent check).
+	FovCuller.apply_shader_to_subtree(self)
 	await get_tree().process_frame
 	_player_ref = _find_player()
 
@@ -448,6 +455,9 @@ func _build_hp_bar() -> void:
 	_hp_bar_bg.name = "HPBarBG"
 	_hp_bar_bg.mesh = bg_mesh
 	_hp_bar_bg.position = Vector3(0, HP_BAR_Y, 0)
+	# HP bars use no_depth_test billboards; the shadow overlay's depth
+	# state would fight that and produce flicker against far geometry.
+	_hp_bar_bg.set_meta(FovCuller.META_SHADOW_EXEMPT, true)
 	add_child(_hp_bar_bg)
 
 	# Foreground (red)
@@ -467,6 +477,7 @@ func _build_hp_bar() -> void:
 	_hp_bar_fg.name = "HPBarFG"
 	_hp_bar_fg.mesh = fg_mesh
 	_hp_bar_fg.position = Vector3(0, HP_BAR_Y, 0)
+	_hp_bar_fg.set_meta(FovCuller.META_SHADOW_EXEMPT, true)
 	add_child(_hp_bar_fg)
 
 func _update_hp_bar() -> void:

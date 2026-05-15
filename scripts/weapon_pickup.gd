@@ -3,6 +3,8 @@ extends Area3D
 ## A weapon pickup that floats and rotates on the ground.
 ## When the player walks into it, the weapon is added to their inventory.
 
+const FovCuller = preload("res://scripts/fov_culler.gd")
+
 var weapon_type: String = "pistol"
 
 var _model: Node3D = null
@@ -41,6 +43,10 @@ func _ready() -> void:
 
 	_build_model()
 	_build_glow()
+	# Sweep the weapon and its glow disc into the vision-shadow overlay
+	# so the pickup darkens with the rest of the world when it leaves the
+	# player's sector. The glow itself stays opted out (see _build_glow).
+	FovCuller.apply_shader_to_subtree(self)
 
 func _process(delta: float) -> void:
 	_bob_time += delta
@@ -258,4 +264,8 @@ func _build_glow() -> void:
 	_glow.mesh = glow_mesh
 	_glow.position = Vector3(0, 0.01, 0)
 	_glow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# The glow uses additive-style transparency at ground level; layering
+	# the shadow overlay on it produces a muddy ring rather than a hint
+	# of light. Keep it readable instead.
+	_glow.set_meta(FovCuller.META_SHADOW_EXEMPT, true)
 	add_child(_glow)
