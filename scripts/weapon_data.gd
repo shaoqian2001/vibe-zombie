@@ -11,6 +11,12 @@ class_name WeaponData
 #     each time the trigger is pulled. Both are kept very small so a
 #     pistol "barely" repels the target and barely kicks the shooter.
 
+## Grip metadata used by the rig:
+##  - `two_handed` — when true, the support arm is solved via IK to grab the
+##    weapon at `off_hand_anchor` instead of pendulum-swinging at the side.
+##  - `off_hand_anchor` — local-space position on the weapon mesh where the
+##    support hand grips (forend for long guns, slide for the pistol-isoceles
+##    stance, etc.). Always +Z forward, so this is roughly the barrel midpoint.
 const WEAPONS := {
 	"pistol": {
 		"damage": 10.0,
@@ -25,6 +31,7 @@ const WEAPONS := {
 		"hit_tolerance": 1.2,
 		"knockback": 0.5,
 		"recoil": 0.2,
+		"two_handed": false,
 	},
 	"shotgun": {
 		"damage": 5.0,
@@ -40,6 +47,11 @@ const WEAPONS := {
 		"pellet_spread": 4.0,
 		"knockback": 0.15,  # per pellet — ~1.8 cumulative on a point-blank target
 		"recoil": 1.5,
+		"two_handed": true,
+		# Pump-action forend grip. Anchor sits at the rear edge of the
+		# forend (toward the trigger) so the off-hand stays inside arm
+		# reach when both shoulders cradle the stock.
+		"off_hand_anchor": Vector3(0.0, -0.02, 0.04),
 	},
 	"smg": {
 		"damage": 5.0,
@@ -54,6 +66,9 @@ const WEAPONS := {
 		"hit_tolerance": 1.0,
 		"knockback": 0.25,
 		"recoil": 0.08,  # per shot — accumulates with rapid fire
+		"two_handed": true,
+		# Front of the body where the off-hand wraps the rail.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.06),
 	},
 	"grenade_launcher": {
 		"damage": 30.0,
@@ -68,6 +83,9 @@ const WEAPONS := {
 		"explosion_radius": 5.0,
 		"knockback": 4.0,
 		"recoil": 1.0,
+		"two_handed": true,
+		# Off-hand braces the heavy tube barrel.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.08),
 	},
 	"bat": {
 		"damage": 20.0,
@@ -82,6 +100,7 @@ const WEAPONS := {
 		"sweep_angle": 90.0,
 		"knockback": 1.5,
 		"recoil": 0.0,
+		"two_handed": false,
 	},
 }
 
