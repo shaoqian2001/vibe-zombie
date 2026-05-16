@@ -318,9 +318,12 @@ func _pick_new_wander() -> void:
 ## spine/arms/head) but stiffer poses and broader sway so they read as
 ## undead at a glance: shoulders rolled forward, arms outstretched in the
 ## classic "reaching" pose, knees barely bend, head lolls slightly.
-const ZOMBIE_HIP_Y := 0.85
+## Bone lengths sum so the foot bottom lands at y=0 with the leg straight:
+## foot (0.08) + shin (0.30) + thigh (0.40) = 0.78 = ZOMBIE_HIP_Y.
+const ZOMBIE_HIP_Y := 0.78
 const ZOMBIE_THIGH_LEN := 0.40
-const ZOMBIE_SHIN_LEN := 0.40
+const ZOMBIE_SHIN_LEN := 0.30
+const ZOMBIE_FOOT_HEIGHT := 0.08
 const ZOMBIE_UPPER_ARM_LEN := 0.30
 const ZOMBIE_FOREARM_LEN := 0.30
 
@@ -513,12 +516,13 @@ func _build_zombie_leg(is_left: bool, pants_mat: StandardMaterial3D, scale_var: 
 	foot_mat.albedo_color = Color(0.10, 0.08, 0.05, 1)
 	foot_mat.roughness = 0.6
 	var foot_mesh := BoxMesh.new()
-	foot_mesh.size = Vector3(0.17 * scale_var, 0.08, 0.27)
+	foot_mesh.size = Vector3(0.17 * scale_var, ZOMBIE_FOOT_HEIGHT, 0.27)
 	foot_mesh.material = foot_mat
 	var foot := MeshInstance3D.new()
 	foot.name = "Foot"
 	foot.mesh = foot_mesh
-	foot.position = Vector3(0, -ZOMBIE_SHIN_LEN * 0.5 - 0.04, 0.05)
+	# Foot top meets the shin's bottom and the foot bottom lands at y=0.
+	foot.position = Vector3(0, -ZOMBIE_SHIN_LEN * 0.5 - ZOMBIE_FOOT_HEIGHT * 0.5, 0.05)
 	foot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	shin.add_child(foot)
 	return hip

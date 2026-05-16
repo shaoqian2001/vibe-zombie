@@ -137,14 +137,17 @@ var _shoot_anim_timer: float = 0.0
 const SHOOT_ANIM_DURATION := 0.22
 
 # Skeleton geometry constants — referenced by both rig construction and
-# the IK solver. Heights are in player local space (floor at y=0).
-const HIP_Y := 0.85
+# the IK solver. Heights are in player local space (floor at y=0). Lengths
+# add up so the foot's lower face lands exactly at y=0 when the leg is
+# straight: foot (0.08) + shin (0.30) + thigh (0.40) = 0.78 = HIP_Y.
+const HIP_Y := 0.78
 const THIGH_LEN := 0.40
-const SHIN_LEN := 0.40
-const SHOULDER_X := 0.24
-const SHOULDER_Y_IN_SPINE := 0.47
+const SHIN_LEN := 0.30
+const FOOT_HEIGHT := 0.08
+const SHOULDER_X := 0.22
+const SHOULDER_Y_IN_SPINE := 0.50
 const SHOULDER_Z := 0.02
-const NECK_Y_IN_SPINE := 0.58
+const NECK_Y_IN_SPINE := 0.55
 
 ## Per-weapon arm poses + kick parameters. Angles are in degrees.
 ## Each arm carries either:
@@ -433,15 +436,16 @@ func _build_leg(is_left: bool, pants_mat: StandardMaterial3D, boot_mat: Standard
 	knee.add_child(shin)
 
 	var foot_mesh := BoxMesh.new()
-	foot_mesh.size = Vector3(0.16, 0.08, 0.26)
+	foot_mesh.size = Vector3(0.16, FOOT_HEIGHT, 0.26)
 	foot_mesh.material = boot_mat
 	var foot := MeshInstance3D.new()
 	foot.name = "Foot"
 	foot.mesh = foot_mesh
-	# Place the foot below the bottom of the shin and shifted forward so
-	# the toes lead the heel — keeps the silhouette looking like a person
-	# walking rather than two boxes shuffling.
-	foot.position = Vector3(0, -SHIN_LEN * 0.5 - 0.04, 0.06)
+	# Foot top meets the shin's bottom; foot bottom rests at y=0 (floor).
+	# In shin-local coords the shin mesh center is at the origin (extends
+	# ±SHIN_LEN/2), so the foot center sits a half-foot below the shin
+	# mesh and shifted forward so the toes lead the heel.
+	foot.position = Vector3(0, -SHIN_LEN * 0.5 - FOOT_HEIGHT * 0.5, 0.06)
 	foot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	shin.add_child(foot)
 
@@ -1845,9 +1849,10 @@ func _solve_off_hand_ik() -> void:
 	var target_local: Vector3 = _spine.global_transform.affine_inverse() * target_world
 	# Shoulder pivot lives at a known offset inside the spine.
 	var shoulder_pos := Vector3(SHOULDER_X, SHOULDER_Y_IN_SPINE, SHOULDER_Z)
-	# Pole vector — defines which way the elbow bulges. For the right arm
-	# the elbow should ride below and outboard of the shoulder.
-	var pole_pos := shoulder_pos + Vector3(0.40, -0.50, 0.10)
+	# Pole vector — defines which way the elbow bulges. We want the elbow
+	# to drop straight down (and a hair inward, toward the body centerline)
+	# so the support arm looks tucked rather than chicken-winged outward.
+	var pole_pos := shoulder_pos + Vector3(-0.08, -1.0, 0.0)
 	_solve_arm_ik(
 		_right_shoulder, _right_elbow,
 		shoulder_pos, target_local, pole_pos,
