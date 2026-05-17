@@ -396,6 +396,15 @@ func _build_rig() -> void:
 	# Start in the unarmed pose — both arms hang naturally.
 	_apply_weapon_pose("unarmed")
 
+	# One-line summary of the rig so we can confirm at runtime that the
+	# in-game body matches what _build_rig actually wired up. Look for
+	# this in Godot's Output panel after the scene loads.
+	print("[player rig] hips@y=", HIP_Y,
+		" thigh=", THIGH_LEN, " shin=", SHIN_LEN, " foot=", FOOT_HEIGHT,
+		" shoulders=±", SHOULDER_X, "x,y=", SHOULDER_Y_IN_SPINE,
+		" arm=", _upper_arm_len, "+", _forearm_len,
+		" children=", get_children().map(func(c): return c.name))
+
 ## Build one leg chain — hip pivot → thigh → knee pivot → shin → foot.
 ## Returns the hip pivot so the caller can stash it for animation.
 func _build_leg(is_left: bool, pants_mat: StandardMaterial3D, boot_mat: StandardMaterial3D) -> Node3D:
