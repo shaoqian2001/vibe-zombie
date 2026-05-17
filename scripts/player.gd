@@ -159,13 +159,23 @@ const NECK_Y_IN_SPINE := 0.55
 ##     ignored and the animation runs after the left arm has moved the
 ##     weapon (so the off-hand always follows the trigger hand).
 ##
+## Sign convention for `elbow_bend`:
+##   • NEGATIVE = forearm folds toward the shoulder's *front* (natural bicep
+##     curl). Use this for relaxed arms-at-side and any front-facing grip.
+##   • POSITIVE = forearm folds toward the shoulder's *back* (the kind of
+##     fold a baseball bat needs when cocked over the shoulder).
+##
 ## kick_pitch / kick_elbow describe the delta applied to the trigger arm
-## during the fire animation. The bat uses a large negative pitch + elbow
-## extension to chop forward from a cocked pose.
+## during the fire animation. They must add in the same direction as the
+## rest bend (i.e. share its sign) so recoil tightens the fold instead of
+## unfolding the arm.
 const WEAPON_POSES := {
 	"unarmed": {
-		"left":  { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": 12.0, "mode": "free" },
-		"right": { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": 12.0, "mode": "free" },
+		# Arms hang at the side with a small forward bend at the elbow so
+		# the hands sit naturally just in front of the hips (the classic
+		# relaxed standing pose). Negative bend = forearm folds forward.
+		"left":  { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": -10.0, "mode": "free" },
+		"right": { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": -10.0, "mode": "free" },
 		"kick_pitch": 0.0, "kick_elbow": 0.0, "kick_duration": 0.0,
 	},
 	"pistol": {
@@ -176,8 +186,8 @@ const WEAPON_POSES := {
 		# proportions; one-hand pistol is the standard cinematic look.)
 		# Negative elbow_bend tucks the elbow DOWN (forearm comes up off
 		# the extended upper arm); positive bend chicken-wings the elbow.
-		"left":  { "shoulder_pitch": -75.0, "shoulder_yaw":  3.0, "elbow_bend": -10.0,  "mode": "braced" },
-		"right": { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": 18.0,   "mode": "free" },
+		"left":  { "shoulder_pitch": -75.0, "shoulder_yaw":  3.0, "elbow_bend": -10.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": -14.0, "mode": "free" },
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18,
 	},
 	"smg": {
@@ -207,9 +217,10 @@ const WEAPON_POSES := {
 	"bat": {
 		# Cocked back over the left shoulder ready to swing. Off-hand hangs
 		# at the side and pendulums. Negative kick_pitch + elbow extension
-		# is the swing.
+		# is the swing. Bat is the ONE pose that wants POSITIVE elbow_bend
+		# — its forearm folds *behind* the shoulder in the cocked stance.
 		"left":  { "shoulder_pitch":  35.0, "shoulder_yaw":  22.0, "elbow_bend": 78.0, "mode": "free" },
-		"right": { "shoulder_pitch":  -8.0, "shoulder_yaw":   0.0, "elbow_bend": 14.0, "mode": "free" },
+		"right": { "shoulder_pitch":  -8.0, "shoulder_yaw":   0.0, "elbow_bend": -14.0, "mode": "free" },
 		"kick_pitch": -110.0, "kick_elbow": -65.0, "kick_duration": 0.42,
 		"grip_align": "along_arm",
 	},
@@ -1680,15 +1691,39 @@ func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	velocity.x = move_toward(velocity.x, target_xz.x, ACCELERATION * delta)
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
 
+## Lower-body yaw tracks the direction the player is moving (or holds steady
+## when not moving). The upper body (spine + head) twists toward the mouse
+## independently in _update_animation. Body only chases the aim once the
+## offset between aim and the desired body yaw exceeds ±90° — then we clamp
+## body yaw to that boundary so the spine can cover the remaining angle.
+##
+## Net effect: walking forward while flicking the mouse left/right looks
+## like a person twisting their torso to aim, not a top spinning in place.
 func _rotate_to_face_mouse(delta: float) -> void:
 	if look_target == Vector3.INF:
 		return
-	var dir := look_target - global_position
-	dir.y = 0.0
-	if dir.length_squared() < 0.01:
+	var aim_dir := look_target - global_position
+	aim_dir.y = 0.0
+	if aim_dir.length_squared() < 0.01:
 		return
-	var target_angle := atan2(dir.x, dir.z)
-	rotation.y = lerp_angle(rotation.y, target_angle, ROTATION_SPEED * delta)
+	var aim_yaw := atan2(aim_dir.x, aim_dir.z)
+
+	var move_dir := _get_world_movement_direction()
+	var desired_body_yaw: float
+	if move_dir.length() > 0.1:
+		desired_body_yaw = atan2(move_dir.x, move_dir.z)
+	else:
+		desired_body_yaw = rotation.y
+
+	var aim_offset := wrapf(aim_yaw - desired_body_yaw, -PI, PI)
+	var target_body_yaw: float
+	if absf(aim_offset) > PI * 0.5:
+		# Aim is past ±90° from the desired body yaw — snap body to the
+		# nearest boundary so the spine twist can still reach the aim.
+		target_body_yaw = aim_yaw - signf(aim_offset) * PI * 0.5
+	else:
+		target_body_yaw = desired_body_yaw
+	rotation.y = lerp_angle(rotation.y, target_body_yaw, ROTATION_SPEED * delta)
 
 func _update_animation(delta: float) -> void:
 	# Horizontal speed drives the walk cycle; scale the cycle faster and bigger
@@ -1763,14 +1798,17 @@ func _update_animation(delta: float) -> void:
 			aim_yaw = wrapf(target_yaw - rotation.y, -PI, PI)
 	# Low-pass the aim yaw so the spine twist eases rather than snapping.
 	_aim_yaw_smooth = lerpf(_aim_yaw_smooth, aim_yaw, clampf(delta * 10.0, 0.0, 1.0))
-	# Hips counter-rotate against the spine twist a little (hips lead the
-	# direction of motion while the upper body twists toward the aim).
-	var spine_aim_yaw: float = clampf(_aim_yaw_smooth, deg_to_rad(-45.0), deg_to_rad(45.0)) * 0.55
-	var hips_aim_yaw: float = spine_aim_yaw * -0.25
+	# The body yaw (rotation.y) is already kept within ±90° of the aim by
+	# _rotate_to_face_mouse, so the spine just needs to cover whatever's
+	# left. Take ~55% of the offset; the head takes the rest (capped to
+	# ±65°) so we never crank past human range.
+	var spine_aim_yaw: float = clampf(_aim_yaw_smooth, deg_to_rad(-90.0), deg_to_rad(90.0)) * 0.55
 
+	# Hips strictly follow the body yaw — the lower body should face the
+	# direction of movement without any aim-driven counter-rotation.
 	if _hips:
 		_hips.transform = Transform3D(
-			Basis(Vector3.UP, hips_aim_yaw + swing_sin * hip_yaw_amp),
+			Basis(Vector3.UP, swing_sin * hip_yaw_amp),
 			Vector3(0, HIP_Y, 0),
 		)
 	# Spine pitch — small forward lean when sprinting so the silhouette
