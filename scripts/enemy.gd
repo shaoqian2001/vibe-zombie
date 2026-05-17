@@ -620,17 +620,18 @@ func _update_animation(delta: float) -> void:
 		_hip_r.transform = _hip_r_rest * Transform3D(
 			Basis(Vector3.RIGHT, -s * leg_amp), Vector3.ZERO,
 		)
-	# Knees barely lift — undead muscles aren't great. Negative rotation
-	# folds the shin behind the thigh (forward swing of leg = knee bend).
+	# Knees barely lift — undead muscles aren't great. Positive rotation
+	# around the knee's +X axis tilts the shin's -Y direction toward -Z
+	# (the player's backward), which is the heel-toward-butt fold.
 	var left_lift: float = max(0.0, s)
 	var right_lift: float = max(0.0, -s)
 	if _knee_l:
 		_knee_l.transform = _knee_l_rest * Transform3D(
-			Basis(Vector3.RIGHT, -left_lift * knee_amp), Vector3.ZERO,
+			Basis(Vector3.RIGHT, left_lift * knee_amp), Vector3.ZERO,
 		)
 	if _knee_r:
 		_knee_r.transform = _knee_r_rest * Transform3D(
-			Basis(Vector3.RIGHT, -right_lift * knee_amp), Vector3.ZERO,
+			Basis(Vector3.RIGHT, right_lift * knee_amp), Vector3.ZERO,
 		)
 
 	# Torso lurches with each step — gives the shamble its weight-shift.

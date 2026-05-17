@@ -174,17 +174,19 @@ const WEAPON_POSES := {
 		# isoceles two-hand stance would require both hands to meet on a
 		# grip held at arm's length, which is impossible with realistic
 		# proportions; one-hand pistol is the standard cinematic look.)
-		"left":  { "shoulder_pitch": -75.0, "shoulder_yaw":  3.0, "elbow_bend": 8.0,  "mode": "braced" },
-		"right": { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": 18.0, "mode": "free" },
-		"kick_pitch": 14.0, "kick_elbow": 6.0, "kick_duration": 0.18,
+		# Negative elbow_bend tucks the elbow DOWN (forearm comes up off
+		# the extended upper arm); positive bend chicken-wings the elbow.
+		"left":  { "shoulder_pitch": -75.0, "shoulder_yaw":  3.0, "elbow_bend": -10.0,  "mode": "braced" },
+		"right": { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": 18.0,   "mode": "free" },
+		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18,
 	},
 	"smg": {
 		# Stubby SMG held with both hands — left on the trigger grip, right
 		# bracing the front of the receiver. The left arm bends in toward
 		# the centerline so the off-hand IK target stays within reach.
-		"left":  { "shoulder_pitch": -68.0, "shoulder_yaw":  18.0, "elbow_bend": 42.0, "mode": "braced" },
+		"left":  { "shoulder_pitch": -68.0, "shoulder_yaw":  18.0, "elbow_bend": -42.0, "mode": "braced" },
 		"right": { "mode": "ik" },
-		"kick_pitch": 8.0, "kick_elbow": 3.0, "kick_duration": 0.10,
+		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10,
 	},
 	"shotgun": {
 		# Classic shoulder-mount stance — left grips the stock at chest
@@ -192,15 +194,15 @@ const WEAPON_POSES := {
 		# every frame by IK so it always meets the forend, even mid-kick.
 		# Pose pulls the gun toward the centerline so the support arm can
 		# realistically span the forend.
-		"left":  { "shoulder_pitch": -65.0, "shoulder_yaw":  20.0, "elbow_bend": 40.0, "mode": "braced" },
+		"left":  { "shoulder_pitch": -65.0, "shoulder_yaw":  20.0, "elbow_bend": -40.0, "mode": "braced" },
 		"right": { "mode": "ik" },
-		"kick_pitch": 22.0, "kick_elbow": 9.0, "kick_duration": 0.28,
+		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28,
 	},
 	"grenade_launcher": {
 		# Heavier than the shotgun — held a bit lower with more elbow flex.
-		"left":  { "shoulder_pitch": -62.0, "shoulder_yaw":  20.0, "elbow_bend": 42.0, "mode": "braced" },
+		"left":  { "shoulder_pitch": -62.0, "shoulder_yaw":  20.0, "elbow_bend": -42.0, "mode": "braced" },
 		"right": { "mode": "ik" },
-		"kick_pitch": 26.0, "kick_elbow": 10.0, "kick_duration": 0.32,
+		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32,
 	},
 	"bat": {
 		# Cocked back over the left shoulder ready to swing. Off-hand hangs
@@ -1734,18 +1736,17 @@ func _update_animation(delta: float) -> void:
 		_hip_r.transform = _hip_r_rest * Transform3D(
 			Basis(Vector3.RIGHT, -swing_sin * leg_swing_amp), Vector3.ZERO
 		)
-	# Knee bends *backward* (heel toward butt) → that's negative X rotation
-	# at the knee given how the chain is built (Y points down, knee is a
-	# child of thigh, bending around +X tilts shin in -Z which is forward).
-	# We want the foot to lift behind the thigh, i.e. shin tilts in +Z dir
-	# relative to thigh local space — that's a negative rotation around +X.
+	# Knees bend backward (heel toward butt) during the leg's forward swing.
+	# In hip-local space the shin extends along -Y, and a *positive* rotation
+	# around the knee's +X axis tilts -Y toward -Z, which is the player's
+	# backward direction — exactly what we want for a heel-lift.
 	if _knee_l:
 		_knee_l.transform = _knee_l_rest * Transform3D(
-			Basis(Vector3.RIGHT, -left_lift * knee_amp), Vector3.ZERO
+			Basis(Vector3.RIGHT, left_lift * knee_amp), Vector3.ZERO
 		)
 	if _knee_r:
 		_knee_r.transform = _knee_r_rest * Transform3D(
-			Basis(Vector3.RIGHT, -right_lift * knee_amp), Vector3.ZERO
+			Basis(Vector3.RIGHT, right_lift * knee_amp), Vector3.ZERO
 		)
 
 	# --- Hips and spine: subtle counter-rotation around Y so the upper body
