@@ -396,15 +396,6 @@ func _build_rig() -> void:
 	# Start in the unarmed pose — both arms hang naturally.
 	_apply_weapon_pose("unarmed")
 
-	# One-line summary of the rig so we can confirm at runtime that the
-	# in-game body matches what _build_rig actually wired up. Look for
-	# this in Godot's Output panel after the scene loads.
-	print("[player rig] hips@y=", HIP_Y,
-		" thigh=", THIGH_LEN, " shin=", SHIN_LEN, " foot=", FOOT_HEIGHT,
-		" shoulders=±", SHOULDER_X, "x,y=", SHOULDER_Y_IN_SPINE,
-		" arm=", _upper_arm_len, "+", _forearm_len,
-		" children=", get_children().map(func(c): return c.name))
-
 ## Build one leg chain — hip pivot → thigh → knee pivot → shin → foot.
 ## Returns the hip pivot so the caller can stash it for animation.
 func _build_leg(is_left: bool, pants_mat: StandardMaterial3D, boot_mat: StandardMaterial3D) -> Node3D:
@@ -429,10 +420,17 @@ func _build_leg(is_left: bool, pants_mat: StandardMaterial3D, boot_mat: Standard
 	knee.name = "Knee"
 	knee.position = Vector3(0, -THIGH_LEN, 0)
 	hip.add_child(knee)
+	# Capture the knee's rest transform *here* — the walk-cycle animation
+	# composes onto _knee_l_rest each frame, so leaving it at IDENTITY
+	# (Vector3.ZERO origin) would snap the knee up to the hip's position
+	# and collapse the entire shin/foot into the upper thigh, leaving
+	# the feet floating ~40 cm above the floor.
 	if is_left:
 		_knee_l = knee
+		_knee_l_rest = knee.transform
 	else:
 		_knee_r = knee
+		_knee_r_rest = knee.transform
 
 	var shin_mesh := BoxMesh.new()
 	shin_mesh.size = Vector3(0.15, SHIN_LEN, 0.18)
