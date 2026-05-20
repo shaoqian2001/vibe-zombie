@@ -191,26 +191,25 @@ const WEAPON_POSES := {
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18,
 	},
 	"smg": {
-		# Stubby SMG held with both hands — left on the trigger grip, right
-		# bracing the front of the receiver. The left arm bends in toward
-		# the centerline so the off-hand IK target stays within reach.
-		"left":  { "shoulder_pitch": -68.0, "shoulder_yaw":  18.0, "elbow_bend": -42.0, "mode": "braced" },
+		# Tucked SMG against the chest — left hand on the grip with a heavy
+		# elbow bend so the receiver sits close to the body rather than
+		# stretched out at arm's length. Right arm IK reaches the forend.
+		"left":  { "shoulder_pitch": -12.0, "shoulder_yaw":  10.0, "elbow_bend": -95.0, "mode": "braced" },
 		"right": { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10,
 	},
 	"shotgun": {
-		# Classic shoulder-mount stance — left grips the stock at chest
-		# level, right bracing the forend. The off-hand placement is solved
-		# every frame by IK so it always meets the forend, even mid-kick.
-		# Pose pulls the gun toward the centerline so the support arm can
-		# realistically span the forend.
-		"left":  { "shoulder_pitch": -65.0, "shoulder_yaw":  20.0, "elbow_bend": -40.0, "mode": "braced" },
+		# Shoulder-mount but tucked — left grip near the chest with a deep
+		# elbow flex, right hand IK'd onto the forend. Pulling the wrist
+		# in close keeps the off-hand inside arm reach and reads as the
+		# kind of "ready" rifle pose action games use.
+		"left":  { "shoulder_pitch": -15.0, "shoulder_yaw":  12.0, "elbow_bend": -95.0, "mode": "braced" },
 		"right": { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28,
 	},
 	"grenade_launcher": {
-		# Heavier than the shotgun — held a bit lower with more elbow flex.
-		"left":  { "shoulder_pitch": -62.0, "shoulder_yaw":  20.0, "elbow_bend": -42.0, "mode": "braced" },
+		# Heavier than the shotgun — held a bit lower with similar bend.
+		"left":  { "shoulder_pitch": -18.0, "shoulder_yaw":  14.0, "elbow_bend": -95.0, "mode": "braced" },
 		"right": { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32,
 	},
@@ -297,24 +296,32 @@ func _build_rig() -> void:
 	add_child(_hips)
 
 	# Belt — sits on top of the hip joint as the visual waistline.
-	var belt_mesh := BoxMesh.new()
-	belt_mesh.size = Vector3(0.50, 0.06, 0.32)
+	var belt_mesh := CylinderMesh.new()
+	belt_mesh.top_radius = 0.18
+	belt_mesh.bottom_radius = 0.18
+	belt_mesh.height = 0.06
 	belt_mesh.material = belt_mat
 	var belt := MeshInstance3D.new()
 	belt.name = "Belt"
 	belt.mesh = belt_mesh
-	belt.position = Vector3(0, -0.03, 0)
+	belt.position = Vector3(0, -0.02, 0)
+	belt.scale = Vector3(1.0, 1.0, 0.80)  # belly is flatter than wide
 	belt.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_hips.add_child(belt)
 
-	# Pelvis fill — short visual block joining the two legs to the spine.
-	var pelvis_mesh := BoxMesh.new()
-	pelvis_mesh.size = Vector3(0.34, 0.16, 0.28)
+	# Pelvis — tapered cylinder so the visible silhouette flares from a
+	# narrow waist down to the hip joints. Bottom radius matches roughly
+	# the leg-pivot offset (±0.13) so the legs grow naturally out of it.
+	var pelvis_mesh := CylinderMesh.new()
+	pelvis_mesh.top_radius = 0.16
+	pelvis_mesh.bottom_radius = 0.17
+	pelvis_mesh.height = 0.18
 	pelvis_mesh.material = pants_mat
 	var pelvis := MeshInstance3D.new()
 	pelvis.name = "Pelvis"
 	pelvis.mesh = pelvis_mesh
-	pelvis.position = Vector3(0, -0.06, 0)
+	pelvis.position = Vector3(0, -0.09, 0)
+	pelvis.scale = Vector3(1.0, 1.0, 0.85)
 	pelvis.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_hips.add_child(pelvis)
 
@@ -330,22 +337,31 @@ func _build_rig() -> void:
 	_spine.position = Vector3(0, HIP_Y, 0)
 	add_child(_spine)
 
-	# Torso mesh hangs off the spine. Keeping it as a child of an inner pivot
-	# (_torso_mesh) lets the walk cycle apply a tiny bob without competing
-	# with the spine's twist/lean.
+	# Torso — tapered cylinder. The narrow bottom (radius 0.15) sits *inside*
+	# the pelvis (whose top radius is 0.16) with a few cm of vertical
+	# overlap, so the spine's yaw pivot is hidden inside the hip mesh. The
+	# round cross-section is rotationally symmetric, so even when the spine
+	# twists toward the aim the waist outline doesn't show a visible seam
+	# against the pelvis. The mesh widens to shoulder width at the top.
+	# Z-scale flattens the cylinder so the body reads as wider than deep.
 	_torso_mesh = Node3D.new()
 	_torso_mesh.name = "TorsoBob"
 	_spine.add_child(_torso_mesh)
 	var torso_geo := MeshInstance3D.new()
 	torso_geo.name = "Torso"
-	var torso_mesh_res := BoxMesh.new()
-	torso_mesh_res.size = Vector3(0.48, 0.55, 0.28)
+	var torso_mesh_res := CylinderMesh.new()
+	torso_mesh_res.top_radius = 0.24
+	torso_mesh_res.bottom_radius = 0.15
+	torso_mesh_res.height = 0.62
 	var torso_mat := StandardMaterial3D.new()
 	torso_mat.albedo_color = Color(0.22, 0.35, 0.18, 1)
 	torso_mat.roughness = 0.85
 	torso_mesh_res.material = torso_mat
 	torso_geo.mesh = torso_mesh_res
-	torso_geo.position = Vector3(0, 0.275, 0)
+	# Center is a touch lower than the bone midpoint so the bottom slips a
+	# few cm inside the pelvis, masking the waist seam.
+	torso_geo.position = Vector3(0, 0.26, 0)
+	torso_geo.scale = Vector3(1.0, 1.0, 0.65)
 	torso_geo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_torso_mesh.add_child(torso_geo)
 	_torso_mesh_rest = _torso_mesh.transform
@@ -808,7 +824,17 @@ func _equip_weapon(idx: int) -> void:
 	# cocked back over the shoulder, and so on.
 	_apply_weapon_pose(_current_weapon)
 
+## Forward direction used for shooting, recoil, and melee. Tracks the
+## mouse aim — the player aims with the upper body / cursor, so bullets
+## must travel toward where the camera shows them sighting at, not toward
+## the lower body which follows movement. Falls back to body forward if
+## look_target hasn't been set yet (e.g. first frame, networked clones).
 func _get_forward() -> Vector3:
+	if look_target != Vector3.INF:
+		var aim := look_target - global_position
+		aim.y = 0.0
+		if aim.length_squared() > 0.01:
+			return aim.normalized()
 	var fwd := global_transform.basis.z
 	fwd.y = 0.0
 	return fwd.normalized()
@@ -831,8 +857,11 @@ func _build_pistol() -> void:
 	_pistol_node = Node3D.new()
 	_pistol_node.name = "Pistol"
 	# Parent to the hand so the pistol follows walk/kick animation. Origin is
-	# positioned so the pistol's grip mesh lines up with the hand.
+	# positioned so the pistol's grip mesh lines up with the hand. Scale up
+	# the whole weapon so it reads at the isometric camera distance — every
+	# child mesh, the muzzle anchor and the off-hand anchor scale together.
 	_pistol_node.position = Vector3(0.0, 0.04, 0.0)
+	_pistol_node.scale = Vector3.ONE * 1.35
 	_attach_weapon(_pistol_node)
 
 	var grip_mat := StandardMaterial3D.new()
@@ -879,6 +908,7 @@ func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
 	_shotgun_node.position = Vector3(0.0, 0.0, 0.02)
+	_shotgun_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_shotgun_node)
 
 	# Stock (wooden rear grip)
@@ -959,6 +989,7 @@ func _build_smg() -> void:
 	_smg_node = Node3D.new()
 	_smg_node.name = "SMG"
 	_smg_node.position = Vector3(0.0, 0.07, 0.02)
+	_smg_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_smg_node)
 
 	var body_mat := StandardMaterial3D.new()
@@ -1012,6 +1043,7 @@ func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
 	_grenade_launcher_node.position = Vector3(0.0, 0.06, 0.06)
+	_grenade_launcher_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_grenade_launcher_node)
 
 	var body_mat := StandardMaterial3D.new()
@@ -1068,6 +1100,7 @@ func _build_bat() -> void:
 	_bat_node = Node3D.new()
 	_bat_node.name = "Bat"
 	_bat_node.position = Vector3(0.0, 0.0, 0.10)
+	_bat_node.scale = Vector3.ONE * 1.25
 	_attach_weapon(_bat_node)
 
 	var handle_mat := StandardMaterial3D.new()
