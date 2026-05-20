@@ -138,7 +138,19 @@ func _process(_delta: float) -> void:
 	var ppos := _player.global_position
 	var head_xz := Vector2(ppos.x, ppos.z)
 
-	var fwd3 := _player.global_transform.basis.z
+	# Vision cone follows the upper-body aim direction, not the lower-body
+	# movement direction — when the character's lower body faces forward
+	# while the player aims the mouse left, the visible cone should swing
+	# with the gun, not the legs. Fall back to body forward if look_target
+	# hasn't been set (very first frame, or a player with no aim input).
+	var fwd3: Vector3 = _player.global_transform.basis.z
+	if "look_target" in _player:
+		var target = _player.look_target
+		if target is Vector3 and target != Vector3.INF:
+			var aim: Vector3 = target - _player.global_position
+			aim.y = 0.0
+			if aim.length_squared() > 0.01:
+				fwd3 = aim.normalized()
 	var facing := Vector2(fwd3.x, fwd3.z)
 	if facing.length_squared() < 0.0001:
 		facing = Vector2(0.0, 1.0)

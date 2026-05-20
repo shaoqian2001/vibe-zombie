@@ -84,6 +84,10 @@ var _head: Node3D = null
 # Visual torso mesh — bobs slightly on the walk cycle without driving its
 # parent spine transform.
 var _torso_mesh: Node3D = null
+# Chest pivot — second stage of the spine. The spine yaws by half the
+# aim offset, the chest yaws by the other half on top, so the twist is
+# distributed across two seams instead of one big break at the waist.
+var _chest: Node3D = null
 # Shoulders + elbows. Shoulders are the animation pivots — rotating them
 # swings the entire arm chain (upper arm → forearm → hand → weapon grip)
 # as one. Elbows pivot the forearm independently for tight poses.
@@ -144,10 +148,15 @@ const HIP_Y := 0.78
 const THIGH_LEN := 0.40
 const SHIN_LEN := 0.30
 const FOOT_HEIGHT := 0.08
+# The torso is split into a lower abdomen segment (attached to _spine) and
+# an upper chest segment (attached to _chest, a child of _spine). The
+# chest sits CHEST_Y above the spine origin; shoulders/neck attach inside
+# the chest so they live above the upper seam.
+const CHEST_Y := 0.20
 const SHOULDER_X := 0.22
-const SHOULDER_Y_IN_SPINE := 0.50
+const SHOULDER_Y_IN_CHEST := 0.30
 const SHOULDER_Z := 0.02
-const NECK_Y_IN_SPINE := 0.55
+const NECK_Y_IN_CHEST := 0.35
 
 ## Per-weapon arm poses + kick parameters. Angles are in degrees.
 ## Each arm carries either:
@@ -257,7 +266,7 @@ func _ready() -> void:
 func _cache_body_parts() -> void:
 	for legacy in ["Torso", "LegLeft", "LegRight", "ArmLeft", "ArmRight",
 				   "Head", "Hair", "EyeLeft", "EyeRight", "Belt",
-				   "Hips", "Spine"]:
+				   "Hips", "Spine", "Chest", "Abdomen"]:
 		var n := get_node_or_null(legacy)
 		if n != null:
 			n.queue_free()
@@ -296,32 +305,24 @@ func _build_rig() -> void:
 	add_child(_hips)
 
 	# Belt — sits on top of the hip joint as the visual waistline.
-	var belt_mesh := CylinderMesh.new()
-	belt_mesh.top_radius = 0.18
-	belt_mesh.bottom_radius = 0.18
-	belt_mesh.height = 0.06
+	var belt_mesh := BoxMesh.new()
+	belt_mesh.size = Vector3(0.50, 0.06, 0.32)
 	belt_mesh.material = belt_mat
 	var belt := MeshInstance3D.new()
 	belt.name = "Belt"
 	belt.mesh = belt_mesh
-	belt.position = Vector3(0, -0.02, 0)
-	belt.scale = Vector3(1.0, 1.0, 0.80)  # belly is flatter than wide
+	belt.position = Vector3(0, -0.03, 0)
 	belt.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_hips.add_child(belt)
 
-	# Pelvis — tapered cylinder so the visible silhouette flares from a
-	# narrow waist down to the hip joints. Bottom radius matches roughly
-	# the leg-pivot offset (±0.13) so the legs grow naturally out of it.
-	var pelvis_mesh := CylinderMesh.new()
-	pelvis_mesh.top_radius = 0.16
-	pelvis_mesh.bottom_radius = 0.17
-	pelvis_mesh.height = 0.18
+	# Pelvis fill — short visual block joining the two legs to the spine.
+	var pelvis_mesh := BoxMesh.new()
+	pelvis_mesh.size = Vector3(0.34, 0.16, 0.28)
 	pelvis_mesh.material = pants_mat
 	var pelvis := MeshInstance3D.new()
 	pelvis.name = "Pelvis"
 	pelvis.mesh = pelvis_mesh
-	pelvis.position = Vector3(0, -0.09, 0)
-	pelvis.scale = Vector3(1.0, 1.0, 0.85)
+	pelvis.position = Vector3(0, -0.06, 0)
 	pelvis.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_hips.add_child(pelvis)
 
@@ -337,52 +338,69 @@ func _build_rig() -> void:
 	_spine.position = Vector3(0, HIP_Y, 0)
 	add_child(_spine)
 
-	# Torso — tapered cylinder. The narrow bottom (radius 0.15) sits *inside*
-	# the pelvis (whose top radius is 0.16) with a few cm of vertical
-	# overlap, so the spine's yaw pivot is hidden inside the hip mesh. The
-	# round cross-section is rotationally symmetric, so even when the spine
-	# twists toward the aim the waist outline doesn't show a visible seam
-	# against the pelvis. The mesh widens to shoulder width at the top.
-	# Z-scale flattens the cylinder so the body reads as wider than deep.
-	_torso_mesh = Node3D.new()
-	_torso_mesh.name = "TorsoBob"
-	_spine.add_child(_torso_mesh)
-	var torso_geo := MeshInstance3D.new()
-	torso_geo.name = "Torso"
-	var torso_mesh_res := CylinderMesh.new()
-	torso_mesh_res.top_radius = 0.24
-	torso_mesh_res.bottom_radius = 0.15
-	torso_mesh_res.height = 0.62
+	# Torso = abdomen (lower) + chest (upper) — two stacked boxes that
+	# together form the original single-block torso silhouette (same width,
+	# depth and total height as before). The split lets the spine twist
+	# distribute across two seams: the spine pivot below the abdomen rolls
+	# half the aim offset, the chest pivot between abdomen and chest rolls
+	# the other half. From the outside the body still reads as one shirted
+	# torso block, but the rotation feels continuous instead of tearing in
+	# one place at the waist.
 	var torso_mat := StandardMaterial3D.new()
 	torso_mat.albedo_color = Color(0.22, 0.35, 0.18, 1)
 	torso_mat.roughness = 0.85
-	torso_mesh_res.material = torso_mat
-	torso_geo.mesh = torso_mesh_res
-	# Center is a touch lower than the bone midpoint so the bottom slips a
-	# few cm inside the pelvis, masking the waist seam.
-	torso_geo.position = Vector3(0, 0.26, 0)
-	torso_geo.scale = Vector3(1.0, 1.0, 0.65)
-	torso_geo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	_torso_mesh.add_child(torso_geo)
+
+	# Abdomen mesh — lower CHEST_Y of the torso, attached to _spine.
+	# _torso_mesh wraps it for the walk-cycle bob.
+	_torso_mesh = Node3D.new()
+	_torso_mesh.name = "TorsoBob"
+	_spine.add_child(_torso_mesh)
+	var abdomen_geo := MeshInstance3D.new()
+	abdomen_geo.name = "Abdomen"
+	var abdomen_mesh_res := BoxMesh.new()
+	abdomen_mesh_res.size = Vector3(0.48, CHEST_Y, 0.28)
+	abdomen_mesh_res.material = torso_mat
+	abdomen_geo.mesh = abdomen_mesh_res
+	abdomen_geo.position = Vector3(0, CHEST_Y * 0.5, 0)
+	abdomen_geo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	_torso_mesh.add_child(abdomen_geo)
 	_torso_mesh_rest = _torso_mesh.transform
 
-	# Shoulders as children of spine, mirrored on X. Build the two-bone arm
-	# chain through _build_arm_chain (reused from the original rig).
+	# Chest pivot — second articulation point. Children inherit the spine's
+	# yaw and add their own on top, so the visible chest block sits at the
+	# upper half of the torso and twists slightly further than the abdomen.
+	_chest = Node3D.new()
+	_chest.name = "Chest"
+	_chest.position = Vector3(0, CHEST_Y, 0)
+	_spine.add_child(_chest)
+
+	var chest_height := 0.55 - CHEST_Y  # remaining torso height above the seam
+	var chest_geo := MeshInstance3D.new()
+	chest_geo.name = "Chest"
+	var chest_mesh_res := BoxMesh.new()
+	chest_mesh_res.size = Vector3(0.48, chest_height, 0.28)
+	chest_mesh_res.material = torso_mat
+	chest_geo.mesh = chest_mesh_res
+	chest_geo.position = Vector3(0, chest_height * 0.5, 0)
+	chest_geo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	_chest.add_child(chest_geo)
+
+	# Shoulders as children of the chest so they ride the full aim yaw.
 	_right_shoulder = _build_arm_chain(
-		"RightShoulder", Vector3(SHOULDER_X, SHOULDER_Y_IN_SPINE, SHOULDER_Z),
-		sleeve_mat, skin_mat, true, _spine,
+		"RightShoulder", Vector3(SHOULDER_X, SHOULDER_Y_IN_CHEST, SHOULDER_Z),
+		sleeve_mat, skin_mat, true, _chest,
 	)
 	_left_shoulder = _build_arm_chain(
-		"LeftShoulder", Vector3(-SHOULDER_X, SHOULDER_Y_IN_SPINE, SHOULDER_Z),
-		sleeve_mat, skin_mat, false, _spine,
+		"LeftShoulder", Vector3(-SHOULDER_X, SHOULDER_Y_IN_CHEST, SHOULDER_Z),
+		sleeve_mat, skin_mat, false, _chest,
 	)
 
-	# Neck + head + hair + eyes as a chain on the spine. The neck pivot lets
-	# the head turn toward the aim without rotating the torso.
+	# Neck + head + hair + eyes hang off the chest so the head also gets
+	# the full aim-driven yaw.
 	_neck = Node3D.new()
 	_neck.name = "Neck"
-	_neck.position = Vector3(0, NECK_Y_IN_SPINE, 0)
-	_spine.add_child(_neck)
+	_neck.position = Vector3(0, NECK_Y_IN_CHEST, 0)
+	_chest.add_child(_neck)
 	_neck_rest = _neck.transform
 
 	_head = Node3D.new()
@@ -1831,11 +1849,16 @@ func _update_animation(delta: float) -> void:
 			aim_yaw = wrapf(target_yaw - rotation.y, -PI, PI)
 	# Low-pass the aim yaw so the spine twist eases rather than snapping.
 	_aim_yaw_smooth = lerpf(_aim_yaw_smooth, aim_yaw, clampf(delta * 10.0, 0.0, 1.0))
-	# The body yaw (rotation.y) is already kept within ±90° of the aim by
-	# _rotate_to_face_mouse, so the spine just needs to cover whatever's
-	# left. Take ~55% of the offset; the head takes the rest (capped to
-	# ±65°) so we never crank past human range.
-	var spine_aim_yaw: float = clampf(_aim_yaw_smooth, deg_to_rad(-90.0), deg_to_rad(90.0)) * 0.55
+	# Total upper-body twist (relative to the lower body). The body yaw is
+	# already kept within ±90° of the aim by _rotate_to_face_mouse, so this
+	# is what spine + chest + head need to cover between them.
+	var total_twist: float = clampf(_aim_yaw_smooth, deg_to_rad(-90.0), deg_to_rad(90.0))
+	# Split the twist 50/50 across the spine and chest pivots so the
+	# rotation seam at the waist becomes two smaller seams, each only half
+	# the angle — visually reads as a continuous twist instead of one big
+	# tear where the upper body meets the lower body.
+	var spine_yaw: float = total_twist * 0.5
+	var chest_yaw: float = total_twist * 0.5
 
 	# Hips strictly follow the body yaw — the lower body should face the
 	# direction of movement without any aim-driven counter-rotation.
@@ -1845,12 +1868,17 @@ func _update_animation(delta: float) -> void:
 			Vector3(0, HIP_Y, 0),
 		)
 	# Spine pitch — small forward lean when sprinting so the silhouette
-	# reads as "running" rather than "shuffling fast".
+	# reads as "running" rather than "shuffling fast". Lean is also split
+	# between spine and chest so the back curves rather than hinging.
 	var spine_pitch: float = deg_to_rad(lerpf(0.0, 9.0, clampf((speed_ratio - 1.0), 0.0, 1.0)))
 	if _spine:
-		var spine_basis := Basis(Vector3.UP, spine_aim_yaw - swing_sin * spine_counter_yaw_amp)
-		spine_basis = spine_basis * Basis(Vector3.RIGHT, -spine_pitch)
+		var spine_basis := Basis(Vector3.UP, spine_yaw - swing_sin * spine_counter_yaw_amp * 0.5)
+		spine_basis = spine_basis * Basis(Vector3.RIGHT, -spine_pitch * 0.5)
 		_spine.transform = Transform3D(spine_basis, Vector3(0, HIP_Y, 0))
+	if _chest:
+		var chest_basis := Basis(Vector3.UP, chest_yaw - swing_sin * spine_counter_yaw_amp * 0.5)
+		chest_basis = chest_basis * Basis(Vector3.RIGHT, -spine_pitch * 0.5)
+		_chest.transform = Transform3D(chest_basis, Vector3(0, CHEST_Y, 0))
 
 	# --- Torso bob (independent of the spine twist/lean) ---
 	if _torso_mesh:
@@ -1859,8 +1887,10 @@ func _update_animation(delta: float) -> void:
 		_torso_mesh.transform = torso_xf
 
 	# --- Neck/head: turn toward the aim and a tiny tilt. Range is tighter
-	# than the spine — neck shouldn't crank past ~70°.
-	var head_yaw: float = clampf(_aim_yaw_smooth - spine_aim_yaw, deg_to_rad(-65.0), deg_to_rad(65.0))
+	# than the spine — neck shouldn't crank past ~70°. Head sits on the
+	# chest (which has full upper-body yaw), so this delta is the leftover.
+	var head_yaw: float = clampf(total_twist - spine_yaw - chest_yaw,
+		deg_to_rad(-65.0), deg_to_rad(65.0))
 	if _neck:
 		_neck.transform = _neck_rest * Transform3D(Basis(Vector3.UP, head_yaw), Vector3.ZERO)
 
@@ -1917,17 +1947,17 @@ func _update_animation(delta: float) -> void:
 ## weapon's current world transform here gives us a target that already
 ## includes the trigger-hand kick.
 func _solve_off_hand_ik() -> void:
-	if _spine == null or _right_shoulder == null or _right_elbow == null:
+	if _chest == null or _right_shoulder == null or _right_elbow == null:
 		return
 	var weapon_node := _current_weapon_node()
 	if weapon_node == null:
 		return
-	# Target in WORLD space → convert into spine-local since the right
-	# shoulder is a child of the spine.
+	# Target in WORLD space → convert into CHEST-local since the right
+	# shoulder is a child of the chest (the upper spine segment).
 	var target_world: Vector3 = weapon_node.global_transform * _off_hand_anchor_local
-	var target_local: Vector3 = _spine.global_transform.affine_inverse() * target_world
-	# Shoulder pivot lives at a known offset inside the spine.
-	var shoulder_pos := Vector3(SHOULDER_X, SHOULDER_Y_IN_SPINE, SHOULDER_Z)
+	var target_local: Vector3 = _chest.global_transform.affine_inverse() * target_world
+	# Shoulder pivot lives at a known offset inside the chest.
+	var shoulder_pos := Vector3(SHOULDER_X, SHOULDER_Y_IN_CHEST, SHOULDER_Z)
 	# Pole vector — defines which way the elbow bulges. We want the elbow
 	# to drop straight down (and a hair inward, toward the body centerline)
 	# so the support arm looks tucked rather than chicken-winged outward.
