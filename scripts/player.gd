@@ -1857,13 +1857,11 @@ func _update_animation(delta: float) -> void:
 		torso_xf.origin.y = _torso_mesh_rest.origin.y + bob
 		_torso_mesh.transform = torso_xf
 
-	# --- Neck/head: turn toward the aim and a tiny tilt. Range is tighter
-	# than the spine — neck shouldn't crank past ~70°. Head sits on the
-	# chest (which has full upper-body yaw), so this delta is the leftover.
-	var head_yaw: float = clampf(total_twist - spine_yaw - chest_yaw,
-		deg_to_rad(-65.0), deg_to_rad(65.0))
+	# --- Neck/head: the unified spine already carries the full upper-body
+	# yaw toward the aim, so the neck stays at its rest pose and the head
+	# inherits the spine's twist via the parent chain.
 	if _neck:
-		_neck.transform = _neck_rest * Transform3D(Basis(Vector3.UP, head_yaw), Vector3.ZERO)
+		_neck.transform = _neck_rest
 
 	# --- Fire animation: the LEFT shoulder + elbow drive the kick (left
 	# is the trigger hand). For guns this is a small barrel-rise + brief
