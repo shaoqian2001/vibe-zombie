@@ -165,17 +165,22 @@ const FOOT_HEIGHT := 0.08
 #   • Chest — rigid box that sits above the waist, hanging off _torso_top
 #     so it rotates as one rigid block with the shoulders/neck/head.
 const WAIST_BOTTOM_Y := 0.02   # = top of the pelvis box, in spine-local
-const WAIST_TOP_Y := 0.17      # = bottom of the chest box, in spine-local
+const WAIST_TOP_Y := 0.285     # = bottom of the chest box, in spine-local
 const WAIST_BOTTOM_W := 0.34   # waist starts as wide as the pelvis top
 const WAIST_TOP_W := 0.48      # widens to match the chest base
 const WAIST_DEPTH := 0.28
-const CHEST_HEIGHT := 0.38     # rigid chest, sits from WAIST_TOP_Y upward
+const CHEST_HEIGHT := 0.265    # rigid chest. Sized so waist:chest ≈ 50/50
+                               # of the upper-body height (0.265:0.265).
 const SHOULDER_X := 0.22
 # Shoulder/neck Y in _torso_top-local — _torso_top sits at WAIST_TOP_Y in
 # spine-local, so subtract that to convert old spine-local heights.
-const SHOULDER_Y := 0.33
+const SHOULDER_Y := 0.215
 const SHOULDER_Z := 0.02
-const NECK_Y := 0.38
+const NECK_Y := 0.265
+# Maximum twist the upper body (chest + waist) can absorb relative to the
+# legs before the whole body has to rotate to follow the aim. Lower values
+# = the body chases the cursor sooner.
+const MAX_TORSO_TWIST := deg_to_rad(45.0)
 
 ## Per-weapon arm poses + kick parameters. Angles are in degrees.
 ## Each arm carries either:
@@ -1847,10 +1852,10 @@ func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	velocity.z = move_toward(velocity.z, target_xz.z, ACCELERATION * delta)
 
 ## Lower-body yaw tracks the direction the player is moving (or holds steady
-## when not moving). The upper body (spine + head) twists toward the mouse
+## when not moving). The upper body (chest + waist) twists toward the mouse
 ## independently in _update_animation. Body only chases the aim once the
-## offset between aim and the desired body yaw exceeds ±90° — then we clamp
-## body yaw to that boundary so the spine can cover the remaining angle.
+## offset between aim and the desired body yaw exceeds ±45° — then we clamp
+## body yaw to that boundary so the waist can cover the remaining angle.
 ##
 ## Net effect: walking forward while flicking the mouse left/right looks
 ## like a person twisting their torso to aim, not a top spinning in place.
@@ -1872,10 +1877,10 @@ func _rotate_to_face_mouse(delta: float) -> void:
 
 	var aim_offset := wrapf(aim_yaw - desired_body_yaw, -PI, PI)
 	var target_body_yaw: float
-	if absf(aim_offset) > PI * 0.5:
-		# Aim is past ±90° from the desired body yaw — snap body to the
-		# nearest boundary so the spine twist can still reach the aim.
-		target_body_yaw = aim_yaw - signf(aim_offset) * PI * 0.5
+	if absf(aim_offset) > MAX_TORSO_TWIST:
+		# Aim is past the torso's max twist — snap body to the nearest
+		# boundary so the waist can still cover the remaining angle.
+		target_body_yaw = aim_yaw - signf(aim_offset) * MAX_TORSO_TWIST
 	else:
 		target_body_yaw = desired_body_yaw
 	rotation.y = lerp_angle(rotation.y, target_body_yaw, ROTATION_SPEED * delta)
@@ -1959,7 +1964,7 @@ func _update_animation(delta: float) -> void:
 	# bottom ring of the soft torso stays aligned with the belt/pelvis —
 	# the twist is applied per-vertex inside the mesh and as a full
 	# rotation on _torso_top (which carries the shoulders/neck/head).
-	var torso_twist: float = clampf(_aim_yaw_smooth, deg_to_rad(-90.0), deg_to_rad(90.0))
+	var torso_twist: float = clampf(_aim_yaw_smooth, -MAX_TORSO_TWIST, MAX_TORSO_TWIST)
 	var counter_yaw: float = -swing_sin * spine_counter_yaw_amp
 	var twist_total: float = torso_twist + counter_yaw
 
