@@ -86,16 +86,14 @@ var _knee_r: Node3D = null
 var _neck: Node3D = null
 var _head: Node3D = null
 # Soft waist — an ArrayMesh whose surface is rebuilt every frame from
-# the current twist/pitch/bob. It's a short tapered tube between the
-# rigid pelvis (below) and the rigid chest (above): bottom ring stays
-# put at the pelvis width, top ring widens to the chest width and
-# rotates by the full aim twist. ArrayMesh (rather than ImmediateMesh)
-# is used so the material can be re-bound to surface 0 after each
-# rebuild — material_override alone doesn't survive ImmediateMesh
-# rebuilds in PRIMITIVE_TRIANGLES mode, which leaves the mesh
-# rendering see-through.
+# the current twist/pitch/bob. It's a short rectangular tube between
+# the rigid pelvis (below) and the rigid chest (above): bottom ring
+# stays put, top ring rotates by the full aim twist. Material is bound
+# via both surface_set_material AND the MeshInstance3D's
+# material_override so the waist actually renders in its torso color.
 var _torso_array_mesh: ArrayMesh = null
 var _torso_material: StandardMaterial3D = null
+var _waist_mi: MeshInstance3D = null
 # Upper-body anchor at the top of the waist. Holds the rigid chest,
 # both shoulders and the neck/head as one rigid group; rotates by the
 # full aim twist so it always matches the top ring of the waist.
@@ -170,8 +168,8 @@ const FOOT_HEIGHT := 0.08
 #     so it rotates as one rigid block with the shoulders/neck/head.
 const WAIST_BOTTOM_Y := 0.02   # = top of the pelvis box, in spine-local
 const WAIST_TOP_Y := 0.285     # = bottom of the chest box, in spine-local
-const WAIST_BOTTOM_W := 0.34   # waist starts as wide as the pelvis top
-const WAIST_TOP_W := 0.48      # widens to match the chest base
+const WAIST_BOTTOM_W := 0.34   # pelvis width (waist itself is rectangular)
+const WAIST_TOP_W := 0.48      # waist + chest width (rectangular waist)
 const WAIST_DEPTH := 0.28
 const CHEST_HEIGHT := 0.265    # rigid chest. Sized so waist:chest ≈ 50/50
                                # of the upper-body height (0.265:0.265).
@@ -359,30 +357,36 @@ func _build_rig() -> void:
 	pelvis.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_spine.add_child(pelvis)
 
-	# Soft waist — a short procedural ArrayMesh rebuilt every frame.
-	# Tapers from WAIST_BOTTOM_W (pelvis width) at the bottom to
-	# WAIST_TOP_W (chest width) at the top, and rotates from 0° at the
-	# bottom to the full aim twist at the top so the bend concentrates
-	# mid-section. This is the ONLY part of the torso that flexes; the
-	# pelvis below and the chest above are rigid.
+	# Soft waist — a short rectangular procedural ArrayMesh rebuilt every
+	# frame. Width is constant (WAIST_TOP_W) so the silhouette doesn't
+	# taper through the waist; the bottom ring sits at 0° rotation so it
+	# stays flush with the rigid pelvis, and the top ring takes the full
+	# aim twist so it stays flush with the rigid chest above. This is
+	# the ONLY part of the torso that flexes.
 	_torso_material = StandardMaterial3D.new()
 	_torso_material.albedo_color = Color(0.22, 0.35, 0.18, 1)
 	_torso_material.roughness = 0.85
+	# Render both sides — if the procedural winding ever flips, we still
+	# see the waist instead of staring through a one-sided box.
+	_torso_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_torso_array_mesh = ArrayMesh.new()
-	var waist_mi := MeshInstance3D.new()
-	waist_mi.name = "Waist"
-	waist_mi.mesh = _torso_array_mesh
+	_waist_mi = MeshInstance3D.new()
+	_waist_mi.name = "Waist"
+	_waist_mi.mesh = _torso_array_mesh
+	# Bind the material via material_override so it wins regardless of
+	# whether surface_set_material survives each per-frame rebuild — this
+	# is what stops the waist from rendering see-through.
+	_waist_mi.material_override = _torso_material
 	# Custom AABB so the rebuilt-per-frame mesh isn't frustum-culled when
 	# the player twists or moves to the edge of the screen.
-	waist_mi.custom_aabb = AABB(
+	_waist_mi.custom_aabb = AABB(
 		Vector3(-WAIST_TOP_W, WAIST_BOTTOM_Y - 0.05, -WAIST_DEPTH),
 		Vector3(WAIST_TOP_W * 2.0, WAIST_TOP_Y - WAIST_BOTTOM_Y + 0.2, WAIST_DEPTH * 2.0),
 	)
-	waist_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	_spine.add_child(waist_mi)
+	_waist_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	_spine.add_child(_waist_mi)
 	# Seed the mesh in its rest pose so the first frame renders something
-	# before _update_animation runs. _rebuild_soft_waist binds the
-	# material to surface 0 itself, so no material_override is needed.
+	# before _update_animation runs.
 	_rebuild_soft_waist(0.0, 0.0, 0.0)
 
 	# Upper-body anchor at the top of the waist. Takes the full aim
@@ -466,48 +470,45 @@ func _build_rig() -> void:
 	# Start in the unarmed pose — both arms hang naturally.
 	_apply_weapon_pose("unarmed")
 
-## Rebuild the soft waist mesh. The mesh is a short tapered tube
-## stretched from WAIST_BOTTOM_Y to WAIST_TOP_Y in _spine-local:
-##   • Bottom ring is locked to width WAIST_BOTTOM_W at 0° rotation, so
-##     it stays flush with the rigid pelvis below.
-##   • Top ring widens to WAIST_TOP_W and takes the full twist/pitch, so
-##     it stays flush with the rigid chest above (which lives on
-##     _torso_top with the same rotation).
+## Rebuild the soft waist mesh. The mesh is a short rectangular tube
+## (constant WAIST_TOP_W width) stretched from WAIST_BOTTOM_Y to
+## WAIST_TOP_Y in _spine-local:
+##   • Bottom ring sits at 0° rotation so it stays glued to the rigid
+##     pelvis below.
+##   • Top ring takes the full aim twist/pitch so it stays glued to the
+##     rigid chest above (which lives on _torso_top with the same
+##     rotation).
 ##   • Intermediate rings interpolate via a smoothstep so the visible
 ##     bend concentrates around the middle of the waist.
 ## The top of the mesh is also lifted by `bob_y` so the waist stretches
 ## upward with the walk-cycle bob instead of separating from the chest.
-##
-## Uses ArrayMesh + surface_set_material so the green torso material is
-## re-bound after every clear_surfaces — this is what keeps the waist
-## from rendering see-through.
 func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: float) -> void:
 	if _torso_array_mesh == null:
 		return
 
 	var rings := 8
+	var half_w := WAIST_TOP_W * 0.5    # constant width — rectangular waist
 	var half_d := WAIST_DEPTH * 0.5
 	var waist_height := WAIST_TOP_Y - WAIST_BOTTOM_Y
+	var base_corners := [
+		Vector3(-half_w, 0.0, -half_d),
+		Vector3( half_w, 0.0, -half_d),
+		Vector3( half_w, 0.0,  half_d),
+		Vector3(-half_w, 0.0,  half_d),
+	]
 
 	var ring_verts: Array = []
 	for i in range(rings + 1):
 		var t: float = float(i) / float(rings)
-		# Smoothstep so the cumulative bend (and width taper) is
-		# concentrated mid-waist rather than spread evenly along height.
+		# Smoothstep so the cumulative bend is concentrated mid-waist
+		# rather than spread evenly along the height.
 		var blend: float = smoothstep(0.0, 1.0, t)
-		var ring_w: float = lerpf(WAIST_BOTTOM_W, WAIST_TOP_W, blend) * 0.5
 		var y_base: float = WAIST_BOTTOM_Y + t * waist_height
 		var y_bob: float = blend * bob_y
 		var twist: float = blend * twist_radians
 		var pitch: float = blend * pitch_radians
-		var corners := [
-			Vector3(-ring_w, 0.0, -half_d),
-			Vector3( ring_w, 0.0, -half_d),
-			Vector3( ring_w, 0.0,  half_d),
-			Vector3(-ring_w, 0.0,  half_d),
-		]
 		var ring: Array = []
-		for c in corners:
+		for c in base_corners:
 			var p: Vector3 = c.rotated(Vector3.UP, twist)
 			p = p.rotated(Vector3.RIGHT, pitch)
 			p.y += y_base + y_bob
@@ -552,10 +553,15 @@ func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: floa
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	_torso_array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	# clear_surfaces drops surface materials — re-bind every frame so the
-	# waist actually shows up in its green torso color instead of being
-	# rendered with the default white/transparent fallback material.
+	# Belt and suspenders: bind the material on the mesh surface AND via
+	# the MeshInstance3D's per-surface override. clear_surfaces drops the
+	# mesh material every frame, and material_override (set once in
+	# _build_rig) wins above both, but having all three paths in place
+	# means the waist always renders in its green torso color instead of
+	# falling back to a default that reads as transparent.
 	_torso_array_mesh.surface_set_material(0, _torso_material)
+	if _waist_mi != null:
+		_waist_mi.set_surface_override_material(0, _torso_material)
 
 func _append_quad(
 	verts: PackedVector3Array, normals: PackedVector3Array,
