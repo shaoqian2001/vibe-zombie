@@ -85,19 +85,17 @@ var _knee_l: Node3D = null
 var _knee_r: Node3D = null
 var _neck: Node3D = null
 var _head: Node3D = null
-# Soft torso — an ImmediateMesh whose vertices are recomputed every frame
-# from the current twist/pitch/bob. Bottom ring stays anchored to the
-# spine origin; upper rings progressively rotate via a smoothstep so the
-# bend visibly concentrates at the waist.
+# Soft waist — an ImmediateMesh whose vertices are recomputed every
+# frame from the current twist/pitch/bob. It's a short tapered tube
+# between the rigid pelvis (below) and the rigid chest (above): bottom
+# ring stays put at the pelvis width, top ring widens to the chest
+# width and rotates by the full aim twist.
 var _torso_imm_mesh: ImmediateMesh = null
 var _torso_material: StandardMaterial3D = null
-# Upper-body anchor at the top of the soft torso. Holds shoulders, neck
-# and head as one rigid group; rotates by the full aim twist so the
-# shoulder line stays glued to the top of the soft mesh.
+# Upper-body anchor at the top of the waist. Holds the rigid chest,
+# both shoulders and the neck/head as one rigid group; rotates by the
+# full aim twist so it always matches the top ring of the waist.
 var _torso_top: Node3D = null
-# Rest transform for _torso_top — used by the walk-cycle bob to offset
-# the upper body in y without overwriting the twist basis.
-var _torso_top_rest := Transform3D.IDENTITY
 # Shoulders + elbows. Shoulders are the animation pivots — rotating them
 # swings the entire arm chain (upper arm → forearm → hand → weapon grip)
 # as one. Elbows pivot the forearm independently for tight poses.
@@ -157,15 +155,27 @@ const HIP_Y := 0.78
 const THIGH_LEN := 0.40
 const SHIN_LEN := 0.30
 const FOOT_HEIGHT := 0.08
-# The torso is one rigid block hanging off _spine: a single mesh from the
-# belt line up to the shoulders, plus a narrower pelvis box below for the
-# hip taper. Shoulders and neck attach directly to _spine so they share
-# the same twist as the torso geometry.
-const TORSO_HEIGHT := 0.55
+# Torso geometry. The upper body is split into three vertical sections,
+# all anchored at _spine (which never rotates itself):
+#   • Pelvis — rigid box just below the spine origin. Width tapers from
+#     0.34 at the bottom up to PELVIS_TOP_W where it meets the waist.
+#   • Waist — short procedural mesh that smoothly bends from 0° at its
+#     bottom (matching the pelvis) to the full aim twist at its top
+#     (matching the chest). This is the only part that actually flexes.
+#   • Chest — rigid box that sits above the waist, hanging off _torso_top
+#     so it rotates as one rigid block with the shoulders/neck/head.
+const WAIST_BOTTOM_Y := 0.02   # = top of the pelvis box, in spine-local
+const WAIST_TOP_Y := 0.17      # = bottom of the chest box, in spine-local
+const WAIST_BOTTOM_W := 0.34   # waist starts as wide as the pelvis top
+const WAIST_TOP_W := 0.48      # widens to match the chest base
+const WAIST_DEPTH := 0.28
+const CHEST_HEIGHT := 0.38     # rigid chest, sits from WAIST_TOP_Y upward
 const SHOULDER_X := 0.22
-const SHOULDER_Y := 0.50
+# Shoulder/neck Y in _torso_top-local — _torso_top sits at WAIST_TOP_Y in
+# spine-local, so subtract that to convert old spine-local heights.
+const SHOULDER_Y := 0.33
 const SHOULDER_Z := 0.02
-const NECK_Y := 0.55
+const NECK_Y := 0.38
 
 ## Per-weapon arm poses + kick parameters. Angles are in degrees.
 ## Each arm carries either:
@@ -294,9 +304,6 @@ func _build_rig() -> void:
 	var boot_mat := StandardMaterial3D.new()
 	boot_mat.albedo_color = Color(0.14, 0.10, 0.07, 1)
 	boot_mat.roughness = 0.6
-	var belt_mat := StandardMaterial3D.new()
-	belt_mat.albedo_color = Color(0.30, 0.22, 0.14, 1)
-	belt_mat.roughness = 0.7
 	var head_mat := StandardMaterial3D.new()
 	head_mat.albedo_color = Color(0.89, 0.73, 0.58, 1)
 	head_mat.roughness = 0.8
@@ -330,73 +337,83 @@ func _build_rig() -> void:
 	_spine.position = Vector3(0, HIP_Y, 0)
 	add_child(_spine)
 
-	# Pelvis fill — narrower box at the bottom for the hip taper.
+	# Pelvis — rigid lower-torso box. Top edge sits at WAIST_BOTTOM_Y so
+	# the waist mesh can dock flush onto it.
+	var pelvis_height: float = 0.16
 	var pelvis_mesh := BoxMesh.new()
-	pelvis_mesh.size = Vector3(0.34, 0.16, 0.28)
+	pelvis_mesh.size = Vector3(WAIST_BOTTOM_W, pelvis_height, WAIST_DEPTH)
 	pelvis_mesh.material = pants_mat
 	var pelvis := MeshInstance3D.new()
 	pelvis.name = "Pelvis"
+	pelvis.position = Vector3(0, WAIST_BOTTOM_Y - pelvis_height * 0.5, 0)
 	pelvis.mesh = pelvis_mesh
-	pelvis.position = Vector3(0, -0.06, 0)
 	pelvis.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_spine.add_child(pelvis)
 
-	# Belt — sits on top of the hip joint as the visual waistline.
-	var belt_mesh := BoxMesh.new()
-	belt_mesh.size = Vector3(0.50, 0.06, 0.32)
-	belt_mesh.material = belt_mat
-	var belt := MeshInstance3D.new()
-	belt.name = "Belt"
-	belt.mesh = belt_mesh
-	belt.position = Vector3(0, -0.03, 0)
-	belt.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	_spine.add_child(belt)
-
-	# Soft torso — a procedural mesh rebuilt every frame in
-	# _rebuild_soft_torso. Bottom ring sits flush with the belt; upper
-	# rings rotate progressively with the aim twist, bending most around
-	# the waist. Anchored at _spine so the bottom ring stays aligned with
-	# the lower body even when the upper body is twisting hard.
+	# Soft waist — a short procedural mesh rebuilt every frame. Tapers
+	# from WAIST_BOTTOM_W (pelvis width) at the bottom to WAIST_TOP_W
+	# (chest width) at the top, and rotates from 0° at the bottom to the
+	# full aim twist at the top so the bend is concentrated mid-section.
+	# This is the ONLY part of the torso that flexes; the pelvis below
+	# and the chest above are rigid.
 	_torso_material = StandardMaterial3D.new()
 	_torso_material.albedo_color = Color(0.22, 0.35, 0.18, 1)
 	_torso_material.roughness = 0.85
 	_torso_imm_mesh = ImmediateMesh.new()
-	var torso_mi := MeshInstance3D.new()
-	torso_mi.name = "Torso"
-	torso_mi.mesh = _torso_imm_mesh
-	torso_mi.material_override = _torso_material
-	torso_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	_spine.add_child(torso_mi)
+	var waist_mi := MeshInstance3D.new()
+	waist_mi.name = "Waist"
+	waist_mi.mesh = _torso_imm_mesh
+	waist_mi.material_override = _torso_material
+	waist_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	# Custom AABB so the rebuilt-per-frame mesh isn't frustum-culled when
+	# the player twists or moves to the edge of the screen.
+	waist_mi.custom_aabb = AABB(
+		Vector3(-WAIST_TOP_W, WAIST_BOTTOM_Y - 0.05, -WAIST_DEPTH),
+		Vector3(WAIST_TOP_W * 2.0, WAIST_TOP_Y - WAIST_BOTTOM_Y + 0.2, WAIST_DEPTH * 2.0),
+	)
+	_spine.add_child(waist_mi)
 	# Seed the mesh in its rest pose so the first frame renders something
 	# before _update_animation runs.
-	_rebuild_soft_torso(0.0, 0.0, 0.0)
+	_rebuild_soft_waist(0.0, 0.0, 0.0)
 
-	# Upper-body anchor at the top ring of the soft torso. Twists by the
-	# full aim yaw so the shoulders/neck/head are locked to the top of
-	# the soft mesh and never separate when the waist bends.
+	# Upper-body anchor at the top of the waist. Takes the full aim
+	# twist + pitch; the rigid chest, shoulders, neck and head all hang
+	# off it as one block, so the chest does NOT bend with the waist —
+	# it just rotates rigidly.
 	_torso_top = Node3D.new()
 	_torso_top.name = "TorsoTop"
-	_torso_top.position = Vector3(0, TORSO_HEIGHT, 0)
+	_torso_top.position = Vector3(0, WAIST_TOP_Y, 0)
 	_spine.add_child(_torso_top)
-	_torso_top_rest = _torso_top.transform
 
-	# Shoulders sit just below the top ring (TORSO_HEIGHT - SHOULDER_Y
-	# above the bottom). Local Y is negative because _torso_top sits at
-	# the top of the torso and the shoulders are slightly lower.
+	# Chest — rigid box. Sits on top of the waist and rotates with
+	# _torso_top, never flexing internally.
+	var chest_mat := StandardMaterial3D.new()
+	chest_mat.albedo_color = Color(0.22, 0.35, 0.18, 1)
+	chest_mat.roughness = 0.85
+	var chest_mesh := BoxMesh.new()
+	chest_mesh.size = Vector3(WAIST_TOP_W, CHEST_HEIGHT, WAIST_DEPTH)
+	chest_mesh.material = chest_mat
+	var chest := MeshInstance3D.new()
+	chest.name = "Chest"
+	chest.mesh = chest_mesh
+	chest.position = Vector3(0, CHEST_HEIGHT * 0.5, 0)
+	chest.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	_torso_top.add_child(chest)
+
+	# Shoulders hang off _torso_top so they share the chest's rotation.
 	_right_shoulder = _build_arm_chain(
-		"RightShoulder", Vector3(SHOULDER_X, SHOULDER_Y - TORSO_HEIGHT, SHOULDER_Z),
+		"RightShoulder", Vector3(SHOULDER_X, SHOULDER_Y, SHOULDER_Z),
 		sleeve_mat, skin_mat, true, _torso_top,
 	)
 	_left_shoulder = _build_arm_chain(
-		"LeftShoulder", Vector3(-SHOULDER_X, SHOULDER_Y - TORSO_HEIGHT, SHOULDER_Z),
+		"LeftShoulder", Vector3(-SHOULDER_X, SHOULDER_Y, SHOULDER_Z),
 		sleeve_mat, skin_mat, false, _torso_top,
 	)
 
-	# Neck + head + hair + eyes hang off the upper anchor so the head
-	# matches the top-ring rotation of the soft torso.
+	# Neck + head + hair + eyes also off _torso_top.
 	_neck = Node3D.new()
 	_neck.name = "Neck"
-	_neck.position = Vector3(0, NECK_Y - TORSO_HEIGHT, 0)
+	_neck.position = Vector3(0, NECK_Y, 0)
 	_torso_top.add_child(_neck)
 	_neck_rest = _neck.transform
 
@@ -440,38 +457,43 @@ func _build_rig() -> void:
 	# Start in the unarmed pose — both arms hang naturally.
 	_apply_weapon_pose("unarmed")
 
-## Rebuild the soft torso mesh. The mesh is a ribbed box stretched from
-## y=0 to y=TORSO_HEIGHT in _spine-local; the bottom ring is anchored
-## (matches the belt/pelvis below), the top ring takes the full twist
-## and pitch (matches _torso_top above), and the rings in between are
-## interpolated via a smoothstep so the bend concentrates around the
-## waist. The y of the top ring is lifted by `bob_y` so the soft torso
-## stretches with the walk-cycle bob instead of breaking off the belt.
-func _rebuild_soft_torso(twist_radians: float, pitch_radians: float, bob_y: float) -> void:
+## Rebuild the soft waist mesh. The mesh is a short tapered tube
+## stretched from WAIST_BOTTOM_Y to WAIST_TOP_Y in _spine-local:
+##   • Bottom ring is locked to width WAIST_BOTTOM_W at 0° rotation, so
+##     it stays flush with the rigid pelvis below.
+##   • Top ring widens to WAIST_TOP_W and takes the full twist/pitch, so
+##     it stays flush with the rigid chest above (which lives on
+##     _torso_top with the same rotation).
+##   • Intermediate rings interpolate via a smoothstep so the visible
+##     bend concentrates around the middle of the waist.
+## The top of the mesh is also lifted by `bob_y` so the waist stretches
+## upward with the walk-cycle bob instead of separating from the chest.
+func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: float) -> void:
 	if _torso_imm_mesh == null:
 		return
 	_torso_imm_mesh.clear_surfaces()
 
-	var rings := 12
-	var half_w := 0.48 * 0.5
-	var half_d := 0.28 * 0.5
-	var corners := [
-		Vector3(-half_w, 0.0, -half_d),
-		Vector3( half_w, 0.0, -half_d),
-		Vector3( half_w, 0.0,  half_d),
-		Vector3(-half_w, 0.0,  half_d),
-	]
+	var rings := 8
+	var half_d := WAIST_DEPTH * 0.5
+	var waist_height := WAIST_TOP_Y - WAIST_BOTTOM_Y
 
 	var ring_verts: Array = []
 	for i in range(rings + 1):
 		var t: float = float(i) / float(rings)
-		# Smoothstep so the cumulative bend is concentrated mid-torso
-		# (the waist) rather than spread evenly along the height.
+		# Smoothstep so the cumulative bend (and width taper) is
+		# concentrated mid-waist rather than spread evenly along height.
 		var blend: float = smoothstep(0.0, 1.0, t)
-		var y_base: float = t * TORSO_HEIGHT
+		var ring_w: float = lerpf(WAIST_BOTTOM_W, WAIST_TOP_W, blend) * 0.5
+		var y_base: float = WAIST_BOTTOM_Y + t * waist_height
 		var y_bob: float = blend * bob_y
 		var twist: float = blend * twist_radians
 		var pitch: float = blend * pitch_radians
+		var corners := [
+			Vector3(-ring_w, 0.0, -half_d),
+			Vector3( ring_w, 0.0, -half_d),
+			Vector3( ring_w, 0.0,  half_d),
+			Vector3(-ring_w, 0.0,  half_d),
+		]
 		var ring: Array = []
 		for c in corners:
 			var p: Vector3 = c.rotated(Vector3.UP, twist)
@@ -480,13 +502,17 @@ func _rebuild_soft_torso(twist_radians: float, pitch_radians: float, bob_y: floa
 			ring.append(p)
 		ring_verts.append(ring)
 
-	_torso_imm_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Pass the material directly to surface_begin — ImmediateMesh in
+	# PRIMITIVE_TRIANGLES mode renders see-through under material_override
+	# alone, so binding the material to the surface fixes the bug.
+	_torso_imm_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, _torso_material)
 
 	# Bottom cap — CCW from below so the front face points -Y (down).
+	# Mostly hidden by the pelvis but render it for safety.
 	var b: Array = ring_verts[0]
 	_emit_quad(b[0], b[1], b[2], b[3], Vector3.DOWN)
-	# Top cap — CCW from above so the front face points along the pitched
-	# +Y of the top ring.
+	# Top cap — CCW from above. Hidden by the chest above but kept for
+	# closed-mesh shadow casting.
 	var top_ring: Array = ring_verts[rings]
 	var top_normal: Vector3 = Vector3.UP.rotated(Vector3.RIGHT, pitch_radians)
 	_emit_quad(top_ring[0], top_ring[3], top_ring[2], top_ring[1], top_normal)
@@ -1949,16 +1975,17 @@ func _update_animation(delta: float) -> void:
 	# soft torso, full pitch on the upper-body anchor.
 	var torso_pitch: float = deg_to_rad(lerpf(0.0, 9.0, clampf((speed_ratio - 1.0), 0.0, 1.0)))
 
-	# Rebuild the soft torso geometry for this frame. Bottom ring stays
-	# put (matches the lower body), top ring matches _torso_top — so the
-	# soft mesh visibly bends at the waist without tearing at either end.
-	_rebuild_soft_torso(twist_total, torso_pitch, bob)
+	# Rebuild the soft waist mesh for this frame. Bottom ring stays put
+	# (matches the rigid pelvis), top ring matches _torso_top (matches
+	# the rigid chest) — only the waist itself flexes between them.
+	_rebuild_soft_waist(twist_total, torso_pitch, bob)
 
-	# Upper-body anchor — same twist + pitch as the top ring of the soft
-	# torso, plus the walk-cycle bob lift. Shoulders/neck/head inherit.
+	# Upper-body anchor — same twist + pitch as the top ring of the
+	# waist, plus the walk-cycle bob lift. The rigid chest and the
+	# shoulders/neck/head all hang off this node.
 	if _torso_top:
 		var top_basis := Basis(Vector3.UP, twist_total) * Basis(Vector3.RIGHT, -torso_pitch)
-		_torso_top.transform = Transform3D(top_basis, Vector3(0, TORSO_HEIGHT + bob, 0))
+		_torso_top.transform = Transform3D(top_basis, Vector3(0, WAIST_TOP_Y + bob, 0))
 
 	# --- Neck/head: the upper-body anchor already carries the full twist,
 	# so the neck stays at its rest pose.
@@ -2027,8 +2054,8 @@ func _solve_off_hand_ik() -> void:
 	# right shoulder is now a direct child of the upper-body anchor.
 	var target_world: Vector3 = weapon_node.global_transform * _off_hand_anchor_local
 	var target_local: Vector3 = _torso_top.global_transform.affine_inverse() * target_world
-	# Shoulder pivot sits slightly below the top ring of the soft torso.
-	var shoulder_pos := Vector3(SHOULDER_X, SHOULDER_Y - TORSO_HEIGHT, SHOULDER_Z)
+	# Shoulder pivot lives at a known offset inside _torso_top.
+	var shoulder_pos := Vector3(SHOULDER_X, SHOULDER_Y, SHOULDER_Z)
 	# Pole vector — defines which way the elbow bulges. We want the elbow
 	# to drop straight down (and a hair inward, toward the body centerline)
 	# so the support arm looks tucked rather than chicken-winged outward.
