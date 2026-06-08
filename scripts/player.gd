@@ -182,7 +182,7 @@ const NECK_Y := 0.265
 # Maximum twist the upper body (chest + waist) can absorb relative to the
 # legs before the whole body has to rotate to follow the aim. Lower values
 # = the body chases the cursor sooner.
-const MAX_TORSO_TWIST := deg_to_rad(45.0)
+const MAX_TORSO_TWIST := deg_to_rad(30.0)
 
 ## Per-weapon arm poses + kick parameters. Angles are in degrees.
 ## Each arm carries either:
@@ -510,11 +510,12 @@ func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: floa
 		var ring: Array = []
 		for c in base_corners:
 			var p: Vector3 = c.rotated(Vector3.UP, twist)
-			# Negative angle around RIGHT = forward lean, matching
-			# _torso_top's Basis(RIGHT, -torso_pitch). The waist top ring
-			# must lean in the same direction as the chest above it or
-			# the seam opens up during sprint.
-			p = p.rotated(Vector3.RIGHT, -pitch)
+			# Positive angle around RIGHT (+X) tilts +Y toward +Z. The
+			# player rig faces +Z (eyes at z=+0.16), so this is a forward
+			# lean. _torso_top uses the same positive-pitch convention,
+			# so the seam stays closed and the chest leans forward
+			# (not backward) when twisting / sprinting.
+			p = p.rotated(Vector3.RIGHT, pitch)
 			p.y += y_base + y_bob
 			ring.append(p)
 		ring_verts.append(ring)
@@ -547,9 +548,10 @@ func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: floa
 	_append_quad(verts, normals, b[0], b[1], b[2], b[3], Vector3.DOWN)
 	# Top cap — CCW from above. Hidden by the chest above but kept for
 	# closed-mesh shadow casting. Normal matches the forward-lean
-	# convention (negative pitch around RIGHT = +Y tilts toward -Z).
+	# convention (positive pitch around RIGHT = +Y tilts toward +Z, the
+	# direction the rig faces).
 	var top_ring: Array = ring_verts[rings]
-	var top_normal: Vector3 = Vector3.UP.rotated(Vector3.RIGHT, -pitch_radians)
+	var top_normal: Vector3 = Vector3.UP.rotated(Vector3.RIGHT, pitch_radians)
 	_append_quad(verts, normals, top_ring[0], top_ring[3], top_ring[2], top_ring[1], top_normal)
 
 	_torso_array_mesh.clear_surfaces()
@@ -2021,10 +2023,11 @@ func _update_animation(delta: float) -> void:
 	# the rotation slightly, the way human shoulders naturally do. The
 	# pitch matches the waist top exactly so the seam stays closed; the
 	# tiny twist offset is small enough not to open a visible gap once
-	# the material is two-sided (CULL_DISABLED).
+	# the material is two-sided (CULL_DISABLED). Pitch is positive around
+	# RIGHT, matching the player's +Z forward — a forward lean.
 	if _torso_top:
 		var chest_twist: float = twist_total * 1.05
-		var top_basis := Basis(Vector3.UP, chest_twist) * Basis(Vector3.RIGHT, -torso_pitch)
+		var top_basis := Basis(Vector3.UP, chest_twist) * Basis(Vector3.RIGHT, torso_pitch)
 		_torso_top.transform = Transform3D(top_basis, Vector3(0, WAIST_TOP_Y + bob, 0))
 
 	# --- Neck/head: the upper-body anchor already carries the full twist,
