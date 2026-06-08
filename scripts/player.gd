@@ -510,7 +510,11 @@ func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: floa
 		var ring: Array = []
 		for c in base_corners:
 			var p: Vector3 = c.rotated(Vector3.UP, twist)
-			p = p.rotated(Vector3.RIGHT, pitch)
+			# Negative angle around RIGHT = forward lean, matching
+			# _torso_top's Basis(RIGHT, -torso_pitch). The waist top ring
+			# must lean in the same direction as the chest above it or
+			# the seam opens up during sprint.
+			p = p.rotated(Vector3.RIGHT, -pitch)
 			p.y += y_base + y_bob
 			ring.append(p)
 		ring_verts.append(ring)
@@ -542,9 +546,10 @@ func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: floa
 	var b: Array = ring_verts[0]
 	_append_quad(verts, normals, b[0], b[1], b[2], b[3], Vector3.DOWN)
 	# Top cap — CCW from above. Hidden by the chest above but kept for
-	# closed-mesh shadow casting.
+	# closed-mesh shadow casting. Normal matches the forward-lean
+	# convention (negative pitch around RIGHT = +Y tilts toward -Z).
 	var top_ring: Array = ring_verts[rings]
-	var top_normal: Vector3 = Vector3.UP.rotated(Vector3.RIGHT, pitch_radians)
+	var top_normal: Vector3 = Vector3.UP.rotated(Vector3.RIGHT, -pitch_radians)
 	_append_quad(verts, normals, top_ring[0], top_ring[3], top_ring[2], top_ring[1], top_normal)
 
 	_torso_array_mesh.clear_surfaces()
@@ -1998,20 +2003,28 @@ func _update_animation(delta: float) -> void:
 			Vector3(0, HIP_Y, 0),
 		)
 
-	# Forward lean when sprinting. Applied as a graded pitch through the
-	# soft torso, full pitch on the upper-body anchor.
-	var torso_pitch: float = deg_to_rad(lerpf(0.0, 9.0, clampf((speed_ratio - 1.0), 0.0, 1.0)))
+	# Forward lean. Sprint adds a base lean; twisting the upper body adds
+	# a small "shoulder-into-aim" lean on top so the chest feels active
+	# while it rotates with the waist. The combined pitch is shared by
+	# the waist's top ring AND _torso_top so the seam stays closed.
+	var sprint_pitch: float = deg_to_rad(lerpf(0.0, 9.0, clampf((speed_ratio - 1.0), 0.0, 1.0)))
+	var twist_lean: float = absf(torso_twist) * 0.10  # 10% of twist as fwd lean
+	var torso_pitch: float = sprint_pitch + twist_lean
 
 	# Rebuild the soft waist mesh for this frame. Bottom ring stays put
 	# (matches the rigid pelvis), top ring matches _torso_top (matches
 	# the rigid chest) — only the waist itself flexes between them.
 	_rebuild_soft_waist(twist_total, torso_pitch, bob)
 
-	# Upper-body anchor — same twist + pitch as the top ring of the
-	# waist, plus the walk-cycle bob lift. The rigid chest and the
-	# shoulders/neck/head all hang off this node.
+	# Upper-body anchor — same twist as the top ring of the waist, plus
+	# a small "chest follow-through" twist (5% extra) so the chest leads
+	# the rotation slightly, the way human shoulders naturally do. The
+	# pitch matches the waist top exactly so the seam stays closed; the
+	# tiny twist offset is small enough not to open a visible gap once
+	# the material is two-sided (CULL_DISABLED).
 	if _torso_top:
-		var top_basis := Basis(Vector3.UP, twist_total) * Basis(Vector3.RIGHT, -torso_pitch)
+		var chest_twist: float = twist_total * 1.05
+		var top_basis := Basis(Vector3.UP, chest_twist) * Basis(Vector3.RIGHT, -torso_pitch)
 		_torso_top.transform = Transform3D(top_basis, Vector3(0, WAIST_TOP_Y + bob, 0))
 
 	# --- Neck/head: the upper-body anchor already carries the full twist,
