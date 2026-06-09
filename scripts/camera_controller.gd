@@ -11,6 +11,13 @@ extends Camera3D
 @export var yaw_deg: float        = 45.0  ## Horizontal angle (degrees, fixed)
 @export var look_offset: Vector3  = Vector3(0.0, 1.0, 0.0)  ## Point to look at offset
 
+# Scroll-wheel zoom bounds. Tuned so the player can pull in tight enough
+# to read facial detail and back out far enough to scout a city block,
+# without ever clipping into the player or losing them off-screen.
+const ZOOM_MIN := 8.0
+const ZOOM_MAX := 40.0
+const ZOOM_STEP := 1.5  # world-units per wheel notch
+
 var target: Node3D = null
 
 # Cached offset (computed once)
@@ -26,6 +33,19 @@ func set_target(node: Node3D) -> void:
 		look_at(target.global_position + look_offset, Vector3.UP)
 
 const ROTATE_SPEED := 90.0  # degrees per second
+
+func _unhandled_input(event: InputEvent) -> void:
+	# Mouse wheel zoom — forward (up) zooms in, backward (down) zooms out.
+	# Adjust `distance` and refresh the cached offset so the next frame's
+	# follow lerp moves the camera to the new pull-back length.
+	if event is InputEventMouseButton and event.pressed:
+		var btn := event as InputEventMouseButton
+		if btn.button_index == MOUSE_BUTTON_WHEEL_UP:
+			distance = clampf(distance - ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
+			_update_offset()
+		elif btn.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			distance = clampf(distance + ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
+			_update_offset()
 
 func _process(delta: float) -> void:
 	if not target:
