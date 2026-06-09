@@ -253,13 +253,19 @@ const WEAPON_POSES := {
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32,
 	},
 	"bat": {
-		# Cocked back over the left shoulder ready to swing. Off-hand hangs
-		# at the side and pendulums. Negative kick_pitch + elbow extension
-		# is the swing. Bat is the ONE pose that wants POSITIVE elbow_bend
-		# — its forearm folds *behind* the shoulder in the cocked stance.
-		"left":  { "shoulder_pitch":  35.0, "shoulder_yaw":  22.0, "elbow_bend": 78.0, "mode": "free" },
-		"right": { "shoulder_pitch":  -8.0, "shoulder_yaw":   0.0, "elbow_bend": -14.0, "mode": "free" },
-		"kick_pitch": -110.0, "kick_elbow": -65.0, "kick_duration": 0.42,
+		# TWO-HANDED grip. The bat is parented to the LEFT hand (it rides the
+		# handle), and the RIGHT arm is solved by IK onto a second point on
+		# the handle (off_hand_anchor in WeaponData) so both hands grip the
+		# bat: the right hand sits lower on the handle as the main/driving
+		# hand, with the left stacked on top. Held forward-and-up at the
+		# ready near the body centerline so the right hand can reach across
+		# comfortably; the swing is the left-shoulder kick carrying the bat
+		# (and the IK'd right hand, which re-solves onto the moving weapon
+		# each frame) through a forward arc. Negative elbow_bend folds the
+		# forearm forward so the bat points up-and-out rather than behind.
+		"left":  { "shoulder_pitch": -48.0, "shoulder_yaw": 24.0, "elbow_bend": -80.0, "mode": "braced" },
+		"right": { "mode": "ik" },
+		"kick_pitch": -120.0, "kick_elbow": -55.0, "kick_duration": 0.42,
 		"grip_align": "along_arm",
 	},
 }
@@ -918,6 +924,26 @@ func _get_forward() -> Vector3:
 	fwd.y = 0.0
 	return fwd.normalized()
 
+## Aim direction shared by the laser sight AND the bullet raycasts so the
+## red line, the visible gun barrel, and where rounds actually travel are
+## all the same vector. Reads the equipped weapon's world +Z (its muzzle
+## axis), so the aim tracks the gun exactly — including the brief lag while
+## the torso twists to follow the cursor — instead of snapping to the mouse
+## ahead of the gun (which made the line look like it was leading the
+## weapon). Flattened to the horizontal plane since zombies stand on the
+## ground; falls back to the cursor/body forward when there's no weapon mesh
+## (unarmed, or before the rig finishes building). Only meaningful for
+## ranged weapons whose +Z is the muzzle — melee uses _get_forward() for its
+## sweep instead.
+func _get_aim_direction() -> Vector3:
+	var weapon_node := _current_weapon_node()
+	if weapon_node != null and is_instance_valid(weapon_node):
+		var dir := weapon_node.global_transform.basis.z
+		dir.y = 0.0
+		if dir.length_squared() > 0.0001:
+			return dir.normalized()
+	return _get_forward()
+
 # ------------------------------------------------------------------
 # Weapon attachment — anchors every weapon mesh to the right hand so it
 # rides the arm rig during walk/kick/recoil animation. Falls back to the
@@ -1293,7 +1319,7 @@ func _cast_ray(origin: Vector3, end: Vector3) -> Dictionary:
 
 func _aim_raycast() -> Dictionary:
 	var weapon_range: float = _weapon_stats.get("range", 30.0)
-	var forward := _get_forward()
+	var forward := _get_aim_direction()
 	var ray_origin := _get_muzzle_world_pos()
 	var ray_end := ray_origin + forward * weapon_range
 
@@ -1351,7 +1377,7 @@ func _draw_pellet_aim(im: ImmediateMesh, muzzle_pos: Vector3) -> void:
 	# Show the outer edges of the pellet cone plus a central aim line so
 	# the player can judge both where the tightest grouping will land and
 	# how wide the spread is.
-	var forward := _get_forward()
+	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 15.0)
 	var spread_deg: float = _weapon_stats.get("pellet_spread", 8.0)
 	var spread_rad := deg_to_rad(spread_deg)
@@ -1436,10 +1462,9 @@ func _fire_bullet() -> void:
 	_apply_recoil()
 
 func _fire_single() -> void:
-	var forward := _get_forward()
+	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 40.0)
 	var damage: float = _weapon_stats.get("damage", 10.0)
-	var tolerance: float = _weapon_stats.get("hit_tolerance", 1.2)
 	var spread_deg: float = _weapon_stats.get("spread", 0.0)
 	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
@@ -1456,42 +1481,16 @@ func _fire_single() -> void:
 	var ray_end := ray_origin + forward * weapon_range
 	var impulse := forward * knockback
 
+	# Damage is applied ONLY to the body the ray physically strikes. An enemy
+	# is hurt when the shot actually connects along the visible aim line —
+	# never for merely standing near the line of fire, and never through a
+	# wall the ray hit first (the raycast stops at the closest collider).
 	var result := _cast_ray(ray_origin, ray_end)
-	var hit_enemy := false
-
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
 		if hit_body.has_method("take_damage"):
 			hit_body.take_damage(damage, impulse)
-			hit_enemy = true
 			_spawn_hit_sparks(result.position)
-
-	if not hit_enemy:
-		var best_enemy: CharacterBody3D = null
-		var best_dist := tolerance
-
-		for node in get_tree().get_nodes_in_group("enemy"):
-			if not is_instance_valid(node) or not node is CharacterBody3D:
-				continue
-			var enemy_body: CharacterBody3D = node as CharacterBody3D
-			if not enemy_body.has_method("take_damage"):
-				continue
-
-			var enemy_pos: Vector3 = enemy_body.global_position + Vector3(0, 0.9, 0)
-			var to_enemy := enemy_pos - ray_origin
-			var proj := to_enemy.dot(forward)
-			if proj < 0.0 or proj > weapon_range:
-				continue
-
-			var closest_on_ray := ray_origin + forward * proj
-			var perp_dist := closest_on_ray.distance_to(enemy_pos)
-			if perp_dist < best_dist:
-				best_dist = perp_dist
-				best_enemy = enemy_body
-
-		if best_enemy != null:
-			best_enemy.take_damage(damage, impulse)
-			_spawn_hit_sparks(best_enemy.global_position + Vector3(0, 0.9, 0))
 
 	_spawn_tracer(ray_origin, result.position if result else ray_end)
 
@@ -1502,7 +1501,7 @@ func _fire_pellet() -> void:
 	# pellets land on a given target — point-blank is devastating, while a
 	# target on the edge of the cone at max range might only get clipped
 	# by one or two. One shell = one pull of the trigger = one ammo tick.
-	var forward := _get_forward()
+	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 15.0)
 	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0)
 	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0)
@@ -1548,7 +1547,7 @@ func _fire_pellet() -> void:
 		_spawn_hit_sparks(pos)
 
 func _fire_explosive() -> void:
-	var forward := _get_forward()
+	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 25.0)
 	var damage: float = _weapon_stats.get("damage", 30.0)
 	var radius: float = _weapon_stats.get("explosion_radius", 5.0)
