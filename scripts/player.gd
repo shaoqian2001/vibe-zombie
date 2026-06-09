@@ -106,11 +106,11 @@ var _left_shoulder: Node3D = null
 var _right_elbow: Node3D = null
 var _left_elbow: Node3D = null
 # Cached bone lengths so the IK solver doesn't have to read mesh meta data.
-# A bit longer than the original (0.27/0.26) because the two-handed poses
-# need genuine reach — the off-hand grips a forend that sits well forward
-# of the trigger hand, and a short reach can't cross that distance.
-var _upper_arm_len: float = 0.32
-var _forearm_len: float = 0.32
+# Kept long enough for the two-handed poses to reach — the off-hand grips a
+# forend that sits well forward of the trigger hand, and a short reach can't
+# cross that distance — but trimmed so the arms don't dangle past the hips.
+var _upper_arm_len: float = 0.30
+var _forearm_len: float = 0.30
 # Weapons are parented to this anchor on the left hand (dominant trigger
 # hand) so they follow the full walk / kick animation without any extra
 # bookkeeping.
@@ -173,7 +173,11 @@ const WAIST_TOP_W := 0.48      # waist + chest width (rectangular waist)
 const WAIST_DEPTH := 0.28
 const CHEST_HEIGHT := 0.265    # rigid chest. Sized so waist:chest ≈ 50/50
                                # of the upper-body height (0.265:0.265).
-const SHOULDER_X := 0.22
+# Shoulders sit just outside the torso so the hanging upper arm clears the
+# chest box (half-width WAIST_TOP_W/2 = 0.24) instead of overlapping it.
+# 0.24 (body edge) + the upper-arm radius (~0.055) keeps the arm flush
+# against the torso side without sinking into it.
+const SHOULDER_X := 0.30
 # Shoulder/neck Y in _torso_top-local — _torso_top sits at WAIST_TOP_Y in
 # spine-local, so subtract that to convert old spine-local heights.
 const SHOULDER_Y := 0.215
