@@ -85,15 +85,15 @@ var _knee_l: Node3D = null
 var _knee_r: Node3D = null
 var _neck: Node3D = null
 var _head: Node3D = null
-# Soft waist — an ArrayMesh whose surface is rebuilt every frame from
-# the current twist/pitch/bob. It's a short rectangular tube between
-# the rigid pelvis (below) and the rigid chest (above): bottom ring
-# stays put, top ring rotates by the full aim twist. Material is bound
-# via both surface_set_material AND the MeshInstance3D's
-# material_override so the waist actually renders in its torso color.
-var _torso_array_mesh: ArrayMesh = null
-var _torso_material: StandardMaterial3D = null
-var _waist_mi: MeshInstance3D = null
+# Soft waist — a stack of small BoxMesh segments stacked between the
+# rigid pelvis and the rigid chest. Each segment is a Node3D pivot
+# rotated to its own angle so the stack approximates a smooth bend
+# when the upper body twists. BoxMesh (not ArrayMesh / ImmediateMesh)
+# is used so the segments inherit material handling from Godot's
+# built-in mesh path — the same path the chest uses and is known to
+# render correctly under the FOV-culler material overlay.
+const WAIST_SEGMENTS := 8
+var _waist_pivots: Array = []
 # Upper-body anchor at the top of the waist. Holds the rigid chest,
 # both shoulders and the neck/head as one rigid group; rotates by the
 # full aim twist so it always matches the top ring of the waist.
@@ -357,37 +357,41 @@ func _build_rig() -> void:
 	pelvis.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_spine.add_child(pelvis)
 
-	# Soft waist — a short rectangular procedural ArrayMesh rebuilt every
-	# frame. Width is constant (WAIST_TOP_W) so the silhouette doesn't
-	# taper through the waist; the bottom ring sits at 0° rotation so it
-	# stays flush with the rigid pelvis, and the top ring takes the full
-	# aim twist so it stays flush with the rigid chest above. This is
-	# the ONLY part of the torso that flexes.
-	_torso_material = StandardMaterial3D.new()
-	_torso_material.albedo_color = Color(0.22, 0.35, 0.18, 1)
-	_torso_material.roughness = 0.85
-	# Render both sides — if the procedural winding ever flips, we still
-	# see the waist instead of staring through a one-sided box.
-	_torso_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_torso_array_mesh = ArrayMesh.new()
-	_waist_mi = MeshInstance3D.new()
-	_waist_mi.name = "Waist"
-	_waist_mi.mesh = _torso_array_mesh
-	# Bind the material via material_override so it wins regardless of
-	# whether surface_set_material survives each per-frame rebuild — this
-	# is what stops the waist from rendering see-through.
-	_waist_mi.material_override = _torso_material
-	# Custom AABB so the rebuilt-per-frame mesh isn't frustum-culled when
-	# the player twists or moves to the edge of the screen.
-	_waist_mi.custom_aabb = AABB(
-		Vector3(-WAIST_TOP_W, WAIST_BOTTOM_Y - 0.05, -WAIST_DEPTH),
-		Vector3(WAIST_TOP_W * 2.0, WAIST_TOP_Y - WAIST_BOTTOM_Y + 0.2, WAIST_DEPTH * 2.0),
-	)
-	_waist_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	_spine.add_child(_waist_mi)
-	# Seed the mesh in its rest pose so the first frame renders something
-	# before _update_animation runs.
-	_rebuild_soft_waist(0.0, 0.0, 0.0)
+	# Soft waist — WAIST_SEGMENTS thin BoxMesh slices between the rigid
+	# pelvis and the rigid chest, each on its own Node3D pivot. Per
+	# frame _update_waist_segments rotates each pivot to a smoothstep
+	# fraction of the total twist/pitch, so the stack reads as a smooth
+	# bend with the heaviest bend concentrated mid-waist. Pivots are
+	# direct children of _spine (siblings, not chained), but since
+	# Y-rotation is invariant under Y-translation, the slices still
+	# rotate around a shared vertical axis. The slices share one mesh
+	# resource and material — identical setup to the chest box, which
+	# guarantees the same rendering path (no transparent ArrayMesh
+	# surprises under the FOV shadow overlay).
+	var waist_mat := StandardMaterial3D.new()
+	waist_mat.albedo_color = Color(0.22, 0.35, 0.18, 1)
+	waist_mat.roughness = 0.85
+
+	var waist_seg_h: float = (WAIST_TOP_Y - WAIST_BOTTOM_Y) / float(WAIST_SEGMENTS)
+	var waist_box_mesh := BoxMesh.new()
+	# Box is slightly taller than the slice spacing so neighbours
+	# overlap a touch and the small angular mismatch between adjacent
+	# pivots reads as a continuous surface instead of stepped slabs.
+	waist_box_mesh.size = Vector3(WAIST_TOP_W, waist_seg_h * 1.15, WAIST_DEPTH)
+	waist_box_mesh.material = waist_mat
+	for i in WAIST_SEGMENTS:
+		var pivot := Node3D.new()
+		pivot.name = "WaistSeg%d" % i
+		pivot.position = Vector3(0, WAIST_BOTTOM_Y + (float(i) + 0.5) * waist_seg_h, 0)
+		_spine.add_child(pivot)
+		var seg_mi := MeshInstance3D.new()
+		seg_mi.mesh = waist_box_mesh
+		seg_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		pivot.add_child(seg_mi)
+		_waist_pivots.append(pivot)
+	# Seed the rest pose so the slices start aligned with the pelvis /
+	# chest before _update_animation runs.
+	_update_waist_segments(0.0, 0.0, 0.0)
 
 	# Upper-body anchor at the top of the waist. Takes the full aim
 	# twist + pitch; the rigid chest, shoulders, neck and head all hang
@@ -470,116 +474,31 @@ func _build_rig() -> void:
 	# Start in the unarmed pose — both arms hang naturally.
 	_apply_weapon_pose("unarmed")
 
-## Rebuild the soft waist mesh. The mesh is a short rectangular tube
-## (constant WAIST_TOP_W width) stretched from WAIST_BOTTOM_Y to
-## WAIST_TOP_Y in _spine-local:
-##   • Bottom ring sits at 0° rotation so it stays glued to the rigid
-##     pelvis below.
-##   • Top ring takes the full aim twist/pitch so it stays glued to the
-##     rigid chest above (which lives on _torso_top with the same
-##     rotation).
-##   • Intermediate rings interpolate via a smoothstep so the visible
-##     bend concentrates around the middle of the waist.
-## The top of the mesh is also lifted by `bob_y` so the waist stretches
-## upward with the walk-cycle bob instead of separating from the chest.
-func _rebuild_soft_waist(twist_radians: float, pitch_radians: float, bob_y: float) -> void:
-	if _torso_array_mesh == null:
+## Pose every waist slice for this frame. Each pivot is rotated to a
+## smoothstep fraction of the total twist/pitch, so the stack starts at
+## 0° at the pelvis seam and ends at the full angle just under the
+## chest, with the steepest change concentrated mid-waist. Pivots are
+## also lifted by a smoothstep fraction of the walk-cycle bob so the
+## top of the waist tracks _torso_top.
+func _update_waist_segments(twist_radians: float, pitch_radians: float, bob_y: float) -> void:
+	var n := _waist_pivots.size()
+	if n == 0:
 		return
-
-	var rings := 8
-	var half_w := WAIST_TOP_W * 0.5    # constant width — rectangular waist
-	var half_d := WAIST_DEPTH * 0.5
-	var waist_height := WAIST_TOP_Y - WAIST_BOTTOM_Y
-	var base_corners := [
-		Vector3(-half_w, 0.0, -half_d),
-		Vector3( half_w, 0.0, -half_d),
-		Vector3( half_w, 0.0,  half_d),
-		Vector3(-half_w, 0.0,  half_d),
-	]
-
-	var ring_verts: Array = []
-	for i in range(rings + 1):
-		var t: float = float(i) / float(rings)
-		# Smoothstep so the cumulative bend is concentrated mid-waist
-		# rather than spread evenly along the height.
+	var seg_h: float = (WAIST_TOP_Y - WAIST_BOTTOM_Y) / float(n)
+	for i in n:
+		var pivot: Node3D = _waist_pivots[i]
+		if pivot == null:
+			continue
+		# Use the centre of each slice for its blend value — gives the
+		# top slice ~0.98 of the full angle, the bottom slice ~0.02.
+		var t: float = (float(i) + 0.5) / float(n)
 		var blend: float = smoothstep(0.0, 1.0, t)
-		var y_base: float = WAIST_BOTTOM_Y + t * waist_height
-		var y_bob: float = blend * bob_y
-		var twist: float = blend * twist_radians
-		var pitch: float = blend * pitch_radians
-		var ring: Array = []
-		for c in base_corners:
-			var p: Vector3 = c.rotated(Vector3.UP, twist)
-			# Positive angle around RIGHT (+X) tilts +Y toward +Z. The
-			# player rig faces +Z (eyes at z=+0.16), so this is a forward
-			# lean. _torso_top uses the same positive-pitch convention,
-			# so the seam stays closed and the chest leans forward
-			# (not backward) when twisting / sprinting.
-			p = p.rotated(Vector3.RIGHT, pitch)
-			p.y += y_base + y_bob
-			ring.append(p)
-		ring_verts.append(ring)
-
-	var verts := PackedVector3Array()
-	var normals := PackedVector3Array()
-
-	# Side faces — one quad per ring gap, per side. Winding is
-	# (lo[c], hi[c], hi[c_next], lo[c_next]) so the outward face is CCW
-	# when the viewer stands outside the box.
-	for i in range(rings):
-		var lo: Array = ring_verts[i]
-		var hi: Array = ring_verts[i + 1]
-		for c in range(4):
-			var c_next := (c + 1) % 4
-			var p_ll: Vector3 = lo[c]
-			var p_hl: Vector3 = hi[c]
-			var p_hh: Vector3 = hi[c_next]
-			var p_lh: Vector3 = lo[c_next]
-			var n: Vector3 = (p_hl - p_ll).cross(p_lh - p_ll)
-			if n.length_squared() > 1e-8:
-				n = n.normalized()
-			else:
-				n = Vector3.UP
-			_append_quad(verts, normals, p_ll, p_hl, p_hh, p_lh, n)
-
-	# Bottom cap — CCW from below so the front face points -Y (down).
-	# Mostly hidden by the pelvis but render it for safety.
-	var b: Array = ring_verts[0]
-	_append_quad(verts, normals, b[0], b[1], b[2], b[3], Vector3.DOWN)
-	# Top cap — CCW from above. Hidden by the chest above but kept for
-	# closed-mesh shadow casting. Normal matches the forward-lean
-	# convention (positive pitch around RIGHT = +Y tilts toward +Z, the
-	# direction the rig faces).
-	var top_ring: Array = ring_verts[rings]
-	var top_normal: Vector3 = Vector3.UP.rotated(Vector3.RIGHT, pitch_radians)
-	_append_quad(verts, normals, top_ring[0], top_ring[3], top_ring[2], top_ring[1], top_normal)
-
-	_torso_array_mesh.clear_surfaces()
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	_torso_array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	# Belt and suspenders: bind the material on the mesh surface AND via
-	# the MeshInstance3D's per-surface override. clear_surfaces drops the
-	# mesh material every frame, and material_override (set once in
-	# _build_rig) wins above both, but having all three paths in place
-	# means the waist always renders in its green torso color instead of
-	# falling back to a default that reads as transparent.
-	_torso_array_mesh.surface_set_material(0, _torso_material)
-	if _waist_mi != null:
-		_waist_mi.set_surface_override_material(0, _torso_material)
-
-func _append_quad(
-	verts: PackedVector3Array, normals: PackedVector3Array,
-	a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3,
-) -> void:
-	verts.append(a); normals.append(n)
-	verts.append(b); normals.append(n)
-	verts.append(c); normals.append(n)
-	verts.append(a); normals.append(n)
-	verts.append(c); normals.append(n)
-	verts.append(d); normals.append(n)
+		var slice_y: float = WAIST_BOTTOM_Y + (float(i) + 0.5) * seg_h + blend * bob_y
+		var basis_yaw := Basis(Vector3.UP, blend * twist_radians)
+		# Positive pitch around RIGHT = forward lean (the rig faces +Z),
+		# matching _torso_top's convention.
+		var basis_pitch := Basis(Vector3.RIGHT, blend * pitch_radians)
+		pivot.transform = Transform3D(basis_yaw * basis_pitch, Vector3(0, slice_y, 0))
 
 ## Build one leg chain — hip pivot → thigh → knee pivot → shin → foot.
 ## Returns the hip pivot so the caller can stash it for animation.
@@ -2013,10 +1932,11 @@ func _update_animation(delta: float) -> void:
 	var twist_lean: float = absf(torso_twist) * 0.10  # 10% of twist as fwd lean
 	var torso_pitch: float = sprint_pitch + twist_lean
 
-	# Rebuild the soft waist mesh for this frame. Bottom ring stays put
-	# (matches the rigid pelvis), top ring matches _torso_top (matches
-	# the rigid chest) — only the waist itself flexes between them.
-	_rebuild_soft_waist(twist_total, torso_pitch, bob)
+	# Pose the waist slices. Each slice rotates by a smoothstep fraction
+	# of the total twist/pitch so the bottom slice stays glued to the
+	# rigid pelvis (blend → 0) and the top slice matches _torso_top
+	# (blend → 1), giving a smooth bend through the middle.
+	_update_waist_segments(twist_total, torso_pitch, bob)
 
 	# Upper-body anchor — same twist as the top ring of the waist, plus
 	# a small "chest follow-through" twist (5% extra) so the chest leads
