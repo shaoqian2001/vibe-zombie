@@ -202,7 +202,7 @@ const MAX_TORSO_TWIST := deg_to_rad(30.0)
 ##   • NEGATIVE = forearm folds toward the shoulder's *front* (natural bicep
 ##     curl). Use this for relaxed arms-at-side and any front-facing grip.
 ##   • POSITIVE = forearm folds toward the shoulder's *back* (the kind of
-##     fold a baseball bat needs when cocked over the shoulder).
+##     fold needed to bring a hand up behind the shoulder).
 ##
 ## kick_pitch / kick_elbow describe the delta applied to the trigger arm
 ## during the fire animation. They must add in the same direction as the
@@ -253,20 +253,21 @@ const WEAPON_POSES := {
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32,
 	},
 	"bat": {
-		# TWO-HANDED grip. The bat is parented to the LEFT hand (it rides the
-		# handle), and the RIGHT arm is solved by IK onto a second point on
-		# the handle (off_hand_anchor in WeaponData) so both hands grip the
-		# bat: the right hand sits lower on the handle as the main/driving
-		# hand, with the left stacked on top. Held forward-and-up at the
-		# ready near the body centerline so the right hand can reach across
-		# comfortably; the swing is the left-shoulder kick carrying the bat
-		# (and the IK'd right hand, which re-solves onto the moving weapon
-		# each frame) through a forward arc. Negative elbow_bend folds the
-		# forearm forward so the bat points up-and-out rather than behind.
-		"left":  { "shoulder_pitch": -48.0, "shoulder_yaw": 24.0, "elbow_bend": -80.0, "mode": "braced" },
+		# TWO-HANDED baseball stance, held VERTICAL at rest. The bat rides the
+		# LEFT hand (the bottom / support hand grips the lower handle); the
+		# RIGHT arm — the main hand — is solved by IK onto a point higher up
+		# the handle (off_hand_anchor in WeaponData) so it stacks ON TOP of
+		# the left. The default "player_forward" grip cancels the arm
+		# rotation, so the bat (built along +Y) points straight up regardless
+		# of these arm angles — the left-arm pose just positions the hands in
+		# front of the chest. POSITIVE kick_pitch rotates that up-pointing bat
+		# forward and down through a swing; the IK'd right hand re-solves onto
+		# the moving bat each frame so both hands stay on it through the arc.
+		# (Rest angles position the hands; tune in-engine if the stance reads
+		# off, and flip kick_pitch's sign if the swing goes the wrong way.)
+		"left":  { "shoulder_pitch": -55.0, "shoulder_yaw": 30.0, "elbow_bend": -75.0, "mode": "braced" },
 		"right": { "mode": "ik" },
-		"kick_pitch": -120.0, "kick_elbow": -55.0, "kick_duration": 0.42,
-		"grip_align": "along_arm",
+		"kick_pitch": 120.0, "kick_elbow": 30.0, "kick_duration": 0.42,
 	},
 }
 
@@ -1204,49 +1205,71 @@ func _build_grenade_launcher() -> void:
 func _build_bat() -> void:
 	_bat_node = Node3D.new()
 	_bat_node.name = "Bat"
-	_bat_node.position = Vector3(0.0, 0.0, 0.10)
+	# Shift the bat DOWN so the left (bottom/support) hand wraps the lower
+	# handle rather than the knob; the bat then rises out of the fist along
+	# +Y. With the default "player_forward" grip the arm rotation is
+	# cancelled, so the bat's +Y maps to torso-up and it reads VERTICAL at
+	# rest no matter how the arm is posed.
+	_bat_node.position = Vector3(0.0, -0.075, 0.0)
 	_bat_node.scale = Vector3.ONE * 1.25
 	_attach_weapon(_bat_node)
 
-	var handle_mat := StandardMaterial3D.new()
-	handle_mat.albedo_color = Color(0.15, 0.12, 0.08, 1)
-	handle_mat.roughness = 0.6
+	# A real baseball bat is one smooth piece: flared knob → thin taped
+	# handle → swelling barrel → rounded end, all on the same x=z=0 axis so
+	# nothing steps off-centre. Built bottom-up the +Y axis.
+	var grip_mat := StandardMaterial3D.new()
+	grip_mat.albedo_color = Color(0.12, 0.10, 0.08, 1)  # dark grip tape
+	grip_mat.roughness = 0.7
+	var wood_mat := StandardMaterial3D.new()
+	wood_mat.albedo_color = Color(0.62, 0.44, 0.24, 1)  # ash / maple wood
+	wood_mat.roughness = 0.55
+
+	# Knob — flared base at the very bottom.
+	var knob_mesh := CylinderMesh.new()
+	knob_mesh.top_radius = 0.018
+	knob_mesh.bottom_radius = 0.030
+	knob_mesh.height = 0.04
+	knob_mesh.material = grip_mat
+	var knob := MeshInstance3D.new()
+	knob.name = "Knob"
+	knob.mesh = knob_mesh
+	knob.position = Vector3(0.0, 0.02, 0.0)
+	_bat_node.add_child(knob)
+
+	# Handle — thin, taped section the hands wrap.
 	var handle_mesh := CylinderMesh.new()
-	handle_mesh.top_radius = 0.02
-	handle_mesh.bottom_radius = 0.025
-	handle_mesh.height = 0.25
-	handle_mesh.material = handle_mat
+	handle_mesh.top_radius = 0.021
+	handle_mesh.bottom_radius = 0.018
+	handle_mesh.height = 0.26
+	handle_mesh.material = grip_mat
 	var handle := MeshInstance3D.new()
+	handle.name = "Handle"
 	handle.mesh = handle_mesh
-	handle.position = Vector3(0.0, -0.05, 0.0)
-	handle.rotation_degrees = Vector3(90, 0, 0)
+	handle.position = Vector3(0.0, 0.17, 0.0)  # spans y 0.04 .. 0.30
 	_bat_node.add_child(handle)
 
-	var barrel_mat := StandardMaterial3D.new()
-	barrel_mat.albedo_color = Color(0.50, 0.35, 0.18, 1)
-	barrel_mat.roughness = 0.7
+	# Barrel — tapers out from the handle to the fat hitting end.
 	var barrel_mesh := CylinderMesh.new()
-	barrel_mesh.top_radius = 0.035
-	barrel_mesh.bottom_radius = 0.025
-	barrel_mesh.height = 0.45
-	barrel_mesh.material = barrel_mat
+	barrel_mesh.top_radius = 0.041
+	barrel_mesh.bottom_radius = 0.021
+	barrel_mesh.height = 0.34
+	barrel_mesh.material = wood_mat
 	var barrel := MeshInstance3D.new()
+	barrel.name = "Barrel"
 	barrel.mesh = barrel_mesh
-	barrel.position = Vector3(0.0, 0.0, 0.35)
-	barrel.rotation_degrees = Vector3(90, 0, 0)
+	barrel.position = Vector3(0.0, 0.47, 0.0)  # spans y 0.30 .. 0.64
 	_bat_node.add_child(barrel)
 
-	var tip_mat := StandardMaterial3D.new()
-	tip_mat.albedo_color = Color(0.55, 0.38, 0.20, 1)
-	tip_mat.roughness = 0.65
-	var tip_mesh := SphereMesh.new()
-	tip_mesh.radius = 0.035
-	tip_mesh.height = 0.07
-	tip_mesh.material = tip_mat
-	var tip := MeshInstance3D.new()
-	tip.mesh = tip_mesh
-	tip.position = Vector3(0.0, 0.0, 0.58)
-	_bat_node.add_child(tip)
+	# Rounded end cap.
+	var end_mesh := SphereMesh.new()
+	end_mesh.radius = 0.041
+	end_mesh.height = 0.082
+	end_mesh.material = wood_mat
+	var end_cap := MeshInstance3D.new()
+	end_cap.name = "EndCap"
+	end_cap.mesh = end_mesh
+	end_cap.position = Vector3(0.0, 0.64, 0.0)
+	_bat_node.add_child(end_cap)
 
 # ------------------------------------------------------------------
 # Aim line
@@ -1306,7 +1329,7 @@ func _get_muzzle_world_pos() -> Vector3:
 		"grenade_launcher":
 			return weapon_node.global_transform * Vector3(0.0, 0.04, 0.24)
 		"bat":
-			return weapon_node.global_transform * Vector3(0.0, 0.0, 0.5)
+			return weapon_node.global_transform * Vector3(0.0, 0.47, 0.0)
 	return weapon_node.global_transform * Vector3(0.0, 0.06, 0.16)
 
 func _cast_ray(origin: Vector3, end: Vector3) -> Dictionary:

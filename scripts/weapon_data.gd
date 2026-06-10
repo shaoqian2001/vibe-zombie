@@ -101,10 +101,10 @@ const WEAPONS := {
 		"knockback": 1.5,
 		"recoil": 0.0,
 		"two_handed": true,
-		# Bat-local point (toward the knob, below where the left hand grips)
-		# that the right/main hand is IK'd onto, so both hands stack on the
-		# handle for a two-handed swing.
-		"off_hand_anchor": Vector3(0.0, 0.0, -0.11),
+		# Bat-local point higher up the handle (+Y is up the bat) that the
+		# right / main hand is IK'd onto, so it stacks ON TOP of the left
+		# (bottom) hand for a two-handed baseball grip.
+		"off_hand_anchor": Vector3(0.0, 0.18, 0.0),
 	},
 }
 
