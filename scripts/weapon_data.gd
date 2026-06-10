@@ -46,7 +46,7 @@ const WEAPONS := {
 		"pellet_count": 12,
 		"pellet_spread": 4.0,
 		"knockback": 0.15,  # per pellet — ~1.8 cumulative on a point-blank target
-		"recoil": 1.5,
+		"recoil": 0.6,      # heaviest kick of the guns, but no longer a shove
 		"two_handed": true,
 		# Pump-action forend grip. Anchor sits at the rear edge of the
 		# forend (toward the trigger) so the off-hand stays inside arm
@@ -82,7 +82,7 @@ const WEAPONS := {
 		"hit_mode": "explosive",
 		"explosion_radius": 5.0,
 		"knockback": 4.0,
-		"recoil": 1.0,
+		"recoil": 0.5,
 		"two_handed": true,
 		# Off-hand braces the heavy tube barrel.
 		"off_hand_anchor": Vector3(0.0, 0.02, 0.08),

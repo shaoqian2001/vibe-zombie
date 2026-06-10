@@ -1,8 +1,8 @@
 extends CharacterBody3D
 
 # Movement constants
-const SPEED = 6.0
-const SPRINT_SPEED = 10.0
+const SPEED = 4.0
+const SPRINT_SPEED = 6.5
 const ACCELERATION = 18.0
 const GRAVITY = 24.0
 const ROTATION_SPEED = 14.0
@@ -1459,7 +1459,6 @@ func _try_reload() -> void:
 	_reload_timer = _weapon_stats.get("reload_time", 1.2)
 
 func _fire_bullet() -> void:
-	_apply_recoil()
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
 	match hit_mode:
 		"pellet":
@@ -1876,7 +1875,11 @@ func _update_animation(delta: float) -> void:
 	var braced_arm_amp := deg_to_rad(lerpf(0.5, 4.0, clamped_ratio))
 	var free_arm_amp := deg_to_rad(lerpf(2.0, 18.0, clamped_ratio))
 	var bob_amp := lerpf(0.0, 0.04, clamped_ratio)
-	var hip_yaw_amp := deg_to_rad(lerpf(0.5, 6.0, clamped_ratio))
+	# Pelvis swivel is disabled: any non-zero yaw here rotates each hip's
+	# swing plane off the sagittal axis, so the swinging foot traces a slight
+	# outward arc and the legs read as bowing out. Keep it at 0 so the legs
+	# swing straight forward/back and stay parallel.
+	var hip_yaw_amp := 0.0
 	var spine_counter_yaw_amp := deg_to_rad(lerpf(0.3, 4.0, clamped_ratio))
 
 	var swing_sin := sin(_walk_phase)
