@@ -52,6 +52,7 @@ var look_target: Vector3 = Vector3.INF
 var _pistol_node: Node3D = null
 var _shotgun_node: Node3D = null
 var _smg_node: Node3D = null
+var _ak47_node: Node3D = null
 var _grenade_launcher_node: Node3D = null
 var _bat_node: Node3D = null
 
@@ -252,6 +253,14 @@ const WEAPON_POSES := {
 		"left":  { "shoulder_pitch": -12.0, "shoulder_yaw":  10.0, "elbow_bend": -95.0, "mode": "braced" },
 		"right": { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10,
+	},
+	"ak47": {
+		# Rifle carry — same braced left grip / IK right hand as the SMG and
+		# shotgun, but with a slightly stiffer kick to read as a heavier full
+		# auto than the SMG without the shotgun's big shoulder rock.
+		"left":  { "shoulder_pitch": -13.0, "shoulder_yaw":  11.0, "elbow_bend": -95.0, "mode": "braced" },
+		"right": { "mode": "ik" },
+		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12,
 	},
 	"shotgun": {
 		# Shoulder-mount but tucked — left grip near the chest with a deep
@@ -748,11 +757,13 @@ func refresh_authority() -> void:
 	_build_pistol()
 	_build_shotgun()
 	_build_smg()
+	_build_ak47()
 	_build_grenade_launcher()
 	_build_bat()
 	_pistol_node.visible = false
 	_shotgun_node.visible = false
 	_smg_node.visible = false
+	_ak47_node.visible = false
 	_grenade_launcher_node.visible = false
 	_bat_node.visible = false
 	# Only the local (input-owning) player needs an aim line.
@@ -836,6 +847,7 @@ func _remote_player_sound(sound: String, pitch: float, volume_db: float) -> void
 func _gun_sound_name() -> String:
 	match _current_weapon:
 		"smg": return "gun_smg"
+		"ak47": return "gun_ak47"
 		"shotgun": return "gun_shotgun"
 		"grenade_launcher": return "gun_grenade"
 		_: return "gun_pistol"
@@ -979,6 +991,7 @@ func _equip_weapon(idx: int) -> void:
 	_pistol_node.visible = (_current_weapon == "pistol")
 	_shotgun_node.visible = (_current_weapon == "shotgun")
 	_smg_node.visible = (_current_weapon == "smg")
+	_ak47_node.visible = (_current_weapon == "ak47")
 	_grenade_launcher_node.visible = (_current_weapon == "grenade_launcher")
 	_bat_node.visible = (_current_weapon == "bat")
 
@@ -1220,6 +1233,88 @@ func _build_smg() -> void:
 	_smg_node.add_child(barrel)
 
 # ------------------------------------------------------------------
+# AK-47 model — longer than the SMG, with a wooden stock/forend, a
+# distinctive curved (banana) magazine and a long barrel.
+# ------------------------------------------------------------------
+
+func _build_ak47() -> void:
+	_ak47_node = Node3D.new()
+	_ak47_node.name = "AK47"
+	_ak47_node.position = Vector3(0.0, 0.07, 0.02)
+	_ak47_node.scale = Vector3.ONE * 1.35
+	_attach_weapon(_ak47_node)
+
+	# Steel receiver
+	var body_mat := StandardMaterial3D.new()
+	body_mat.albedo_color = Color(0.18, 0.18, 0.20, 1)
+	var body_mesh := BoxMesh.new()
+	body_mesh.size = Vector3(0.07, 0.11, 0.34)
+	body_mesh.material = body_mat
+	var body_mi := MeshInstance3D.new()
+	body_mi.mesh = body_mesh
+	body_mi.position = Vector3(0.0, 0.02, 0.04)
+	_ak47_node.add_child(body_mi)
+
+	# Wooden forend (front handguard)
+	var wood_mat := StandardMaterial3D.new()
+	wood_mat.albedo_color = Color(0.42, 0.27, 0.13, 1)
+	var forend_mesh := BoxMesh.new()
+	forend_mesh.size = Vector3(0.07, 0.08, 0.16)
+	forend_mesh.material = wood_mat
+	var forend := MeshInstance3D.new()
+	forend.mesh = forend_mesh
+	forend.position = Vector3(0.0, 0.01, 0.20)
+	_ak47_node.add_child(forend)
+
+	# Wooden stock (rear)
+	var stock_mesh := BoxMesh.new()
+	stock_mesh.size = Vector3(0.06, 0.10, 0.18)
+	stock_mesh.material = wood_mat
+	var stock := MeshInstance3D.new()
+	stock.mesh = stock_mesh
+	stock.position = Vector3(0.0, 0.0, -0.20)
+	_ak47_node.add_child(stock)
+
+	# Pistol grip
+	var grip_mat := StandardMaterial3D.new()
+	grip_mat.albedo_color = Color(0.12, 0.12, 0.12, 1)
+	var grip_mesh := BoxMesh.new()
+	grip_mesh.size = Vector3(0.06, 0.14, 0.07)
+	grip_mesh.material = grip_mat
+	var grip := MeshInstance3D.new()
+	grip.mesh = grip_mesh
+	grip.position = Vector3(0.0, -0.08, -0.06)
+	_ak47_node.add_child(grip)
+
+	# Curved "banana" magazine — three tilted segments stepping forward and
+	# down so the silhouette reads as the AK's signature curve.
+	var mag_mat := StandardMaterial3D.new()
+	mag_mat.albedo_color = Color(0.20, 0.16, 0.10, 1)
+	for i in range(3):
+		var seg_mesh := BoxMesh.new()
+		seg_mesh.size = Vector3(0.05, 0.09, 0.06)
+		seg_mesh.material = mag_mat
+		var seg := MeshInstance3D.new()
+		seg.mesh = seg_mesh
+		seg.position = Vector3(0.0, -0.10 - i * 0.06, 0.06 + i * 0.03)
+		seg.rotation_degrees = Vector3(-18.0 * (i + 1), 0, 0)
+		_ak47_node.add_child(seg)
+
+	# Long barrel
+	var barrel_mat := StandardMaterial3D.new()
+	barrel_mat.albedo_color = Color(0.10, 0.10, 0.10, 1)
+	var barrel_mesh := CylinderMesh.new()
+	barrel_mesh.top_radius = 0.02
+	barrel_mesh.bottom_radius = 0.022
+	barrel_mesh.height = 0.16
+	barrel_mesh.material = barrel_mat
+	var barrel := MeshInstance3D.new()
+	barrel.mesh = barrel_mesh
+	barrel.position = Vector3(0.0, 0.04, 0.34)
+	barrel.rotation_degrees = Vector3(90, 0, 0)
+	_ak47_node.add_child(barrel)
+
+# ------------------------------------------------------------------
 # Grenade Launcher model
 # ------------------------------------------------------------------
 
@@ -1393,6 +1488,7 @@ func _get_muzzle_world_pos() -> Vector3:
 		"pistol": weapon_node = _pistol_node
 		"shotgun": weapon_node = _shotgun_node
 		"smg": weapon_node = _smg_node
+		"ak47": weapon_node = _ak47_node
 		"grenade_launcher": weapon_node = _grenade_launcher_node
 		"bat": weapon_node = _bat_node
 
@@ -1404,6 +1500,8 @@ func _get_muzzle_world_pos() -> Vector3:
 			return weapon_node.global_transform * Vector3(0.0, 0.02, 0.34)
 		"smg":
 			return weapon_node.global_transform * Vector3(0.0, 0.04, 0.22)
+		"ak47":
+			return weapon_node.global_transform * Vector3(0.0, 0.04, 0.30)
 		"grenade_launcher":
 			return weapon_node.global_transform * Vector3(0.0, 0.04, 0.24)
 		"bat":
@@ -1556,7 +1654,11 @@ func _fire_bullet() -> void:
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
 	# Gunfire sound (melee weapons handle their own whoosh in _melee_strike).
 	if hit_mode != "melee":
-		var gun_vol := -8.0 if _current_weapon == "smg" else -3.0
+		var gun_vol := -3.0
+		if _current_weapon == "smg":
+			gun_vol = -8.0
+		elif _current_weapon == "ak47":
+			gun_vol = -5.0
 		_emit_player_sound(_gun_sound_name(), randf_range(0.95, 1.05), gun_vol)
 	match hit_mode:
 		"pellet":
@@ -2275,6 +2377,7 @@ func _current_weapon_node() -> Node3D:
 		"pistol": return _pistol_node
 		"shotgun": return _shotgun_node
 		"smg": return _smg_node
+		"ak47": return _ak47_node
 		"grenade_launcher": return _grenade_launcher_node
 		"bat": return _bat_node
 	return null

@@ -87,6 +87,27 @@ const WEAPONS := {
 		# Front of the body where the off-hand wraps the rail.
 		"off_hand_anchor": Vector3(0.0, 0.02, 0.06),
 	},
+	"ak47": {
+		# Fully automatic battle rifle — higher damage and range than the SMG
+		# with a slower cyclic rate and a heavier per-shot kick. Holding the
+		# trigger empties the 30-round mag in a controllable burst.
+		"damage": 12.0,
+		"range": 45.0,
+		"magazine_size": 30,
+		"fire_rate": 8.5,
+		"reload_time": 2.4,
+		"spread": 2.5,
+		"bullet_speed": INF,
+		"tracer_color": Color(1.0, 0.8, 0.35, 0.8),
+		"automatic": true,
+		"hit_mode": "single",
+		"hit_tolerance": 1.0,
+		"knockback": 0.4,
+		"recoil": 0.12,  # per shot — accumulates with sustained fire
+		"two_handed": true,
+		# Off-hand wraps the wooden forend ahead of the magazine.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.10),
+	},
 	"grenade_launcher": {
 		"damage": 30.0,
 		"range": 25.0,

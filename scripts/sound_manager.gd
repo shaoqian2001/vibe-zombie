@@ -108,6 +108,7 @@ func _generate_library() -> void:
 	# Gunfire — one timbre per weapon class.
 	_cache["gun_pistol"]  = _make_gunshot(0.20, 110.0, 0.70, 42.0, 13.0)
 	_cache["gun_smg"]     = _make_gunshot(0.11, 135.0, 0.62, 60.0, 20.0)
+	_cache["gun_ak47"]    = _make_gunshot(0.17, 95.0,  0.78, 34.0, 13.0)
 	_cache["gun_shotgun"] = _make_gunshot(0.38, 70.0,  0.95, 16.0, 8.5)
 	_cache["gun_grenade"] = _make_gunshot(0.34, 55.0,  0.55, 14.0, 7.0)
 	_cache["dry_fire"]    = _make_dry_fire()
