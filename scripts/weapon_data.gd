@@ -77,6 +77,8 @@ const WEAPONS := {
 		"spread": 3.0,
 		"bullet_speed": INF,
 		"tracer_color": Color(1.0, 1.0, 0.5, 0.7),
+		# Fully automatic: holding the trigger keeps firing at fire_rate.
+		"automatic": true,
 		"hit_mode": "single",
 		"hit_tolerance": 1.0,
 		"knockback": 0.25,

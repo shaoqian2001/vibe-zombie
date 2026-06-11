@@ -784,6 +784,7 @@ func _physics_process(delta: float) -> void:
 	_rotate_to_face_mouse(delta)
 	move_and_slide()
 	_update_gun(delta)
+	_handle_auto_fire()
 	_update_aim_line()
 	_update_animation(delta)
 	_sync_hud()
@@ -866,6 +867,20 @@ func _apply_recoil() -> void:
 	if strength <= 0.0:
 		return
 	_recoil_velocity -= _get_forward() * strength
+
+## Full-auto fire. The initial shot is fired on the press event in _input;
+## while the trigger stays held, this poll keeps firing automatic weapons each
+## physics frame. _try_shoot's own _shoot_timer gate enforces the weapon's
+## fire_rate (so this respects cadence and won't double-fire on the press
+## frame), and semi-automatic weapons simply lack the "automatic" flag and so
+## still require one click per shot.
+func _handle_auto_fire() -> void:
+	if not _armed or is_dead:
+		return
+	if not _weapon_stats.get("automatic", false):
+		return
+	if Input.is_action_pressed("shoot"):
+		_try_shoot()
 
 func take_damage(amount: float) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
