@@ -158,6 +158,11 @@ var _punch_anim_timer: float = 0.0
 var _punch_is_right: bool = false
 const PUNCH_DURATION := 0.26
 
+# Footstep audio: sign of the walk-cycle sine on the previous frame. A foot
+# plants each time the sine crosses zero (legs pass under the body), so a
+# sign flip while moving triggers one footstep sound. 0 = "not stepping".
+var _prev_step_sign: int = 0
+
 # Skeleton geometry constants — referenced by both rig construction and
 # the IK solver. Heights are in player local space (floor at y=0). Lengths
 # add up so the foot's lower face lands exactly at y=0 when the leg is
@@ -809,6 +814,50 @@ func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 	_remote_last_pos = pos
 	_remote_last_sync_time = now
 
+# ------------------------------------------------------------------
+# Audio. The local (input-owning) player hears their own actions as crisp
+# non-positional 2D sounds; in multiplayer those same events are broadcast so
+# every other peer plays them as positional 3D voices on this player's remote
+# copy. Footsteps are handled separately (driven by the walk animation, which
+# already runs on every peer's copy — see _handle_footsteps).
+# ------------------------------------------------------------------
+
+func _emit_player_sound(sound: String, pitch: float = 1.0, volume_db: float = 0.0) -> void:
+	SoundManager.play_2d(sound, pitch, volume_db)
+	if NetworkManager.is_networked:
+		rpc("_remote_player_sound", sound, pitch, volume_db)
+
+@rpc("authority", "call_remote", "unreliable")
+func _remote_player_sound(sound: String, pitch: float, volume_db: float) -> void:
+	SoundManager.play_on(self, sound, pitch, volume_db)
+
+## Map the equipped weapon to its gunshot timbre.
+func _gun_sound_name() -> String:
+	match _current_weapon:
+		"smg": return "gun_smg"
+		"shotgun": return "gun_shotgun"
+		"grenade_launcher": return "gun_grenade"
+		_: return "gun_pistol"
+
+## Called from the walk animation each frame. Fires one footstep on each zero
+## crossing of the gait sine while the player is moving, so step cadence tracks
+## the animation (and therefore walk vs. sprint) automatically.
+func _handle_footsteps(horiz_speed: float, swing_sin: float) -> void:
+	if is_dead or horiz_speed < 0.6:
+		_prev_step_sign = 0
+		return
+	var sign_now: int = 1 if swing_sin >= 0.0 else -1
+	if _prev_step_sign != 0 and sign_now != _prev_step_sign:
+		var sprint := _is_sprinting
+		var pitch := randf_range(0.9, 1.08) * (1.12 if sprint else 1.0)
+		var vol := -13.0 if sprint else -19.0
+		# Owner hears 2D; remote copies of other players play positional 3D.
+		if _owns_input:
+			SoundManager.play_2d("footstep", pitch, vol)
+		else:
+			SoundManager.play_on(self, "footstep", pitch, vol + 8.0)
+	_prev_step_sign = sign_now
+
 func _apply_recoil() -> void:
 	# Backward kick on the player's body for every trigger pull. Decays
 	# exponentially in _physics_process so single shots barely rock and
@@ -1454,6 +1503,10 @@ func _try_shoot() -> void:
 	var is_melee := (mag_size < 0)
 
 	if not is_melee and ammo <= 0:
+		# Empty magazine — dry-fire click. Throttle so a held trigger doesn't
+		# machine-gun the click sound.
+		_emit_player_sound("dry_fire", randf_range(0.95, 1.05), -8.0)
+		_shoot_timer = 0.25
 		return
 
 	if not is_melee:
@@ -1482,9 +1535,14 @@ func _try_reload() -> void:
 		return
 	_is_reloading = true
 	_reload_timer = _weapon_stats.get("reload_time", 1.2)
+	_emit_player_sound("reload", 1.0, -7.0)
 
 func _fire_bullet() -> void:
 	var hit_mode: String = _weapon_stats.get("hit_mode", "single")
+	# Gunfire sound (melee weapons handle their own whoosh in _melee_strike).
+	if hit_mode != "melee":
+		var gun_vol := -8.0 if _current_weapon == "smg" else -3.0
+		_emit_player_sound(_gun_sound_name(), randf_range(0.95, 1.05), gun_vol)
 	match hit_mode:
 		"pellet":
 			_fire_pellet()
@@ -1681,6 +1739,10 @@ func _melee_strike(stats: Dictionary, draw_arc: bool) -> void:
 
 	var origin := global_position + Vector3(0, 0.9, 0)
 
+	# Swing whoosh — heavier for the bat, lighter for bare fists.
+	_emit_player_sound("swing_bat" if draw_arc else "swing_fist", randf_range(0.94, 1.06), -10.0)
+	var hit_played := false
+
 	for node in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(node) or not node is CharacterBody3D:
 			continue
@@ -1702,6 +1764,9 @@ func _melee_strike(stats: Dictionary, draw_arc: bool) -> void:
 			var swing_dir: Vector3 = (forward + to_enemy.normalized() * 0.5).normalized()
 			enemy_body.take_damage(damage, swing_dir * knockback)
 			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
+			if not hit_played:
+				hit_played = true
+				_emit_player_sound("melee_hit", randf_range(0.92, 1.08), -5.0)
 
 	if draw_arc:
 		_spawn_swing_arc(origin, forward, weapon_range, half_sweep)
@@ -1920,6 +1985,9 @@ func _update_animation(delta: float) -> void:
 
 	var swing_sin := sin(_walk_phase)
 	var bob := absf(swing_sin) * bob_amp
+	# Footstep audio is driven off the same gait sine, so steps land in sync
+	# with the legs and the cadence scales with walk/sprint speed for free.
+	_handle_footsteps(horiz_speed, swing_sin)
 	# In a real walking gait, the arm on each side swings 180° out of phase
 	# with the leg on the same side (left arm forward when left leg is back).
 	var right_braced := _right_arm_mode != "free"
