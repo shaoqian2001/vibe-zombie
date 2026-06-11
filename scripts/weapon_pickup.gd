@@ -6,6 +6,8 @@ extends Area3D
 const FovCuller = preload("res://scripts/fov_culler.gd")
 
 var weapon_type: String = "pistol"
+# GD-Sync replication id, assigned by main.gd (matches node name "WeaponPickup_<id>").
+var network_id: int = -1
 
 var _model: Node3D = null
 var _glow: MeshInstance3D = null
@@ -57,20 +59,16 @@ func _process(delta: float) -> void:
 func _on_body_entered(body: Node3D) -> void:
 	if not body.is_in_group("player"):
 		return
-	# Only the body's owning peer collects — otherwise every peer would grant
-	# the same pickup to their local copy.
-	if NetworkManager.is_networked:
-		if body.has_method("is_multiplayer_authority") and not body.is_multiplayer_authority():
-			return
+	# Only the locally-controlled player collects — otherwise every peer would
+	# grant the same pickup to their own copy.
+	if NetworkManager.is_networked and not bool(body.get("is_local_player")):
+		return
 	if body.has_method("pickup_weapon"):
 		body.pickup_weapon(weapon_type)
-	# Tell every peer (including ourselves) to despawn this pickup node.
+	# Tell every peer (including the host) to remove this pickup. The host drops
+	# it from its authoritative set so it stops appearing in pickup_state.
 	if NetworkManager.is_networked:
-		rpc("_despawn_pickup")
-	queue_free()
-
-@rpc("any_peer", "call_remote", "reliable")
-func _despawn_pickup() -> void:
+		NetworkManager.broadcast_event("pickup_despawn", {"id": network_id})
 	queue_free()
 
 # ------------------------------------------------------------------

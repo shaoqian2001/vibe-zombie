@@ -2,14 +2,14 @@ extends CharacterBody3D
 
 ## A zombie enemy that wanders, chases and attacks the player.
 ##
-## Networking model:
-##   - The server (peer 1) is the authority for every enemy. Only the host
-##     runs movement, AI and damage application.
-##   - Clients receive transform updates via _sync_transform() pushed from the
-##     host (host-side push, ~20Hz, unreliable_ordered).
-##   - Damage from a client weapon is forwarded to the host via _request_damage.
-##   - On death, the host calls _despawn() on every peer, so all copies of the
-##     node disappear in lockstep.
+## Networking model (GD-Sync, via NetworkManager's event channel):
+##   - The host is the authority for every enemy. Only the host runs movement,
+##     AI and damage application.
+##   - Clients receive transform + HP through the host's batched "enemy_state"
+##     broadcast (~20Hz), applied via net_apply_transform() / net_set_hp().
+##   - A client weapon hit is forwarded to the host as an "enemy_damage" event.
+##   - On death the host frees its enemy; clients drop their copy when it stops
+##     appearing in the next enemy_state batch (main.gd reconciles).
 
 const FovCuller = preload("res://scripts/fov_culler.gd")
 
@@ -33,6 +33,10 @@ const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
 # HP
 var max_hp := 30.0
 var hp := 30.0
+
+# GD-Sync replication id, assigned by main.gd before _ready (matches the node
+# name "Enemy_<id>"). Used to address this enemy in host->client state batches.
+var network_id: int = -1
 
 # Wander state
 var _wander_dir := Vector3.ZERO
@@ -86,10 +90,9 @@ var cached_target_pos: Vector3 = Vector3.INF
 
 func _ready() -> void:
 	add_to_group("enemy")
-	# Host (peer id 1) owns every enemy. In single-player this is just self.
-	if NetworkManager.is_networked:
-		set_multiplayer_authority(1)
-	_is_authority_cached = (not NetworkManager.is_networked) or is_multiplayer_authority()
+	# The GD-Sync host owns every enemy's AI. In single-player this is just self.
+	# Clients run no AI; they animate and apply host-pushed transform/HP.
+	_is_authority_cached = (not NetworkManager.is_networked) or NetworkManager.is_host
 	# FOV culling: enemies are "moving" entities. They fade to a ghosted
 	# snapshot as soon as they leave the player's sector and disappear
 	# entirely once they're more than ~6 units past it ("a few meters
@@ -199,15 +202,12 @@ func _physics_process(delta: float) -> void:
 	# Keep HP bar updated
 	_update_hp_bar()
 
-	# Push transform to remote peers at a fixed rate (host only).
-	if NetworkManager.is_networked:
-		_net_sync_timer -= delta
-		if _net_sync_timer <= 0.0:
-			_net_sync_timer = NET_SYNC_INTERVAL
-			rpc("_sync_transform", global_position, rotation.y)
+	# The host broadcasts every enemy's transform/HP in one batched
+	# "enemy_state" event (see main.gd _host_net_sync), so there's nothing to
+	# push per-enemy here.
 
-@rpc("authority", "call_remote", "unreliable_ordered")
-func _sync_transform(pos: Vector3, yaw: float) -> void:
+## Applies a host-pushed transform on client copies (called by main.gd).
+func net_apply_transform(pos: Vector3, yaw: float) -> void:
 	# Smooth-snap on the client side. Distance check avoids visible jumps from
 	# packet jitter while keeping us in sync over time.
 	if global_position.distance_to(pos) > 4.0:
@@ -216,35 +216,33 @@ func _sync_transform(pos: Vector3, yaw: float) -> void:
 		global_position = global_position.lerp(pos, 0.5)
 	rotation.y = yaw
 
-@rpc("authority", "call_remote", "reliable")
-func _sync_hp(new_hp: float) -> void:
+## Applies host-pushed HP on client copies (called by main.gd).
+func net_set_hp(new_hp: float) -> void:
+	if hp == new_hp:
+		return
 	hp = new_hp
 	_update_hp_bar()
 
-@rpc("authority", "call_remote", "reliable")
-func _despawn() -> void:
-	queue_free()
-
 
 func take_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
-	# In multiplayer, only the authority (host) mutates state. Clients
-	# forward the request via RPC so the host can apply, replicate and
-	# despawn. The impulse rides along so knockback stays consistent.
-	if NetworkManager.is_networked and not is_multiplayer_authority():
-		rpc_id(1, "_request_damage", amount, knockback)
+	# Only the host mutates enemy state. A client that lands a hit forwards the
+	# request to the host over the GD-Sync channel; the host applies it and the
+	# result propagates back through the next enemy_state broadcast.
+	if NetworkManager.is_networked and not NetworkManager.is_host:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "enemy_damage", {
+			"id": network_id, "amount": amount,
+			"kx": knockback.x, "kz": knockback.z,
+		})
 		return
 	_apply_damage(amount, knockback)
 
-@rpc("any_peer", "call_remote", "reliable")
-func _request_damage(amount: float, knockback: Vector3) -> void:
-	if not is_multiplayer_authority():
-		return
+## Called by main.gd on the host when an "enemy_damage" event arrives.
+func apply_remote_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 	_apply_damage(amount, knockback)
 
 func _apply_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 	hp = max(hp - amount, 0.0)
-	if NetworkManager.is_networked:
-		rpc("_sync_hp", hp)
+	# HP replicates to clients via the host's batched enemy_state broadcast.
 	# Apply the bullet's impulse on the XZ plane only — getting shot
 	# shouldn't lift a zombie off the ground.
 	if knockback.length_squared() > 0.0:
@@ -256,8 +254,8 @@ func _apply_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 		for ms in mission_nodes:
 			if ms.has_method("notify_enemy_killed"):
 				ms.notify_enemy_killed()
-		if NetworkManager.is_networked:
-			rpc("_despawn")
+		# Host frees the enemy locally; clients drop their copy when it stops
+		# appearing in the host's next enemy_state broadcast (main.gd reconcile).
 		queue_free()
 
 func _try_attack() -> void:

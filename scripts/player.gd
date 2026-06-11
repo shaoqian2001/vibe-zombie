@@ -284,6 +284,10 @@ const WEAPON_POSES := {
 
 # Network state — true if this peer owns this player (or in single-player).
 var _owns_input: bool = true
+# GD-Sync identity, assigned by main.gd. `peer_id` is the owner's GD-Sync client
+# id; `is_local_player` is true on the machine that controls this character.
+var peer_id: int = -1
+var is_local_player: bool = true
 
 # Network sync (for non-authority peers we just receive position updates)
 const NET_SYNC_HZ := 20.0
@@ -299,7 +303,7 @@ func _ready() -> void:
 	# in main.gd to the owning peer's id. In single-player the default
 	# (server-only) authority applies and _owns_input stays true.
 	if NetworkManager.is_networked:
-		_owns_input = is_multiplayer_authority()
+		_owns_input = is_local_player
 	_cache_body_parts()
 	# Single-player has no main.gd handoff that would call refresh_authority(),
 	# so camera lookup and weapon/aim-line building wouldn't otherwise run —
@@ -731,12 +735,12 @@ func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
 	if elbow:
 		elbow.rotation = Vector3(deg_to_rad(pose.get("elbow_bend", 0.0)), 0.0, 0.0)
 
-## Called by main.gd after it sets set_multiplayer_authority() on this player,
-## to make sure `_owns_input` matches the authoritative state (in case Player._ready
-## ran with the default authority before main had a chance to override it).
+## Called by main.gd after it assigns `peer_id` / `is_local_player` on this
+## player, to make sure `_owns_input` matches ownership (in case Player._ready
+## ran before main had a chance to set it).
 func refresh_authority() -> void:
 	if NetworkManager.is_networked:
-		_owns_input = is_multiplayer_authority()
+		_owns_input = is_local_player
 
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
@@ -783,15 +787,22 @@ func _physics_process(delta: float) -> void:
 	_update_animation(delta)
 	_sync_hud()
 
-	# Push transform to remote peers (client-authoritative on own player).
+	# Push transform to remote peers (each peer is authoritative over its own
+	# player). Broadcast over GD-Sync's relay; main.gd routes it to the matching
+	# remote copy on every other peer.
 	if NetworkManager.is_networked:
 		_net_sync_timer -= delta
 		if _net_sync_timer <= 0.0:
 			_net_sync_timer = NET_SYNC_INTERVAL
-			rpc("_sync_player_transform", global_position, rotation.y, _is_sprinting)
+			NetworkManager.broadcast_event("player_xform", {
+				"peer_id": peer_id,
+				"x": global_position.x, "y": global_position.y, "z": global_position.z,
+				"yaw": rotation.y, "sprinting": _is_sprinting,
+			})
 
-@rpc("authority", "call_remote", "unreliable_ordered")
-func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
+## Applies a transform pushed by the owning peer (called by main.gd on remote
+## copies). Smooths on the receiving side; a big delta teleports.
+func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 	# Smooth on the receiving side. Big distance = teleport.
 	if global_position.distance_to(pos) > 5.0:
 		global_position = pos
@@ -820,16 +831,16 @@ func _apply_recoil() -> void:
 
 func take_damage(amount: float) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
-	# authoritative for that player. Forward if we're not the authority.
-	if NetworkManager.is_networked and not is_multiplayer_authority():
-		rpc_id(get_multiplayer_authority(), "_take_damage_rpc", amount)
+	# authoritative for that player. The host's enemies call this on their local
+	# copy of a remote player; forward the hit to that player's owner over the
+	# GD-Sync channel instead of mutating a copy we don't own.
+	if NetworkManager.is_networked and not _owns_input:
+		NetworkManager.send_event_to(peer_id, "player_damage", {"amount": amount})
 		return
 	_apply_damage(amount)
 
-@rpc("any_peer", "call_remote", "reliable")
-func _take_damage_rpc(amount: float) -> void:
-	if not is_multiplayer_authority():
-		return
+## Called by main.gd when a "player_damage" event arrives for our local player.
+func apply_remote_damage(amount: float) -> void:
 	_apply_damage(amount)
 
 func _apply_damage(amount: float) -> void:
