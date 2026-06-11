@@ -218,7 +218,9 @@ const MAX_TORSO_TWIST := deg_to_rad(30.0)
 ##
 ## Each arm carries either:
 ##   • a static rest pose with `shoulder_pitch / shoulder_yaw / elbow_bend`
-##     + `mode` ∈ ["free", "braced"]. Free arms pendulum; braced arms barely
+##     (+ optional `shoulder_roll`, which tilts the arm sideways — negative on
+##     the right arm pulls a held weapon inboard of the shoulder) and
+##     `mode` ∈ ["free", "braced"]. Free arms pendulum; braced arms barely
 ##     sway.
 ##   • `mode: "ik"` — the arm is solved by 2-bone IK to grip the weapon at
 ##     its `off_hand_anchor` (defined in WeaponData). The rest angles are
@@ -252,7 +254,7 @@ const WEAPON_POSES := {
 		# chest level. Off-hand (left) hangs and pendulums while walking.
 		# Negative elbow_bend tucks the elbow DOWN (forearm comes up off the
 		# extended upper arm); positive bend chicken-wings the elbow.
-		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "elbow_bend": -10.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "shoulder_roll": -16.0, "elbow_bend": -10.0, "mode": "braced" },
 		"left":  { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": -14.0, "mode": "free" },
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
@@ -261,7 +263,7 @@ const WEAPON_POSES := {
 		# heavy elbow bend so the receiver sits close to the body. The support
 		# (left) hand IKs onto the rail just in front of the grip — both hands
 		# stay close together for the short weapon.
-		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "elbow_bend": -95.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
@@ -270,7 +272,7 @@ const WEAPON_POSES := {
 		# shoulder, LEFT support hand reaching well forward onto the forend
 		# (its off_hand_anchor sits far down the barrel). Stiffer kick than the
 		# SMG, but without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "elbow_bend": -98.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
@@ -278,14 +280,14 @@ const WEAPON_POSES := {
 		# Long shotgun — RIGHT grip tucked near the chest with a deep elbow
 		# flex, LEFT support hand reaching forward onto the pump forend. Reads
 		# as the "ready" long-gun pose action games use.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "elbow_bend": -98.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
 		# Compact, heavy launcher — held close like the SMG (both hands near
 		# each other) but lower, with the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "elbow_bend": -95.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
@@ -301,7 +303,7 @@ const WEAPON_POSES := {
 		# POSITIVE kick_pitch rotates that up-pointing bat forward and down
 		# through a swing; the IK'd left hand re-solves onto the moving bat
 		# each frame so both hands stay on it through the arc.
-		"right": { "shoulder_pitch": -55.0, "shoulder_yaw": -30.0, "elbow_bend": -75.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -55.0, "shoulder_yaw": -30.0, "shoulder_roll": -12.0, "elbow_bend": -75.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 120.0, "kick_elbow": 30.0, "kick_duration": 0.42, "chest_recoil": 0.0,
 	},
@@ -749,10 +751,16 @@ func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
 		if elbow: elbow.transform = Transform3D(Basis.IDENTITY, elbow.position)
 		return
 	if shoulder:
+		# shoulder_roll (rotation around the shoulder's forward axis) tilts the
+		# whole arm sideways in the frontal plane. A NEGATIVE roll on the right
+		# (weapon) arm swings the elbow + hand INWARD toward the body
+		# centreline, so a held weapon rests slightly inside the right shoulder
+		# rather than straight out from it — which shortens the left support
+		# arm's reach to the off-hand anchor.
 		shoulder.rotation = Vector3(
 			deg_to_rad(pose.get("shoulder_pitch", 0.0)),
 			deg_to_rad(pose.get("shoulder_yaw", 0.0)),
-			0.0,
+			deg_to_rad(pose.get("shoulder_roll", 0.0)),
 		)
 	if elbow:
 		elbow.rotation = Vector3(deg_to_rad(pose.get("elbow_bend", 0.0)), 0.0, 0.0)
