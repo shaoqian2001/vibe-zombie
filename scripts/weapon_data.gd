@@ -18,6 +18,21 @@ class_name WeaponData
 ##    support hand grips (forend for long guns, slide for the pistol-isoceles
 ##    stance, etc.). Always +Z forward, so this is roughly the barrel midpoint.
 const WEAPONS := {
+	"fists": {
+		# Bare-hand brawling — the default when no weapon is equipped. Short
+		# reach, light damage, but fast so a flurry of alternating jabs adds
+		# up. Not a pickup; looked up directly by the unarmed punch code.
+		"damage": 8.0,
+		"range": 1.7,
+		"magazine_size": -1,
+		"fire_rate": 2.5,
+		"reload_time": 0.0,
+		"hit_mode": "melee",
+		"sweep_angle": 70.0,
+		"knockback": 1.0,
+		"recoil": 0.0,
+		"two_handed": false,
+	},
 	"pistol": {
 		"damage": 10.0,
 		"range": 40.0,

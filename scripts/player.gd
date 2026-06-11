@@ -149,6 +149,15 @@ var _shoot_anim_timer: float = 0.0
 # Default duration when no weapon-specific kick is configured.
 const SHOOT_ANIM_DURATION := 0.22
 
+# Bare-hand brawling (only when no weapon is equipped). _punch_timer gates
+# the strike rate; _punch_anim_timer drives the throw-and-recover animation;
+# _punch_is_right alternates which fist leads so the player throws with both
+# arms. Tuned so a held/spammed attack reads as a boxing combo.
+var _punch_timer: float = 0.0
+var _punch_anim_timer: float = 0.0
+var _punch_is_right: bool = false
+const PUNCH_DURATION := 0.26
+
 # Skeleton geometry constants — referenced by both rig construction and
 # the IK solver. Heights are in player local space (floor at y=0). Lengths
 # add up so the foot's lower face lands exactly at y=0 when the leg is
@@ -210,11 +219,13 @@ const MAX_TORSO_TWIST := deg_to_rad(30.0)
 ## unfolding the arm.
 const WEAPON_POSES := {
 	"unarmed": {
-		# Arms hang at the side with a small forward bend at the elbow so
-		# the hands sit naturally just in front of the hips (the classic
-		# relaxed standing pose). Negative bend = forearm folds forward.
-		"left":  { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": -10.0, "mode": "free" },
-		"right": { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": -10.0, "mode": "free" },
+		# Combat-ready guard: shoulders slightly forward and the elbows bent
+		# so the forearms come up and the fists sit in front of the chest —
+		# a boxer's "hands up" stance rather than arms dangling at the side.
+		# Bare-hand punches throw from here (see the punch animation), and a
+		# small inward yaw brings the fists toward the centreline.
+		"left":  { "shoulder_pitch": -16.0, "shoulder_yaw":  10.0, "elbow_bend": -58.0, "mode": "free" },
+		"right": { "shoulder_pitch": -16.0, "shoulder_yaw": -10.0, "elbow_bend": -58.0, "mode": "free" },
 		"kick_pitch": 0.0, "kick_elbow": 0.0, "kick_duration": 0.0,
 	},
 	"pistol": {
@@ -847,7 +858,10 @@ func _input(event: InputEvent) -> void:
 	elif event.is_action_pressed("weapon_5"):
 		_switch_weapon(4)
 	elif event.is_action_pressed("shoot"):
-		_try_shoot()
+		if _armed:
+			_try_shoot()
+		else:
+			_try_punch()
 	elif event.is_action_pressed("reload"):
 		_try_reload()
 
@@ -1447,6 +1461,17 @@ func _try_shoot() -> void:
 	_shoot_timer = WeaponData.shoot_cooldown(_current_weapon)
 	_fire_bullet()
 
+## Bare-hand attack — available only while unarmed. Alternates the leading
+## fist each strike so the player throws with both arms, and lands the hit
+## immediately (the animation is a visual flourish on top).
+func _try_punch() -> void:
+	if _armed or _is_reloading or _punch_timer > 0.0 or is_dead:
+		return
+	_punch_timer = WeaponData.shoot_cooldown("fists")
+	_punch_anim_timer = PUNCH_DURATION
+	_punch_is_right = not _punch_is_right
+	_fire_punch()
+
 func _try_reload() -> void:
 	if not _armed:
 		return
@@ -1640,15 +1665,21 @@ func _spawn_explosion(pos: Vector3, radius: float) -> void:
 	tw.tween_callback(light.queue_free)
 
 func _fire_melee() -> void:
+	# Bat swing — full weapon stats, with the golden swing-arc VFX.
+	_melee_strike(_weapon_stats, true)
+
+## Shared melee hit resolution for both the bat and bare fists: damage every
+## enemy inside a forward cone within reach, shoving them along the swing.
+## `draw_arc` toggles the bat's sweep-arc VFX (off for punches).
+func _melee_strike(stats: Dictionary, draw_arc: bool) -> void:
 	var forward := _get_forward()
-	var weapon_range: float = _weapon_stats.get("range", 2.5)
-	var damage: float = _weapon_stats.get("damage", 20.0)
-	var sweep_angle: float = _weapon_stats.get("sweep_angle", 90.0)
+	var weapon_range: float = stats.get("range", 2.5)
+	var damage: float = stats.get("damage", 20.0)
+	var sweep_angle: float = stats.get("sweep_angle", 90.0)
 	var half_sweep := deg_to_rad(sweep_angle * 0.5)
-	var knockback: float = _weapon_stats.get("knockback", 0.0)
+	var knockback: float = stats.get("knockback", 0.0)
 
 	var origin := global_position + Vector3(0, 0.9, 0)
-	var hit_count := 0
 
 	for node in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(node) or not node is CharacterBody3D:
@@ -1665,15 +1696,20 @@ func _fire_melee() -> void:
 
 		var angle_to: float = forward.angle_to(to_enemy.normalized())
 		if angle_to <= half_sweep:
-			# Bat shove is roughly in the swing direction (the player's
-			# forward), with a touch of away-from-player so the zombie
-			# stumbles back rather than into the swing.
+			# Shove roughly in the swing direction (the player's forward) with
+			# a touch of away-from-player so the zombie stumbles back rather
+			# than into the strike.
 			var swing_dir: Vector3 = (forward + to_enemy.normalized() * 0.5).normalized()
 			enemy_body.take_damage(damage, swing_dir * knockback)
-			hit_count += 1
 			_spawn_hit_sparks(enemy_body.global_position + Vector3(0, 0.9, 0))
 
-	_spawn_swing_arc(origin, forward, weapon_range, half_sweep)
+	if draw_arc:
+		_spawn_swing_arc(origin, forward, weapon_range, half_sweep)
+
+## Bare-hand strike — same forward-cone hit as the bat but with the lighter
+## "fists" stats and no weapon arc.
+func _fire_punch() -> void:
+	_melee_strike(WeaponData.get_weapon("fists"), false)
 
 func _spawn_swing_arc(origin: Vector3, forward: Vector3, arc_range: float, half_angle: float) -> void:
 	var arc_mat := StandardMaterial3D.new()
@@ -1991,6 +2027,8 @@ func _update_animation(delta: float) -> void:
 	# weapon's forend afterward, so the kick naturally propagates through
 	# the moving weapon to the off-hand.
 	_shoot_anim_timer = max(_shoot_anim_timer - delta, 0.0)
+	_punch_timer = max(_punch_timer - delta, 0.0)
+	_punch_anim_timer = max(_punch_anim_timer - delta, 0.0)
 	var kick_env := 0.0
 	if _kick_duration > 0.0 and _shoot_anim_timer > 0.0:
 		var elapsed: float = _kick_duration - _shoot_anim_timer
@@ -2029,6 +2067,35 @@ func _update_animation(delta: float) -> void:
 			# kick so the off-hand stays glued to the weapon's forend.
 			_right_elbow.transform = _right_elbow_rest * Transform3D(
 				Basis(Vector3.RIGHT, kick_elbow * 0.5), Vector3.ZERO
+			)
+
+	# --- Bare-hand punch: when unarmed and a strike is in flight, drive the
+	# leading fist straight out from the guard — shoulder rotates the upper
+	# arm forward, elbow snaps from its bent rest to nearly straight — then
+	# recovers. Overrides whichever arm is throwing (set above); the other
+	# stays in its combat-ready guard. Fists alternate per strike.
+	if not _armed and _punch_anim_timer > 0.0:
+		var pt: float = clampf(
+			(PUNCH_DURATION - _punch_anim_timer) / PUNCH_DURATION, 0.0, 1.0
+		)
+		# Fast snap out to full extension at ~35%, slower pull back.
+		var punch_env: float = (pt / 0.35) if pt < 0.35 else (1.0 - (pt - 0.35) / 0.65)
+		punch_env = clampf(punch_env, 0.0, 1.0)
+		# Negative pitch drives the upper arm forward; positive elbow delta
+		# unfolds the bent guard toward a straight jab.
+		var punch_pitch: float = punch_env * deg_to_rad(-62.0)
+		var punch_elbow: float = punch_env * deg_to_rad(58.0)
+		var p_sh: Node3D = _right_shoulder if _punch_is_right else _left_shoulder
+		var p_sh_rest: Transform3D = _right_shoulder_rest if _punch_is_right else _left_shoulder_rest
+		var p_el: Node3D = _right_elbow if _punch_is_right else _left_elbow
+		var p_el_rest: Transform3D = _right_elbow_rest if _punch_is_right else _left_elbow_rest
+		if p_sh:
+			p_sh.transform = p_sh_rest * Transform3D(
+				Basis(Vector3.RIGHT, punch_pitch), Vector3.ZERO
+			)
+		if p_el:
+			p_el.transform = p_el_rest * Transform3D(
+				Basis(Vector3.RIGHT, punch_elbow), Vector3.ZERO
 			)
 
 ## Resolve the right arm so the hand reaches the equipped weapon's
@@ -2141,8 +2208,10 @@ func _sync_hud() -> void:
 			var display_name := _current_weapon.replace("_", " ").to_upper()
 			hud.set_weapon_name(display_name)
 		else:
-			hud.set_ammo(0, 0)
-			hud.set_weapon_name("UNARMED")
+			# Bare hands are a real attack now, so label them as a weapon and
+			# show the melee dash for ammo (same as the bat).
+			hud.set_ammo(-1, -1)
+			hud.set_weapon_name("FISTS")
 		hud.set_reloading(_is_reloading and _armed)
 
 # ------------------------------------------------------------------
