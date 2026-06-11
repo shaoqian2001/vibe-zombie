@@ -63,10 +63,9 @@ const WEAPONS := {
 		"knockback": 0.15,  # per pellet — ~1.8 cumulative on a point-blank target
 		"recoil": 0.6,      # heaviest kick of the guns, but no longer a shove
 		"two_handed": true,
-		# Pump-action forend grip. Anchor sits at the rear edge of the
-		# forend (toward the trigger) so the off-hand stays inside arm
-		# reach when both shoulders cradle the stock.
-		"off_hand_anchor": Vector3(0.0, -0.02, 0.04),
+		# Long gun: the support (left) hand reaches well FORWARD onto the pump
+		# forend, far ahead of the right trigger hand at the grip.
+		"off_hand_anchor": Vector3(0.0, 0.0, 0.16),
 	},
 	"smg": {
 		"damage": 5.0,
@@ -84,8 +83,9 @@ const WEAPONS := {
 		"knockback": 0.25,
 		"recoil": 0.08,  # per shot — accumulates with rapid fire
 		"two_handed": true,
-		# Front of the body where the off-hand wraps the rail.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.06),
+		# Compact weapon: the support (left) hand sits just IN FRONT of the
+		# right grip hand and close to it — short reach forward on the rail.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.07),
 	},
 	"ak47": {
 		# Fully automatic battle rifle — higher damage and range than the SMG
@@ -105,8 +105,9 @@ const WEAPONS := {
 		"knockback": 0.4,
 		"recoil": 0.12,  # per shot — accumulates with sustained fire
 		"two_handed": true,
-		# Off-hand wraps the wooden forend ahead of the magazine.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.10),
+		# Long rifle: the support (left) hand reaches well FORWARD onto the
+		# wooden forend, far ahead of the right trigger hand at the grip.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.20),
 	},
 	"grenade_launcher": {
 		"damage": 30.0,
@@ -122,8 +123,9 @@ const WEAPONS := {
 		"knockback": 4.0,
 		"recoil": 0.5,
 		"two_handed": true,
-		# Off-hand braces the heavy tube barrel.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.08),
+		# Compact, heavy launcher: the support (left) hand sits just in front
+		# of the right grip hand and close to it.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.09),
 	},
 	"bat": {
 		"damage": 20.0,
@@ -139,10 +141,11 @@ const WEAPONS := {
 		"knockback": 1.5,
 		"recoil": 0.0,
 		"two_handed": true,
-		# Bat-local point higher up the handle (+Y is up the bat) that the
-		# right / main hand is IK'd onto, so it stacks ON TOP of the left
-		# (bottom) hand for a two-handed baseball grip.
-		"off_hand_anchor": Vector3(0.0, 0.18, 0.0),
+		# Bat-local point LOWER on the handle (+Y is up the bat) that the
+		# left / support hand is IK'd onto, so the right / main hand (which
+		# holds the grip on the upper handle) stacks ON TOP of it for a
+		# right-handed two-handed baseball grip.
+		"off_hand_anchor": Vector3(0.0, 0.09, 0.0),
 	},
 }
 
