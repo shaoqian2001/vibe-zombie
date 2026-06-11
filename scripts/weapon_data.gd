@@ -18,6 +18,21 @@ class_name WeaponData
 ##    support hand grips (forend for long guns, slide for the pistol-isoceles
 ##    stance, etc.). Always +Z forward, so this is roughly the barrel midpoint.
 const WEAPONS := {
+	"fists": {
+		# Bare-hand brawling — the default when no weapon is equipped. Short
+		# reach, light damage, but fast so a flurry of alternating jabs adds
+		# up. Not a pickup; looked up directly by the unarmed punch code.
+		"damage": 8.0,
+		"range": 1.7,
+		"magazine_size": -1,
+		"fire_rate": 2.5,
+		"reload_time": 0.0,
+		"hit_mode": "melee",
+		"sweep_angle": 70.0,
+		"knockback": 1.0,
+		"recoil": 0.0,
+		"two_handed": false,
+	},
 	"pistol": {
 		"damage": 10.0,
 		"range": 40.0,
@@ -46,7 +61,7 @@ const WEAPONS := {
 		"pellet_count": 12,
 		"pellet_spread": 4.0,
 		"knockback": 0.15,  # per pellet — ~1.8 cumulative on a point-blank target
-		"recoil": 1.5,
+		"recoil": 0.6,      # heaviest kick of the guns, but no longer a shove
 		"two_handed": true,
 		# Pump-action forend grip. Anchor sits at the rear edge of the
 		# forend (toward the trigger) so the off-hand stays inside arm
@@ -82,7 +97,7 @@ const WEAPONS := {
 		"hit_mode": "explosive",
 		"explosion_radius": 5.0,
 		"knockback": 4.0,
-		"recoil": 1.0,
+		"recoil": 0.5,
 		"two_handed": true,
 		# Off-hand braces the heavy tube barrel.
 		"off_hand_anchor": Vector3(0.0, 0.02, 0.08),
@@ -100,7 +115,11 @@ const WEAPONS := {
 		"sweep_angle": 90.0,
 		"knockback": 1.5,
 		"recoil": 0.0,
-		"two_handed": false,
+		"two_handed": true,
+		# Bat-local point higher up the handle (+Y is up the bat) that the
+		# right / main hand is IK'd onto, so it stacks ON TOP of the left
+		# (bottom) hand for a two-handed baseball grip.
+		"off_hand_anchor": Vector3(0.0, 0.18, 0.0),
 	},
 }
 
