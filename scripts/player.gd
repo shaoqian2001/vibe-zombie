@@ -254,40 +254,39 @@ const WEAPON_POSES := {
 		# chest level. Off-hand (left) hangs and pendulums while walking.
 		# Negative elbow_bend tucks the elbow DOWN (forearm comes up off the
 		# extended upper arm); positive bend chicken-wings the elbow.
-		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "shoulder_roll": -16.0, "elbow_bend": -10.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "shoulder_roll": -10.0, "elbow_bend": -10.0, "mode": "braced" },
 		"left":  { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": -14.0, "mode": "free" },
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
 	"smg": {
-		# Compact SMG tucked against the chest — RIGHT hand on the grip with a
-		# heavy elbow bend so the receiver sits close to the body. The support
-		# (left) hand IKs onto the rail just in front of the grip — both hands
-		# stay close together for the short weapon.
-		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
+		# SHOULDERED carry — the RIGHT (trigger) hand is folded up to shoulder
+		# height on the right side (a tight elbow_bend keeps it tucked back near
+		# the body instead of stretched out in front), so the weapon rides "on
+		# the right shoulder". The LEFT support hand IKs forward onto the rail,
+		# in front of the right hand. Shared by all the two-handed guns; only
+		# the kick/recoil differs per weapon.
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
 	"ak47": {
-		# Long rifle — RIGHT (trigger) hand tucked back at the grip near the
-		# shoulder, LEFT support hand reaching well forward onto the forend
-		# (its off_hand_anchor sits far down the barrel). Stiffer kick than the
-		# SMG, but without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
+		# Long rifle on the right shoulder (see "smg" for the stance). Stiffer
+		# kick than the SMG, but without the shotgun's big shoulder rock.
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
-		# Long shotgun — RIGHT grip tucked near the chest with a deep elbow
-		# flex, LEFT support hand reaching forward onto the pump forend. Reads
-		# as the "ready" long-gun pose action games use.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
+		# Long shotgun on the right shoulder (see "smg" for the stance), with a
+		# heavy kick and chest rock.
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
-		# Compact, heavy launcher — held close like the SMG (both hands near
-		# each other) but lower, with the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
+		# Heavy launcher on the right shoulder (see "smg" for the stance), with
+		# the heaviest kick and chest rock.
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
@@ -1275,15 +1274,17 @@ func _build_ak47() -> void:
 	body_mi.position = Vector3(0.0, 0.02, 0.04)
 	_ak47_node.add_child(body_mi)
 
-	# Wooden forend (front handguard)
+	# Wooden forend (front handguard). Sits just AHEAD of the steel receiver
+	# (which spans z -0.13..0.21) so the two read as separate parts rather
+	# than overlapping — the handguard wraps the barrel forward of the body.
 	var wood_mat := StandardMaterial3D.new()
 	wood_mat.albedo_color = Color(0.42, 0.27, 0.13, 1)
 	var forend_mesh := BoxMesh.new()
-	forend_mesh.size = Vector3(0.07, 0.08, 0.16)
+	forend_mesh.size = Vector3(0.072, 0.08, 0.14)
 	forend_mesh.material = wood_mat
 	var forend := MeshInstance3D.new()
 	forend.mesh = forend_mesh
-	forend.position = Vector3(0.0, 0.01, 0.20)
+	forend.position = Vector3(0.0, 0.02, 0.28)
 	_ak47_node.add_child(forend)
 
 	# Wooden stock (rear)

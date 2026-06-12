@@ -63,9 +63,10 @@ const WEAPONS := {
 		"knockback": 0.15,  # per pellet — ~1.8 cumulative on a point-blank target
 		"recoil": 0.6,      # heaviest kick of the guns, but no longer a shove
 		"two_handed": true,
-		# Long gun: the support (left) hand reaches well FORWARD onto the pump
-		# forend, far ahead of the right trigger hand at the grip.
-		"off_hand_anchor": Vector3(0.0, 0.0, 0.16),
+		# Support (left) hand sits in front of the right grip hand, on the
+		# forend. Kept within the left arm's cross-body reach so it doesn't
+		# over-stretch.
+		"off_hand_anchor": Vector3(0.0, 0.0, 0.11),
 	},
 	"smg": {
 		"damage": 5.0,
@@ -83,9 +84,8 @@ const WEAPONS := {
 		"knockback": 0.25,
 		"recoil": 0.08,  # per shot — accumulates with rapid fire
 		"two_handed": true,
-		# Compact weapon: the support (left) hand sits just IN FRONT of the
-		# right grip hand and close to it — short reach forward on the rail.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.07),
+		# Support (left) hand just in front of the right grip hand on the rail.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.09),
 	},
 	"ak47": {
 		# Fully automatic battle rifle — higher damage and range than the SMG
@@ -105,9 +105,9 @@ const WEAPONS := {
 		"knockback": 0.4,
 		"recoil": 0.12,  # per shot — accumulates with sustained fire
 		"two_handed": true,
-		# Long rifle: the support (left) hand reaches well FORWARD onto the
-		# wooden forend, far ahead of the right trigger hand at the grip.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.20),
+		# Support (left) hand in front of the right grip hand, on the wooden
+		# forend. Kept within the left arm's cross-body reach.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.11),
 	},
 	"grenade_launcher": {
 		"damage": 30.0,
@@ -123,8 +123,7 @@ const WEAPONS := {
 		"knockback": 4.0,
 		"recoil": 0.5,
 		"two_handed": true,
-		# Compact, heavy launcher: the support (left) hand sits just in front
-		# of the right grip hand and close to it.
+		# Support (left) hand just in front of the right grip hand.
 		"off_hand_anchor": Vector3(0.0, 0.02, 0.09),
 	},
 	"bat": {
