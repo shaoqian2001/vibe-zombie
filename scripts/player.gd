@@ -254,39 +254,40 @@ const WEAPON_POSES := {
 		# chest level. Off-hand (left) hangs and pendulums while walking.
 		# Negative elbow_bend tucks the elbow DOWN (forearm comes up off the
 		# extended upper arm); positive bend chicken-wings the elbow.
-		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "shoulder_roll": -10.0, "elbow_bend": -10.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "shoulder_roll": -16.0, "elbow_bend": -10.0, "mode": "braced" },
 		"left":  { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": -14.0, "mode": "free" },
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
 	"smg": {
-		# SHOULDERED carry — the RIGHT (trigger) hand is folded up to shoulder
-		# height on the right side (a tight elbow_bend keeps it tucked back near
-		# the body instead of stretched out in front), so the weapon rides "on
-		# the right shoulder". The LEFT support hand IKs forward onto the rail,
-		# in front of the right hand. Shared by all the two-handed guns; only
-		# the kick/recoil differs per weapon.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		# Compact SMG tucked against the chest — the RIGHT (trigger) hand grips
+		# the receiver in front of the chest, slightly inboard of the right
+		# shoulder (negative shoulder_roll pulls it toward the centreline so the
+		# weapon sits in the hands rather than jammed up on the shoulder). The
+		# LEFT support hand IKs forward onto the rail just ahead of the grip.
+		# Shared stance for all the two-handed guns; only the kick/recoil differs.
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
 	"ak47": {
-		# Long rifle on the right shoulder (see "smg" for the stance). Stiffer
-		# kick than the SMG, but without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		# Long rifle held at the chest (see "smg" for the stance), the support
+		# hand reaching forward onto the forend. Stiffer kick than the SMG, but
+		# without the shotgun's big shoulder rock.
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
-		# Long shotgun on the right shoulder (see "smg" for the stance), with a
+		# Long shotgun held at the chest (see "smg" for the stance), with a
 		# heavy kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
-		# Heavy launcher on the right shoulder (see "smg" for the stance), with
+		# Heavy launcher held at the chest (see "smg" for the stance), with
 		# the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
