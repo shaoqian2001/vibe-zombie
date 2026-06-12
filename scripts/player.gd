@@ -110,8 +110,8 @@ var _left_elbow: Node3D = null
 # Kept long enough for the two-handed poses to reach — the off-hand grips a
 # forend that sits well forward of the trigger hand, and a short reach can't
 # cross that distance — but trimmed so the arms don't dangle past the hips.
-var _upper_arm_len: float = 0.32
-var _forearm_len: float = 0.32
+var _upper_arm_len: float = 0.30
+var _forearm_len: float = 0.30
 # A WeaponGrip anchor is built on BOTH hands; the equipped weapon parents to
 # whichever one is currently the dominant (main) hand so it follows the full
 # walk / kick animation without any extra bookkeeping. `_weapon_grip` points at
@@ -272,41 +272,36 @@ const WEAPON_POSES := {
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
 	"smg": {
-		# Compact SMG carried at the chest. The RIGHT (trigger) hand grips the
-		# receiver up near chest/shoulder height; the LEFT support hand IKs onto
-		# the rail just ahead. `gun_cant` yaws the whole weapon across the body
-		# (forend toward the centreline, stock back by the shoulder) so the two
-		# hands separate naturally along the gun and the forend stays in the
-		# support arm's reach.
-		"right": { "shoulder_pitch": -24.0, "shoulder_yaw": -9.0, "shoulder_roll": -18.0, "elbow_bend": -100.0, "mode": "braced" },
+		# Compact SMG tucked against the chest — the RIGHT (trigger) hand grips
+		# the receiver in front of the chest, slightly inboard of the right
+		# shoulder (negative shoulder_roll pulls it toward the centreline so the
+		# weapon sits in the hands rather than jammed up on the shoulder). The
+		# LEFT support hand IKs forward onto the rail just ahead of the grip.
+		# Shared stance for all the two-handed guns; only the kick/recoil differs.
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
-		"gun_cant": -15.0,
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
 	"ak47": {
-		# Long rifle (see "smg" for the stance) — a wider grip: the support hand
-		# reaches well forward onto the forend and the weapon is canted harder
-		# across the body so the two hands sit a rifle's width apart while the
-		# forend stays reachable. Stiffer kick than the SMG.
-		"right": { "shoulder_pitch": -26.0, "shoulder_yaw": -8.0, "shoulder_roll": -13.0, "elbow_bend": -104.0, "mode": "braced" },
+		# Long rifle held at the chest (see "smg" for the stance), the support
+		# hand reaching forward onto the forend. Stiffer kick than the SMG, but
+		# without the shotgun's big shoulder rock.
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
-		"gun_cant": -26.0,
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
-		# Long shotgun (see "ak47" for the wide stance), with a heavy kick and
-		# chest rock.
-		"right": { "shoulder_pitch": -28.0, "shoulder_yaw": -9.0, "shoulder_roll": -13.0, "elbow_bend": -104.0, "mode": "braced" },
+		# Long shotgun held at the chest (see "smg" for the stance), with a
+		# heavy kick and chest rock.
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
-		"gun_cant": -24.0,
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
-		# Heavy launcher held at the chest (compact, like the SMG), with
+		# Heavy launcher held at the chest (see "smg" for the stance), with
 		# the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -28.0, "shoulder_yaw": -11.0, "shoulder_roll": -18.0, "elbow_bend": -100.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
-		"gun_cant": -15.0,
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
 	"bat": {
@@ -770,17 +765,13 @@ func _apply_weapon_pose(weapon_name: String) -> void:
 	#     bat extends out of the wrist along the arm's direction. Cocking
 	#     the arm back over the shoulder then naturally cocks the bat too.
 	# Invert the MAIN (dominant) chain since the weapon hangs off its grip.
-	# `gun_cant` (deg) then yaws the weapon across the body so a held rifle
-	# angles forend-toward-centre / stock-toward-shoulder rather than pointing
-	# dead ahead — mirrored by `lat` for the left hand.
 	if _weapon_grip and main_elbow:
 		var grip_align: String = pose.get("grip_align", "player_forward")
 		if grip_align == "along_arm":
 			_weapon_grip.basis = Basis(Vector3.RIGHT, PI * 0.5)
 		else:
 			var combined: Basis = main_shoulder.basis * main_elbow.basis
-			var cant: float = deg_to_rad(pose.get("gun_cant", 0.0)) * lat
-			_weapon_grip.basis = combined.inverse() * Basis(Vector3.UP, cant)
+			_weapon_grip.basis = combined.inverse()
 
 	_kick_pitch_deg = pose.get("kick_pitch", 0.0)
 	_kick_elbow_deg = pose.get("kick_elbow", 0.0)
@@ -1199,8 +1190,7 @@ func _build_pistol() -> void:
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
-	# Small +X offset nudges the long gun outboard so its body clears the torso.
-	_shotgun_node.position = Vector3(0.03, 0.0, 0.02)
+	_shotgun_node.position = Vector3(0.0, 0.0, 0.02)
 	_shotgun_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_shotgun_node)
 
@@ -1336,8 +1326,7 @@ func _build_smg() -> void:
 func _build_ak47() -> void:
 	_ak47_node = Node3D.new()
 	_ak47_node.name = "AK47"
-	# Small +X offset nudges the long gun outboard so its body clears the torso.
-	_ak47_node.position = Vector3(0.03, 0.07, 0.02)
+	_ak47_node.position = Vector3(0.0, 0.07, 0.02)
 	_ak47_node.scale = Vector3.ONE * 1.35
 	_attach_weapon(_ak47_node)
 
