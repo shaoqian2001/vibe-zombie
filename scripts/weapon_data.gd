@@ -63,10 +63,9 @@ const WEAPONS := {
 		"knockback": 0.15,  # per pellet — ~1.8 cumulative on a point-blank target
 		"recoil": 0.6,      # heaviest kick of the guns, but no longer a shove
 		"two_handed": true,
-		# Support (left) hand sits in front of the right grip hand, on the
-		# forend. Kept within the left arm's cross-body reach so it doesn't
-		# over-stretch.
-		"off_hand_anchor": Vector3(0.0, 0.0, 0.11),
+		# Support (left) hand well forward of the right grip hand, out on the
+		# pump forend — a long gun is held with the hands a fair width apart.
+		"off_hand_anchor": Vector3(0.0, 0.0, 0.14),
 	},
 	"smg": {
 		"damage": 5.0,
@@ -84,8 +83,8 @@ const WEAPONS := {
 		"knockback": 0.25,
 		"recoil": 0.08,  # per shot — accumulates with rapid fire
 		"two_handed": true,
-		# Support (left) hand just in front of the right grip hand on the rail.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.09),
+		# Support (left) hand forward of the right grip hand on the rail.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.13),
 	},
 	"ak47": {
 		# Fully automatic battle rifle — higher damage and range than the SMG
@@ -105,9 +104,9 @@ const WEAPONS := {
 		"knockback": 0.4,
 		"recoil": 0.12,  # per shot — accumulates with sustained fire
 		"two_handed": true,
-		# Support (left) hand in front of the right grip hand, on the wooden
-		# forend. Kept within the left arm's cross-body reach.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.11),
+		# Support (left) hand well forward of the right grip hand, out on the
+		# wooden forend — held with the hands a rifle's width apart.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.15),
 	},
 	"grenade_launcher": {
 		"damage": 30.0,
@@ -123,8 +122,8 @@ const WEAPONS := {
 		"knockback": 4.0,
 		"recoil": 0.5,
 		"two_handed": true,
-		# Support (left) hand just in front of the right grip hand.
-		"off_hand_anchor": Vector3(0.0, 0.02, 0.09),
+		# Support (left) hand forward of the right grip hand.
+		"off_hand_anchor": Vector3(0.0, 0.02, 0.12),
 	},
 	"bat": {
 		"damage": 20.0,

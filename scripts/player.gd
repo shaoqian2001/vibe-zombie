@@ -276,9 +276,11 @@ const WEAPON_POSES := {
 		# the receiver in front of the chest, slightly inboard of the right
 		# shoulder (negative shoulder_roll pulls it toward the centreline so the
 		# weapon sits in the hands rather than jammed up on the shoulder). The
-		# LEFT support hand IKs forward onto the rail just ahead of the grip.
+		# LEFT support hand IKs forward onto the rail, well ahead of the grip.
 		# Shared stance for all the two-handed guns; only the kick/recoil differs.
-		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
+		# elbow_bend kept fairly open so the trigger forearm hangs to the grip
+		# naturally instead of folding up tight against the chest.
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
@@ -286,21 +288,21 @@ const WEAPON_POSES := {
 		# Long rifle held at the chest (see "smg" for the stance), the support
 		# hand reaching forward onto the forend. Stiffer kick than the SMG, but
 		# without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
 		# Long shotgun held at the chest (see "smg" for the stance), with a
 		# heavy kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -22.0, "elbow_bend": -98.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
 		# Heavy launcher held at the chest (see "smg" for the stance), with
 		# the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -22.0, "elbow_bend": -95.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
@@ -1190,7 +1192,9 @@ func _build_pistol() -> void:
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
-	_shotgun_node.position = Vector3(0.0, 0.0, 0.02)
+	# +X nudges the whole gun outboard of the hand so the stock/back clears the
+	# torso instead of sinking into it (the arm posture is unchanged).
+	_shotgun_node.position = Vector3(0.04, 0.0, 0.02)
 	_shotgun_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_shotgun_node)
 
@@ -1271,7 +1275,8 @@ func _build_shotgun() -> void:
 func _build_smg() -> void:
 	_smg_node = Node3D.new()
 	_smg_node.name = "SMG"
-	_smg_node.position = Vector3(0.0, 0.07, 0.02)
+	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
+	_smg_node.position = Vector3(0.04, 0.07, 0.02)
 	_smg_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_smg_node)
 
@@ -1326,7 +1331,8 @@ func _build_smg() -> void:
 func _build_ak47() -> void:
 	_ak47_node = Node3D.new()
 	_ak47_node.name = "AK47"
-	_ak47_node.position = Vector3(0.0, 0.07, 0.02)
+	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
+	_ak47_node.position = Vector3(0.04, 0.07, 0.02)
 	_ak47_node.scale = Vector3.ONE * 1.35
 	_attach_weapon(_ak47_node)
 
@@ -1409,7 +1415,8 @@ func _build_ak47() -> void:
 func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
-	_grenade_launcher_node.position = Vector3(0.0, 0.06, 0.06)
+	# +X nudges the whole gun outboard of the hand so the back clears the torso.
+	_grenade_launcher_node.position = Vector3(0.04, 0.06, 0.06)
 	_grenade_launcher_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_grenade_launcher_node)
 
