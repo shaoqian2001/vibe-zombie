@@ -80,6 +80,11 @@ var _gait_speed: float = 1.0
 var _net_sync_timer := 0.0
 var _is_authority_cached := true
 
+# Ambient groan timer. Counts down on every peer (sound is cosmetic and runs
+# independently per client — no need to network it). Reset to a random
+# interval after each groan so a horde doesn't moan in lockstep.
+var _groan_timer := 0.0
+
 # Cached target supplied by main.gd's parallel AI coordinator (host only).
 # Vector3.INF means "no cached value, fall back to the single-threaded search".
 var cached_target_pos: Vector3 = Vector3.INF
@@ -102,6 +107,8 @@ func _ready() -> void:
 	set_meta(&"fov_cull_entity_type", "moving")
 	set_meta(&"fov_cull_memory_range", 6.0)
 	_rng.randomize()
+	# Stagger the first groan so freshly-spawned zombies don't all moan at once.
+	_groan_timer = _rng.randf_range(0.5, 6.0)
 	_pick_new_wander()
 	_build_model()
 	_build_hp_bar()
@@ -117,6 +124,8 @@ func _physics_process(delta: float) -> void:
 	# Drive the zombie's walk/shuffle animation on every peer — clients see
 	# the host-synced transform updates, but limbs still need to swing.
 	_update_animation(delta)
+	# Ambient groans run on every peer (cosmetic, distance-gated).
+	_maybe_groan(delta)
 	if not _is_authority_cached:
 		# Client copy — host pushes transform updates via RPC. Just refresh
 		# the HP bar (HP is replicated separately) and exit.
@@ -223,6 +232,7 @@ func _sync_hp(new_hp: float) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func _despawn() -> void:
+	SoundManager.play_at("zombie_death", global_position, randf_range(0.9, 1.1), 0.0)
 	queue_free()
 
 
@@ -256,9 +266,31 @@ func _apply_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 		for ms in mission_nodes:
 			if ms.has_method("notify_enemy_killed"):
 				ms.notify_enemy_killed()
+		# Detached one-shot at the death position — the node is freed this
+		# frame, so the voice can't be parented to it.
+		SoundManager.play_at("zombie_death", global_position, randf_range(0.9, 1.1), 0.0)
 		if NetworkManager.is_networked:
 			rpc("_despawn")
 		queue_free()
+
+# ------------------------------------------------------------------
+# Audio
+# ------------------------------------------------------------------
+
+## Periodic idle/chase groan. Only the zombies near a player are voiced, which
+## naturally caps how many of a large horde are audible at once.
+func _maybe_groan(delta: float) -> void:
+	_groan_timer -= delta
+	if _groan_timer > 0.0:
+		return
+	_groan_timer = _rng.randf_range(3.5, 8.0)
+	var p := _player_ref
+	if p == null or not is_instance_valid(p):
+		p = _find_player()
+		_player_ref = p
+	if p == null or global_position.distance_to(p.global_position) > 24.0:
+		return
+	SoundManager.play_on(self, "zombie_groan", _rng.randf_range(0.82, 1.2), -3.0)
 
 func _try_attack() -> void:
 	_try_attack_at(_player_ref.global_position if _player_ref else Vector3.INF)
@@ -274,8 +306,16 @@ func _try_attack_at(target_pos: Vector3) -> void:
 	if _player_ref == null:
 		return
 	_attack_timer = ATTACK_COOLDOWN
+	# Lunge snarl — play locally (host) and broadcast so clients hear it too.
+	SoundManager.play_on(self, "zombie_attack", _rng.randf_range(0.9, 1.12), 0.0)
+	if NetworkManager.is_networked:
+		rpc("_play_attack_sound")
 	if _player_ref.has_method("take_damage"):
 		_player_ref.take_damage(ATTACK_DAMAGE)
+
+@rpc("authority", "call_remote", "unreliable")
+func _play_attack_sound() -> void:
+	SoundManager.play_on(self, "zombie_attack", randf_range(0.9, 1.12), 0.0)
 
 func _find_closest_player(near: Vector3) -> CharacterBody3D:
 	var best: CharacterBody3D = null

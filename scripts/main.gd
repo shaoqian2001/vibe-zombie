@@ -571,7 +571,7 @@ func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 	var total := ENEMY_CELL_SIZE * nb
 	var grid_origin := -total * 0.5
 	var placed_positions: Array[Vector3] = []
-	var weapon_types := ["pistol", "shotgun", "smg", "grenade_launcher", "bat"]
+	var weapon_types := ["pistol", "shotgun", "smg", "ak47", "grenade_launcher", "bat"]
 
 	var pickup_count := int(WEAPON_PICKUPS_PER_BLOCK * nb * nb)
 
@@ -771,6 +771,7 @@ func _setup_debug_panel() -> void:
 	_debug_panel.density_changed.connect(_on_debug_density_changed)
 	_debug_panel.god_mode_changed.connect(_on_debug_god_mode_changed)
 	_debug_panel.spawn_horde_requested.connect(_on_debug_spawn_horde)
+	_debug_panel.spawn_weapon_requested.connect(_on_debug_spawn_weapon)
 
 func _on_debug_density_changed(multiplier: float) -> void:
 	if _mission_system:
@@ -782,6 +783,26 @@ func _on_debug_god_mode_changed(enabled: bool) -> void:
 func _on_debug_spawn_horde(count: int) -> void:
 	if _mission_system:
 		_mission_system.spawn_horde_at(player.global_position + Vector3(10, 0, 10), count)
+
+## Debug: drop a weapon pickup just in front of the player so it can be grabbed
+## and tested. Reuses the same networked pickup spawn path as world generation.
+func _on_debug_spawn_weapon(weapon_name: String) -> void:
+	if player == null:
+		return
+	# Place it a couple of metres ahead — beyond the pickup's collect radius so
+	# it lands on the ground rather than being auto-collected on spawn.
+	var fwd := player.global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length() < 0.01:
+		fwd = Vector3.FORWARD
+	var pos := player.global_position + fwd.normalized() * 2.5
+	pos.y = 0.0
+
+	var pickup_id := _next_pickup_id
+	_next_pickup_id += 1
+	if _is_mp:
+		rpc("_remote_spawn_pickup", pickup_id, weapon_name, pos)
+	_remote_spawn_pickup(pickup_id, weapon_name, pos)
 
 # ------------------------------------------------------------------
 # Game Over / Win overlay
