@@ -112,10 +112,18 @@ var _left_elbow: Node3D = null
 # cross that distance — but trimmed so the arms don't dangle past the hips.
 var _upper_arm_len: float = 0.30
 var _forearm_len: float = 0.30
-# Weapons are parented to this anchor on the right hand (dominant trigger
-# hand) so they follow the full walk / kick animation without any extra
-# bookkeeping.
+# A WeaponGrip anchor is built on BOTH hands; the equipped weapon parents to
+# whichever one is currently the dominant (main) hand so it follows the full
+# walk / kick animation without any extra bookkeeping. `_weapon_grip` points at
+# the active one (see _bind_handed_chains / set_dominant_hand).
 var _weapon_grip: Node3D = null
+var _right_grip: Node3D = null
+var _left_grip: Node3D = null
+# Which hand is the dominant / main (weapon) hand. true → right-handed: the
+# main hand is the right hand and every weapon (guns + melee) rides the right
+# side; false → left-handed: everything mirrors to the left. Toggled live from
+# the debug panel via set_dominant_hand().
+var _dominant_is_right: bool = true
 # Rest-pose transforms captured at rig build so animation is relative to
 # the constructed setup. Hips/spine rest is identity (built at known offset).
 var _hip_l_rest := Transform3D.IDENTITY
@@ -133,6 +141,11 @@ var _left_elbow_rest := Transform3D.IDENTITY
 #   • "ik"     — driven by 2-bone IK to grip the weapon's off-hand anchor
 var _right_arm_mode: String = "free"
 var _left_arm_mode: String = "free"
+# Same modes, but resolved by ROLE rather than physical side — these track the
+# main (weapon) and support arms regardless of handedness, so the animation
+# step can drive the kick on the main arm and IK on the support arm.
+var _main_arm_mode: String = "free"
+var _support_arm_mode: String = "free"
 # IK target position (in weapon-local space) for the off-hand. Only used
 # when an arm's mode is "ik" — see _solve_arm_ik.
 var _off_hand_anchor_local: Vector3 = Vector3.ZERO
@@ -675,18 +688,19 @@ func _build_arm_chain(
 	hand.position = Vector3(0, -0.05, 0)
 	wrist.add_child(hand)
 
+	# A WeaponGrip anchor lives on EACH hand so either can be the dominant hand.
+	# Weapons are designed with +Z as the muzzle direction, so the active grip's
+	# basis inverts the cumulative shoulder + elbow rotation (for guns) to keep
+	# the muzzle aimed along the player's +Z axis. _apply_weapon_pose recomputes
+	# this for whichever grip is currently active when the pose changes.
+	var grip := Node3D.new()
+	grip.name = "WeaponGrip"
+	grip.position = Vector3(0, -0.02, 0.02)
+	wrist.add_child(grip)
 	if is_right:
-		# WeaponGrip lives on the RIGHT hand — the dominant / trigger hand.
-		# Weapons are designed with +Z as the muzzle direction, so the
-		# grip's basis must invert the cumulative shoulder + elbow rotation
-		# (for guns) to keep the muzzle aimed along the player's +Z axis.
-		# _apply_weapon_pose recomputes this whenever the equipped weapon
-		# (and therefore the rest pose) changes.
-		var grip := Node3D.new()
-		grip.name = "WeaponGrip"
-		grip.position = Vector3(0, -0.02, 0.02)
-		wrist.add_child(grip)
-		_weapon_grip = grip
+		_right_grip = grip
+	else:
+		_left_grip = grip
 
 	return shoulder
 
@@ -698,15 +712,37 @@ func _build_arm_chain(
 func _apply_weapon_pose(weapon_name: String) -> void:
 	if _right_shoulder == null or _left_shoulder == null:
 		return
+	# Make sure the role→physical-side mapping (and the active grip) matches the
+	# current handedness before we pose anything.
+	_bind_handed_chains()
 	var pose: Dictionary = WEAPON_POSES.get(weapon_name, WEAPON_POSES["unarmed"])
-	var right: Dictionary = pose["right"]
-	var left: Dictionary = pose["left"]
+	# The pose dict is authored for a right-handed shooter: "right" = the main
+	# (weapon/trigger) hand, "left" = the support hand. In left-handed mode the
+	# main role is served by the physical LEFT arm and vice-versa, and every
+	# sideways component (shoulder_yaw / shoulder_roll, the IK pole) is mirrored
+	# by `lat`.
+	var main_pose: Dictionary = pose["right"]
+	var support_pose: Dictionary = pose["left"]
+	var lat: float = 1.0 if _dominant_is_right else -1.0
 
-	_right_arm_mode = right.get("mode", "free")
-	_left_arm_mode = left.get("mode", "free")
+	_main_arm_mode = main_pose.get("mode", "free")
+	_support_arm_mode = support_pose.get("mode", "free")
+	# Mirror the role modes onto the physical sides so the walk-cycle sway logic
+	# (which is keyed off the physical right/left arms) stays correct.
+	if _dominant_is_right:
+		_right_arm_mode = _main_arm_mode
+		_left_arm_mode = _support_arm_mode
+	else:
+		_left_arm_mode = _main_arm_mode
+		_right_arm_mode = _support_arm_mode
 
-	_pose_arm(_right_shoulder, _right_elbow, right)
-	_pose_arm(_left_shoulder, _left_elbow, left)
+	var main_shoulder: Node3D = _right_shoulder if _dominant_is_right else _left_shoulder
+	var main_elbow: Node3D = _right_elbow if _dominant_is_right else _left_elbow
+	var support_shoulder: Node3D = _left_shoulder if _dominant_is_right else _right_shoulder
+	var support_elbow: Node3D = _left_elbow if _dominant_is_right else _right_elbow
+
+	_pose_arm(main_shoulder, main_elbow, main_pose, lat)
+	_pose_arm(support_shoulder, support_elbow, support_pose, lat)
 
 	_right_shoulder_rest = _right_shoulder.transform
 	_left_shoulder_rest = _left_shoulder.transform
@@ -720,7 +756,7 @@ func _apply_weapon_pose(weapon_name: String) -> void:
 	var weapon_stats: Dictionary = WeaponData.get_weapon(weapon_name)
 	_off_hand_anchor_local = weapon_stats.get("off_hand_anchor", Vector3.ZERO)
 
-	# Re-align the grip so the weapon sits naturally for the chosen pose:
+	# Re-align the active grip so the weapon sits naturally for the chosen pose:
 	#   • "player_forward" (default, used by guns): basis = inverse of the
 	#     accumulated shoulder + elbow rotation, so the muzzle aims along
 	#     the player's +Z regardless of how the arm is posed.
@@ -728,13 +764,13 @@ func _apply_weapon_pose(weapon_name: String) -> void:
 	#     around X, mapping the weapon's +Z axis to the wrist's -Y, so the
 	#     bat extends out of the wrist along the arm's direction. Cocking
 	#     the arm back over the shoulder then naturally cocks the bat too.
-	# Grip lives on the right arm, so we invert the right chain.
-	if _weapon_grip and _right_elbow:
+	# Invert the MAIN (dominant) chain since the weapon hangs off its grip.
+	if _weapon_grip and main_elbow:
 		var grip_align: String = pose.get("grip_align", "player_forward")
 		if grip_align == "along_arm":
 			_weapon_grip.basis = Basis(Vector3.RIGHT, PI * 0.5)
 		else:
-			var combined: Basis = _right_shoulder.basis * _right_elbow.basis
+			var combined: Basis = main_shoulder.basis * main_elbow.basis
 			_weapon_grip.basis = combined.inverse()
 
 	_kick_pitch_deg = pose.get("kick_pitch", 0.0)
@@ -742,7 +778,15 @@ func _apply_weapon_pose(weapon_name: String) -> void:
 	_kick_duration = pose.get("kick_duration", SHOOT_ANIM_DURATION)
 	_chest_recoil_deg = pose.get("chest_recoil", 0.0)
 
-func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
+## Point `_weapon_grip` at the dominant hand's grip. Cheap; safe to call
+## whenever the handedness might have changed.
+func _bind_handed_chains() -> void:
+	_weapon_grip = _right_grip if _dominant_is_right else _left_grip
+
+## `lat` mirrors the sideways pose components (+1 right-handed, -1 left-handed):
+## pitch/elbow_bend are sagittal and stay put, yaw/roll flip so the arm tucks
+## inboard on whichever side it is on.
+func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary, lat: float) -> void:
 	# IK-driven arms are placed each frame in _update_animation; here we
 	# just clear the rotation so the IK pass starts from a clean slate and
 	# doesn't carry over angles from the previous weapon.
@@ -754,16 +798,38 @@ func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
 		# shoulder_roll (rotation around the shoulder's forward axis) tilts the
 		# whole arm sideways in the frontal plane. A NEGATIVE roll on the right
 		# (weapon) arm swings the elbow + hand INWARD toward the body
-		# centreline, so a held weapon rests slightly inside the right shoulder
-		# rather than straight out from it — which shortens the left support
-		# arm's reach to the off-hand anchor.
+		# centreline, so a held weapon rests slightly inside the shoulder
+		# rather than straight out from it. `lat` flips it for the left hand.
 		shoulder.rotation = Vector3(
 			deg_to_rad(pose.get("shoulder_pitch", 0.0)),
-			deg_to_rad(pose.get("shoulder_yaw", 0.0)),
-			deg_to_rad(pose.get("shoulder_roll", 0.0)),
+			deg_to_rad(pose.get("shoulder_yaw", 0.0)) * lat,
+			deg_to_rad(pose.get("shoulder_roll", 0.0)) * lat,
 		)
 	if elbow:
 		elbow.rotation = Vector3(deg_to_rad(pose.get("elbow_bend", 0.0)), 0.0, 0.0)
+
+## Switch the dominant (main / weapon) hand at runtime. true → right-handed,
+## false → left-handed. Reparents the equipped weapon to the new hand's grip
+## and re-applies the current pose so guns AND melee mirror to that side. Local
+## and cosmetic — not networked.
+func set_dominant_hand(is_right: bool) -> void:
+	if is_right == _dominant_is_right:
+		return
+	_dominant_is_right = is_right
+	_bind_handed_chains()
+	# Move every built weapon mesh to the now-active grip. The grip geometry is
+	# identical on both hands, so keep each weapon's local transform.
+	var new_grip: Node3D = _weapon_grip
+	if new_grip != null:
+		for w in [_pistol_node, _shotgun_node, _smg_node, _ak47_node,
+				  _grenade_launcher_node, _bat_node]:
+			if w != null and w.get_parent() != null and w.get_parent() != new_grip:
+				w.reparent(new_grip, false)
+	# Re-pose both arms (and recompute the grip basis) for the new side.
+	_apply_weapon_pose(_current_weapon if (_armed and _current_weapon != "") else "unarmed")
+
+func is_dominant_right() -> bool:
+	return _dominant_is_right
 
 ## Called by main.gd after it sets set_multiplayer_authority() on this player,
 ## to make sure `_owns_input` matches the authoritative state (in case Player._ready
@@ -2252,34 +2318,47 @@ func _update_animation(delta: float) -> void:
 	if _neck:
 		_neck.transform = _neck_rest
 
-	# --- Fire animation: the RIGHT shoulder + elbow drive the kick (right is
-	# the trigger / weapon hand). For guns this is a small barrel-rise + brief
-	# return; for the bat it's a large pitch swing plus elbow extension. The
-	# LEFT (support) arm IKs onto the weapon's off-hand anchor afterward, so
-	# the kick naturally propagates through the moving weapon to the off-hand.
-	if _right_shoulder:
-		_right_shoulder.transform = _right_shoulder_rest * Transform3D(
-			Basis(Vector3.RIGHT, right_sway + kick_pitch), Vector3.ZERO
+	# --- Fire animation: the MAIN (dominant/weapon) shoulder + elbow drive the
+	# kick. For guns this is a small barrel-rise + brief return; for the bat it's
+	# a large pitch swing plus elbow extension. The SUPPORT arm IKs onto the
+	# weapon's off-hand anchor afterward, so the kick naturally propagates
+	# through the moving weapon to the off-hand. Which physical arm is which is
+	# resolved here from the handedness; the kick/sway are sagittal so no mirror.
+	var main_sh: Node3D = _right_shoulder if _dominant_is_right else _left_shoulder
+	var main_el: Node3D = _right_elbow if _dominant_is_right else _left_elbow
+	var main_sh_rest: Transform3D = _right_shoulder_rest if _dominant_is_right else _left_shoulder_rest
+	var main_el_rest: Transform3D = _right_elbow_rest if _dominant_is_right else _left_elbow_rest
+	var main_sway: float = right_sway if _dominant_is_right else left_sway
+	var sup_sh: Node3D = _left_shoulder if _dominant_is_right else _right_shoulder
+	var sup_el: Node3D = _left_elbow if _dominant_is_right else _right_elbow
+	var sup_sh_rest: Transform3D = _left_shoulder_rest if _dominant_is_right else _right_shoulder_rest
+	var sup_el_rest: Transform3D = _left_elbow_rest if _dominant_is_right else _right_elbow_rest
+	var sup_sway: float = left_sway if _dominant_is_right else right_sway
+	var sup_braced: bool = _support_arm_mode != "free"
+
+	if main_sh:
+		main_sh.transform = main_sh_rest * Transform3D(
+			Basis(Vector3.RIGHT, main_sway + kick_pitch), Vector3.ZERO
 		)
-	if _right_elbow:
-		_right_elbow.transform = _right_elbow_rest * Transform3D(
+	if main_el:
+		main_el.transform = main_el_rest * Transform3D(
 			Basis(Vector3.RIGHT, kick_elbow), Vector3.ZERO
 		)
 
-	# Left (support) arm: pendulum at the side (free), brace-with-sway
-	# (braced — static pose with tiny sway), or IK-locked onto the weapon's
-	# off-hand anchor (two-handed weapons). IK re-solves onto the already-
-	# kicked weapon, so the support hand stays glued through recoil.
-	if _left_arm_mode == "ik":
+	# Support arm: pendulum at the side (free), brace-with-sway (braced — static
+	# pose with tiny sway), or IK-locked onto the weapon's off-hand anchor
+	# (two-handed weapons). IK re-solves onto the already-kicked weapon, so the
+	# support hand stays glued through recoil.
+	if _support_arm_mode == "ik":
 		_solve_off_hand_ik()
 	else:
-		if _left_shoulder:
-			var left_kick: float = kick_pitch * (0.5 if left_braced else 0.0)
-			_left_shoulder.transform = _left_shoulder_rest * Transform3D(
-				Basis(Vector3.RIGHT, left_sway + left_kick), Vector3.ZERO
+		if sup_sh:
+			var sup_kick: float = kick_pitch * (0.5 if sup_braced else 0.0)
+			sup_sh.transform = sup_sh_rest * Transform3D(
+				Basis(Vector3.RIGHT, sup_sway + sup_kick), Vector3.ZERO
 			)
-		if _left_elbow and left_braced:
-			_left_elbow.transform = _left_elbow_rest * Transform3D(
+		if sup_el and sup_braced:
+			sup_el.transform = sup_el_rest * Transform3D(
 				Basis(Vector3.RIGHT, kick_elbow * 0.5), Vector3.ZERO
 			)
 
@@ -2312,30 +2391,32 @@ func _update_animation(delta: float) -> void:
 				Basis(Vector3.RIGHT, punch_elbow), Vector3.ZERO
 			)
 
-## Resolve the LEFT (support) arm so its hand reaches the equipped weapon's
-## off-hand anchor (the forend on guns, lower handle on the bat). Runs each
-## frame for two-handed weapons; the right (trigger) arm has already been
-## animated, so reading the weapon's current world transform here gives us a
-## target that already includes the trigger-hand kick.
+## Resolve the SUPPORT arm so its hand reaches the equipped weapon's off-hand
+## anchor (the forend on guns, lower handle on the bat). Runs each frame for
+## two-handed weapons; the main (trigger) arm has already been animated, so
+## reading the weapon's current world transform here gives us a target that
+## already includes the trigger-hand kick. The support arm is the LEFT hand in
+## right-handed mode and the RIGHT hand when left-handed.
 func _solve_off_hand_ik() -> void:
-	if _torso_top == null or _left_shoulder == null or _left_elbow == null:
+	var sup_sh: Node3D = _left_shoulder if _dominant_is_right else _right_shoulder
+	var sup_el: Node3D = _left_elbow if _dominant_is_right else _right_elbow
+	if _torso_top == null or sup_sh == null or sup_el == null:
 		return
 	var weapon_node := _current_weapon_node()
 	if weapon_node == null:
 		return
-	# Target in WORLD space → convert into _torso_top-local since the
-	# left shoulder is a direct child of the upper-body anchor.
+	# Target in WORLD space → convert into _torso_top-local since the support
+	# shoulder is a direct child of the upper-body anchor.
 	var target_world: Vector3 = weapon_node.global_transform * _off_hand_anchor_local
 	var target_local: Vector3 = _torso_top.global_transform.affine_inverse() * target_world
-	# Left shoulder pivot lives at -SHOULDER_X inside _torso_top.
-	var shoulder_pos := Vector3(-SHOULDER_X, SHOULDER_Y, SHOULDER_Z)
-	# Pole vector — defines which way the elbow bulges. We want the elbow
-	# to drop straight down (and a hair inward, toward the body centerline,
-	# which is +X for the left arm) so the support arm looks tucked rather
-	# than chicken-winged outward.
-	var pole_pos := shoulder_pos + Vector3(0.08, -1.0, 0.0)
+	# Support shoulder pivot: -SHOULDER_X (left) in right-handed mode, +SHOULDER_X
+	# (right) when left-handed. `lat` also flips which way the elbow bulges so it
+	# stays tucked toward the body centreline rather than chicken-winging out.
+	var lat: float = 1.0 if _dominant_is_right else -1.0
+	var shoulder_pos := Vector3(-SHOULDER_X * lat, SHOULDER_Y, SHOULDER_Z)
+	var pole_pos := shoulder_pos + Vector3(0.08 * lat, -1.0, 0.0)
 	_solve_arm_ik(
-		_left_shoulder, _left_elbow,
+		sup_sh, sup_el,
 		shoulder_pos, target_local, pole_pos,
 		_upper_arm_len, _forearm_len,
 	)

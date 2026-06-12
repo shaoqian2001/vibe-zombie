@@ -772,6 +772,7 @@ func _setup_debug_panel() -> void:
 	_debug_panel.god_mode_changed.connect(_on_debug_god_mode_changed)
 	_debug_panel.spawn_horde_requested.connect(_on_debug_spawn_horde)
 	_debug_panel.spawn_weapon_requested.connect(_on_debug_spawn_weapon)
+	_debug_panel.dominant_hand_changed.connect(_on_debug_dominant_hand_changed)
 
 func _on_debug_density_changed(multiplier: float) -> void:
 	if _mission_system:
@@ -779,6 +780,10 @@ func _on_debug_density_changed(multiplier: float) -> void:
 
 func _on_debug_god_mode_changed(enabled: bool) -> void:
 	player.god_mode = enabled
+
+func _on_debug_dominant_hand_changed(is_right: bool) -> void:
+	if player and player.has_method("set_dominant_hand"):
+		player.set_dominant_hand(is_right)
 
 func _on_debug_spawn_horde(count: int) -> void:
 	if _mission_system:

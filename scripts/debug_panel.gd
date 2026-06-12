@@ -8,6 +8,7 @@ signal density_changed(multiplier: float)
 signal god_mode_changed(enabled: bool)
 signal spawn_horde_requested(count: int)
 signal spawn_weapon_requested(weapon_name: String)
+signal dominant_hand_changed(is_right: bool)
 
 # Weapons offered as one-click spawn buttons (internal name -> button label).
 const SPAWNABLE_WEAPONS := [
@@ -23,6 +24,7 @@ var _panel: PanelContainer
 var _density_slider: HSlider
 var _density_label: Label
 var _god_mode_check: CheckButton
+var _hand_check: CheckButton
 var _horde_spin: SpinBox
 var _apply_btn: Button
 var _visible := true
@@ -113,6 +115,17 @@ func _build_panel() -> void:
 	_god_mode_check.add_theme_font_size_override("font_size", 13)
 	_god_mode_check.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
 	vbox.add_child(_god_mode_check)
+
+	# Dominant hand. ON = right-handed (weapons ride the right side); OFF =
+	# left-handed (everything, guns and melee, mirrors to the left). Applies
+	# instantly on toggle so the change is immediately visible.
+	_hand_check = CheckButton.new()
+	_hand_check.text = "Right-handed (off = left)"
+	_hand_check.button_pressed = true
+	_hand_check.add_theme_font_size_override("font_size", 13)
+	_hand_check.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+	_hand_check.toggled.connect(_on_hand_toggled)
+	vbox.add_child(_hand_check)
 
 	# Apply button
 	_apply_btn = Button.new()
@@ -212,6 +225,9 @@ func _on_apply() -> void:
 func _on_spawn_horde() -> void:
 	var count: int = int(_horde_spin.value)
 	spawn_horde_requested.emit(count)
+
+func _on_hand_toggled(pressed: bool) -> void:
+	dominant_hand_changed.emit(pressed)
 
 func _on_spawn_weapon(weapon_name: String) -> void:
 	spawn_weapon_requested.emit(weapon_name)
