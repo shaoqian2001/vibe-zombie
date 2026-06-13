@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 NetworkManager="*res://scripts/network_manager.gd"
+SoundManager="*res://scripts/sound_manager.gd"
 
 [display]
 
