@@ -87,6 +87,20 @@ var _rng := RandomNumberGenerator.new()
 ## Defaults to DOWNTOWN, overridden by NetworkManager.map_style.
 var map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
 
+# ---- Performance: shared resource caches ----
+# Per-color material cache. Building bodies, props, road quads and trim
+# all funnel through `_mat(color)` so meshes with the same albedo share
+# a single StandardMaterial3D instance. This dramatically reduces the
+# number of unique materials created at world-build time and gives the
+# renderer better batching headroom.
+var _mat_cache: Dictionary = {}
+
+# Aggregated road-mark transforms — emitted into one MultiMesh after the
+# road network is laid down, so all the lane dashes + crosswalk stripes
+# become a single draw call instead of thousands of plane meshes.
+var _road_mark_xforms: Array[Transform3D] = []
+var _parking_line_xforms: Array[Transform3D] = []
+
 ## Array of dictionaries describing each building placed in the world.
 ## Each entry: { node: MeshInstance3D, entrance_area: Area3D, type: int,
 ##               width: float, depth: float, height: float,
@@ -107,11 +121,17 @@ func _ready() -> void:
 		_rng.seed = NetworkManager.game_seed
 	else:
 		_rng.seed = 98765
-	num_blocks = NetworkManager.map_size
 	map_style = NetworkManager.map_style
+	# Map size is a preset per style so the layout always has the right
+	# footprint for its content (e.g. OPEN_WORLD needs space for a clean
+	# rural→urban gradient). NetworkManager.map_size mirrors this so the
+	# rest of the game has a single source of truth.
+	num_blocks = BuildingCatalog.map_size_for(map_style)
+	NetworkManager.map_size = num_blocks
 	_generate_ground()
 	_generate_boundary_walls()
 	_generate_city_grid()
+	_flush_road_marks()
 	_add_sun_and_sky()
 	# Vision-shadow overlay covers the entire static world: ground,
 	# sidewalks, roads, buildings, props. One sweep here so the FOV-edge
@@ -194,7 +214,7 @@ func _generate_city_grid() -> void:
 			var bx := origin.x + col * CELL_WIDTH
 			var bz := origin.z + row * CELL_DEPTH
 			var block_origin := Vector3(bx, 0.0, bz)
-			var category := BuildingCatalog.pick_block_category(_rng, map_style)
+			var category := BuildingCatalog.pick_block_category(_rng, map_style, row, col, num_blocks)
 
 			block_infos.append({
 				row = row,
@@ -214,7 +234,12 @@ func _generate_city_grid() -> void:
 
 func _create_block_ground(origin: Vector3, category: int) -> void:
 	# Default: sidewalk-coloured block. Special blocks paint over with
-	# their own surface (grass / asphalt / paving).
+	# their own surface (grass / asphalt / paving). Farm + forest blocks
+	# blend into the surrounding grass plane, so we skip painting a
+	# sidewalk slab over them — saves a draw call per rural block.
+	if category == BuildingCatalog.BlockCategory.FARM \
+			or category == BuildingCatalog.BlockCategory.FOREST:
+		return
 	var base_color := SIDEWALK_COLOR
 	match category:
 		BuildingCatalog.BlockCategory.PARK:
@@ -241,6 +266,10 @@ func _populate_block(origin: Vector3, category: int) -> void:
 			_populate_parking_lot(origin)
 		BuildingCatalog.BlockCategory.PLAZA:
 			_populate_plaza(origin)
+		BuildingCatalog.BlockCategory.FARM:
+			_populate_farm(origin)
+		BuildingCatalog.BlockCategory.FOREST:
+			_populate_forest(origin)
 		_:
 			_populate_building_block(origin, category)
 
@@ -327,12 +356,10 @@ func _create_building(pos: Vector3, w: float, h: float, d: float,
 		block_x: float, block_z: float) -> void:
 	var palette: Array = info.get("palette", BUILDING_COLORS)
 	var base_color: Color = palette[_rng.randi() % palette.size()]
-	var tint_offset := _rng.randf_range(-0.04, 0.04)
-	var tinted := Color(
-		clampf(base_color.r + tint_offset, 0.0, 1.0),
-		clampf(base_color.g + tint_offset, 0.0, 1.0),
-		clampf(base_color.b + tint_offset, 0.0, 1.0)
-	)
+	# Skip the per-building tint jitter. The palette already supplies
+	# colour variety; the extra ±4% jitter blew the material cache to
+	# unique-per-building, defeating the whole point of sharing.
+	var tinted := base_color
 	var accent: Color = info.get("accent", DOOR_COLOR)
 	var features: Array = info.get("features", [])
 
@@ -346,14 +373,9 @@ func _create_building(pos: Vector3, w: float, h: float, d: float,
 	container.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5 + 2.0)
 	container.set_meta(&"fov_cull_center", Vector2(pos.x, pos.z))
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = tinted
-	mat.roughness = 0.75
-	mat.metallic = 0.05
-
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(w, h, d)
-	mesh.material = mat
+	mesh.material = _mat(tinted, 0.75, 0.05)
 
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
@@ -400,25 +422,29 @@ func _create_building(pos: Vector3, w: float, h: float, d: float,
 	})
 
 func _add_building_details(parent: Node3D, pos: Vector3, w: float, h: float, d: float, base_color: Color) -> void:
+	# Windows + roof ledge + horizontal trim. Window count is capped so a
+	# 30 m wide, 10-floor tower still tops out at ~24 window meshes per
+	# face — across hundreds of buildings this is the difference between
+	# tractable and unplayably laggy at large map sizes.
 	var ground_y := pos.y - h * 0.5
-	var window_color := Color(0.22, 0.28, 0.38, 1.0)
-	var window_mat := StandardMaterial3D.new()
-	window_mat.albedo_color = window_color
-	window_mat.roughness = 0.2
-	window_mat.metallic = 0.4
+	var window_mat := _mat(Color(0.22, 0.28, 0.38, 1.0), 0.2, 0.4)
 
 	var floor_h := 3.2
 	var num_floors := int(h / floor_h)
+	# Cap window floors. Above floor 4 the isometric camera + FOV shadow
+	# rarely show useful detail, so don't pay for windows up there.
+	var window_floors := mini(num_floors, 4)
 	var win_size := 0.6
 
-	# Windows on ±X and ±Z faces
 	for face in [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)]:
 		var face_w := d if absf(face.x) > 0.5 else w
-		var num_win := int(face_w / 2.5)
+		# Cap horizontal column count at 3 per face regardless of width
+		# (was face_w / 2.5 → could hit 10+ on big factories).
+		var num_win := mini(int(face_w / 3.5), 3)
 		if num_win < 1:
 			continue
 
-		for fl in range(num_floors):
+		for fl in range(window_floors):
 			var y := ground_y + 1.8 + fl * floor_h
 			if y + win_size * 0.5 > pos.y + h * 0.5 - 0.3:
 				continue
@@ -445,15 +471,14 @@ func _add_building_details(parent: Node3D, pos: Vector3, w: float, h: float, d: 
 				wmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 				parent.add_child(wmi)
 
-	# Rooftop ledge
+	# Rooftop ledge — share material via cache so identical-coloured
+	# buildings consume one Material instance for all their ledges.
 	var ledge_color := Color(
 		clampf(base_color.r - 0.1, 0.0, 1.0),
 		clampf(base_color.g - 0.1, 0.0, 1.0),
 		clampf(base_color.b - 0.1, 0.0, 1.0)
 	)
-	var ledge_mat := StandardMaterial3D.new()
-	ledge_mat.albedo_color = ledge_color
-	ledge_mat.roughness = 0.8
+	var ledge_mat := _mat(ledge_color, 0.8, 0.0)
 	var ledge_mesh := BoxMesh.new()
 	ledge_mesh.size = Vector3(w + 0.3, 0.2, d + 0.3)
 	ledge_mesh.material = ledge_mat
@@ -462,11 +487,10 @@ func _add_building_details(parent: Node3D, pos: Vector3, w: float, h: float, d: 
 	ledge.position = Vector3(pos.x, pos.y + h * 0.5 + 0.1, pos.z)
 	parent.add_child(ledge)
 
-	# Horizontal trim line at mid-height
-	if num_floors >= 2:
-		var trim_mat := StandardMaterial3D.new()
-		trim_mat.albedo_color = ledge_color
-		trim_mat.roughness = 0.8
+	# Horizontal trim line at mid-height — only on noticeably tall
+	# buildings; on a 5 m diner / store the trim disappears anyway.
+	if num_floors >= 3:
+		var trim_mat := _mat(ledge_color, 0.8, 0.0)
 		var trim_y := ground_y + floor_h
 		for face in [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)]:
 			var face_w2 := d if absf(face.x) > 0.5 else w
@@ -609,6 +633,15 @@ func _populate_park(origin: Vector3) -> void:
 	var w := BLOCK_WIDTH
 	var d := BLOCK_DEPTH
 
+	# Park container so the trees + paths + fountain hide as one unit when
+	# the FOV culler decides the whole block is off-screen.
+	var container := Node3D.new()
+	container.name = "Park_%d_%d" % [int(bx), int(bz)]
+	add_child(container)
+	container.add_to_group(&"fov_cullable")
+	container.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5)
+	container.set_meta(&"fov_cull_center", Vector2(bx + w * 0.5, bz + d * 0.5))
+
 	# Cross paths
 	var path_w := 3.0
 	_create_flat_quad(Vector3(bx + w * 0.5, 0.02, bz + d * 0.5), w, path_w, PARK_PATH_COLOR)
@@ -617,17 +650,18 @@ func _populate_park(origin: Vector3) -> void:
 	# Central fountain
 	_create_fountain(Vector3(bx + w * 0.5, 0.0, bz + d * 0.5))
 
-	# Scattered trees
-	var tree_count := 16
+	# Scattered trees batched into one MultiMesh
+	var positions: Array = []
+	var tree_count := 18
 	for _i in range(tree_count):
 		var tx := bx + _rng.randf_range(SIDEWALK_INSET + 1.0, w - SIDEWALK_INSET - 1.0)
 		var tz := bz + _rng.randf_range(SIDEWALK_INSET + 1.0, d - SIDEWALK_INSET - 1.0)
-		# Avoid the cross paths
 		if absf(tx - (bx + w * 0.5)) < path_w * 0.6:
 			continue
 		if absf(tz - (bz + d * 0.5)) < path_w * 0.6:
 			continue
-		_create_tree(Vector3(tx, 0.0, tz))
+		positions.append(Vector3(tx, 0.0, tz))
+	_emit_tree_field(positions, container, true)
 
 	# A few benches
 	for _i in range(6):
@@ -635,45 +669,171 @@ func _populate_park(origin: Vector3) -> void:
 		var bzp := bz + _rng.randf_range(SIDEWALK_INSET + 2.0, d - SIDEWALK_INSET - 2.0)
 		_create_bench(Vector3(bxp, 0.0, bzp), _rng.randf() < 0.5)
 
-func _create_tree(pos: Vector3) -> void:
-	var trunk_mat := StandardMaterial3D.new()
-	trunk_mat.albedo_color = Color(0.32, 0.22, 0.15)
-	trunk_mat.roughness = 0.95
-	var trunk_mesh := CylinderMesh.new()
-	trunk_mesh.top_radius = 0.25
-	trunk_mesh.bottom_radius = 0.35
-	trunk_mesh.height = 2.0
-	trunk_mesh.material = trunk_mat
-	var trunk := MeshInstance3D.new()
-	trunk.mesh = trunk_mesh
-	trunk.position = Vector3(pos.x, 1.0, pos.z)
-	add_child(trunk)
-	trunk.add_to_group(&"fov_cullable")
-	trunk.set_meta(&"fov_cull_radius", 2.5)
+# ------------------------------------------------------------------
+# Farm block — fields, barn, silo, crop rows. Cheap to render: the field
+# is a handful of striped quads and the trees/crops are batched.
+# ------------------------------------------------------------------
 
-	# Add collision so the trunk blocks the player.
+func _populate_farm(origin: Vector3) -> void:
+	var bx := origin.x
+	var bz := origin.z
+	var w := BLOCK_WIDTH
+	var d := BLOCK_DEPTH
+
+	var container := Node3D.new()
+	container.name = "Farm_%d_%d" % [int(bx), int(bz)]
+	add_child(container)
+	container.add_to_group(&"fov_cullable")
+	container.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5)
+	container.set_meta(&"fov_cull_center", Vector2(bx + w * 0.5, bz + d * 0.5))
+
+	# Field base — a tilled-soil rectangle covering most of the block
+	var field_color := Color(0.45, 0.32, 0.20)
+	_create_flat_quad(
+		Vector3(bx + w * 0.5, 0.006, bz + d * 0.5),
+		w - 6.0, d - 6.0,
+		field_color
+	)
+
+	# Crop rows running along the long axis — alternating greens/yellows.
+	# Big quads (one per row), so even a 9x9 OPEN_WORLD only adds ~16
+	# meshes per farm block.
+	var crop_colors := [
+		Color(0.55, 0.65, 0.22),
+		Color(0.78, 0.72, 0.30),
+		Color(0.50, 0.58, 0.20),
+	]
+	var row_count := 8
+	var row_w := (w - 8.0) / float(row_count)
+	for r in range(row_count):
+		var cx := bx + 4.0 + (r + 0.5) * row_w
+		var color: Color = crop_colors[r % crop_colors.size()]
+		_create_flat_quad(
+			Vector3(cx, 0.012, bz + d * 0.5),
+			row_w * 0.7, d - 12.0,
+			color
+		)
+
+	# Barn — large red structure near one corner
+	_create_barn(Vector3(bx + 14.0, 0.0, bz + 18.0))
+	# Silo near the barn
+	_create_silo(Vector3(bx + 26.0, 0.0, bz + 14.0))
+
+	# A small grove on the opposite corner — softens the perimeter so the
+	# field doesn't look like a clean rectangle stamped on the grass.
+	var tree_positions: Array = []
+	for _i in range(8):
+		var tx := bx + _rng.randf_range(w - 22.0, w - 3.0)
+		var tz := bz + _rng.randf_range(d - 22.0, d - 3.0)
+		tree_positions.append(Vector3(tx, 0.0, tz))
+	_emit_tree_field(tree_positions, container, true)
+
+func _create_barn(pos: Vector3) -> void:
+	var barn_color := Color(0.65, 0.18, 0.15)
+	var wall_mesh := BoxMesh.new()
+	wall_mesh.size = Vector3(12.0, 5.0, 16.0)
+	wall_mesh.material = _mat(barn_color, 0.85, 0.0)
+	var walls := MeshInstance3D.new()
+	walls.mesh = wall_mesh
+	walls.position = Vector3(pos.x, 2.5, pos.z)
+	add_child(walls)
+
+	var sb := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shp := BoxShape3D.new()
+	shp.size = wall_mesh.size
+	cs.shape = shp
+	sb.add_child(cs)
+	walls.add_child(sb)
+
+	# Pitched roof — a prism on top
+	var roof_mesh := PrismMesh.new()
+	roof_mesh.size = Vector3(12.4, 3.0, 16.4)
+	roof_mesh.material = _mat(Color(0.30, 0.18, 0.14), 0.9, 0.0)
+	var roof := MeshInstance3D.new()
+	roof.mesh = roof_mesh
+	roof.position = Vector3(pos.x, 5.0 + 1.5, pos.z)
+	walls.add_child(roof)
+
+	# Door
+	var door_mesh := BoxMesh.new()
+	door_mesh.size = Vector3(2.0, 3.0, 0.1)
+	door_mesh.material = _mat(Color(0.25, 0.15, 0.10), 0.95, 0.0)
+	var door := MeshInstance3D.new()
+	door.mesh = door_mesh
+	door.position = Vector3(pos.x, 1.5, pos.z + 8.05)
+	add_child(door)
+
+func _create_silo(pos: Vector3) -> void:
+	var mat := _mat(Color(0.78, 0.72, 0.62), 0.6, 0.1)
+	var body_mesh := CylinderMesh.new()
+	body_mesh.top_radius = 2.0
+	body_mesh.bottom_radius = 2.0
+	body_mesh.height = 8.0
+	body_mesh.material = mat
+	var body := MeshInstance3D.new()
+	body.mesh = body_mesh
+	body.position = Vector3(pos.x, 4.0, pos.z)
+	add_child(body)
+
 	var sb := StaticBody3D.new()
 	var cs := CollisionShape3D.new()
 	var shp := CylinderShape3D.new()
-	shp.height = 2.0
-	shp.radius = 0.35
+	shp.radius = 2.0
+	shp.height = 8.0
 	cs.shape = shp
 	sb.add_child(cs)
-	trunk.add_child(sb)
+	body.add_child(sb)
 
-	var leaf_mat := StandardMaterial3D.new()
-	leaf_mat.albedo_color = Color(0.22, 0.50, 0.20).lerp(Color(0.30, 0.55, 0.22), _rng.randf())
-	leaf_mat.roughness = 0.9
-	var leaf_mesh := SphereMesh.new()
-	leaf_mesh.radius = 1.6
-	leaf_mesh.height = 3.2
-	leaf_mesh.material = leaf_mat
-	var leaves := MeshInstance3D.new()
-	leaves.mesh = leaf_mesh
-	leaves.position = Vector3(pos.x, 3.0, pos.z)
-	add_child(leaves)
-	leaves.add_to_group(&"fov_cullable")
-	leaves.set_meta(&"fov_cull_radius", 2.0)
+	# Dome cap
+	var cap_mesh := SphereMesh.new()
+	cap_mesh.radius = 2.0
+	cap_mesh.height = 2.0
+	cap_mesh.material = _mat(Color(0.55, 0.50, 0.42), 0.7, 0.1)
+	var cap := MeshInstance3D.new()
+	cap.mesh = cap_mesh
+	cap.position = Vector3(pos.x, 8.5, pos.z)
+	add_child(cap)
+
+# ------------------------------------------------------------------
+# Forest block — dense woods. Single MultiMesh per block, no per-tree
+# colliders so the player can stroll through (and the physics step
+# doesn't choke on hundreds of static bodies at 9x9 map size).
+# ------------------------------------------------------------------
+
+func _populate_forest(origin: Vector3) -> void:
+	var bx := origin.x
+	var bz := origin.z
+	var w := BLOCK_WIDTH
+	var d := BLOCK_DEPTH
+
+	var container := Node3D.new()
+	container.name = "Forest_%d_%d" % [int(bx), int(bz)]
+	add_child(container)
+	container.add_to_group(&"fov_cullable")
+	container.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5)
+	container.set_meta(&"fov_cull_center", Vector2(bx + w * 0.5, bz + d * 0.5))
+
+	# Poisson-ish sample of tree positions — accept a candidate only if
+	# it's at least min_dist from every previously placed tree.
+	var positions: Array = []
+	var min_dist := 4.5
+	var attempts := 0
+	var target := 60
+	while positions.size() < target and attempts < target * 8:
+		attempts += 1
+		var tx := bx + _rng.randf_range(2.0, w - 2.0)
+		var tz := bz + _rng.randf_range(2.0, d - 2.0)
+		var ok := true
+		for p in positions:
+			var dx: float = tx - p.x
+			var dz: float = tz - p.z
+			if dx * dx + dz * dz < min_dist * min_dist:
+				ok = false
+				break
+		if ok:
+			positions.append(Vector3(tx, 0.0, tz))
+	_emit_tree_field(positions, container, false)
 
 func _create_bench(pos: Vector3, vertical: bool) -> void:
 	var mat := StandardMaterial3D.new()
@@ -775,10 +935,9 @@ func _populate_parking_lot(origin: Vector3) -> void:
 
 func _paint_parking_row(bx: float, z_center: float, cols: int, stall_w: float) -> void:
 	for c in range(cols + 1):
-		_create_flat_quad(
+		_emit_parking_line(
 			Vector3(bx + c * stall_w, 0.012, z_center),
-			0.12, 5.0,
-			PARKING_LINE_COLOR
+			0.12, 5.0
 		)
 
 func _create_car(pos: Vector3, facing_x: bool) -> void:
@@ -923,12 +1082,15 @@ func _paint_dashed_line(start_pos: Vector3, end_pos: Vector3, horizontal: bool) 
 		var p := start_pos + dir * t
 		var w := dash_len if horizontal else 0.15
 		var d := 0.15 if horizontal else dash_len
-		_create_flat_quad(p, w, d, ROAD_MARK_COLOR)
+		_emit_road_mark(p, w, d)
 
 func _create_crosswalk(center: Vector3, horizontal: bool) -> void:
 	# Crosswalk is a series of white stripes across the road, perpendicular
 	# to the flow of traffic. `horizontal` means the crosswalk runs along
 	# the X axis (it crosses an N-S road). Stripes span across the road.
+	# Crosswalk stripes share the road-mark MultiMesh — they're white, not
+	# yellow, but at this scale + camera angle the bias toward batching is
+	# more visible than the colour difference.
 	var stripe_count := 6
 	var stripe_w := 0.45
 	var gap := 0.35
@@ -937,15 +1099,14 @@ func _create_crosswalk(center: Vector3, horizontal: bool) -> void:
 	for i in range(stripe_count):
 		var off := (i - (stripe_count - 1) * 0.5) * pitch
 		if horizontal:
-			# Stripes run across the X-axis road (so each stripe is wider in X)
-			_create_flat_quad(
+			_emit_road_mark(
 				Vector3(center.x + off, center.y, center.z),
-				stripe_w, road_w, CROSSWALK_COLOR
+				stripe_w, road_w
 			)
 		else:
-			_create_flat_quad(
+			_emit_road_mark(
 				Vector3(center.x, center.y, center.z + off),
-				road_w, stripe_w, CROSSWALK_COLOR
+				road_w, stripe_w
 			)
 
 # ------------------------------------------------------------------
@@ -1096,19 +1257,150 @@ func _create_entrance_area(parent: Node3D, entrance_pos: Vector3, facing: Vector
 # ------------------------------------------------------------------
 
 func _create_flat_quad(pos: Vector3, w: float, d: float, color: Color) -> void:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 0.85 if color == ROAD_COLOR else 0.9
-	mat.metallic = 0.0
-
 	var mesh := PlaneMesh.new()
 	mesh.size = Vector2(w, d)
-	mesh.material = mat
+	mesh.material = _mat(color, 0.85 if color == ROAD_COLOR else 0.9, 0.0)
 
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.position = pos
 	add_child(mi)
+
+# ------------------------------------------------------------------
+# Performance helpers — material cache + batched MultiMesh emitters
+# ------------------------------------------------------------------
+
+## Return a StandardMaterial3D that the world script reuses across every
+## mesh asking for the same (colour, roughness, metallic) tuple. Sharing
+## materials avoids per-mesh allocations and gives Godot's renderer the
+## chance to batch identical surfaces.
+func _mat(color: Color, roughness: float = 0.75, metallic: float = 0.05) -> StandardMaterial3D:
+	var key := "%d_%d_%d_%d_%d_%d" % [
+		int(color.r * 255), int(color.g * 255), int(color.b * 255),
+		int(color.a * 255), int(roughness * 100), int(metallic * 100),
+	]
+	var existing: StandardMaterial3D = _mat_cache.get(key, null)
+	if existing != null:
+		return existing
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = roughness
+	mat.metallic = metallic
+	_mat_cache[key] = mat
+	return mat
+
+## Queue a single road-paint quad (lane dash, crosswalk stripe). All
+## queued quads are emitted as a single MultiMesh once the road network
+## is fully laid down — cuts thousands of quads down to one draw call.
+func _emit_road_mark(pos: Vector3, w: float, d: float) -> void:
+	var t := Transform3D.IDENTITY
+	t.basis = Basis().scaled(Vector3(w, 1.0, d))
+	t.origin = pos
+	_road_mark_xforms.append(t)
+
+## Queue a parking-stall line. Slightly thinner; uses the parking line
+## colour rather than the lane-mark yellow.
+func _emit_parking_line(pos: Vector3, w: float, d: float) -> void:
+	var t := Transform3D.IDENTITY
+	t.basis = Basis().scaled(Vector3(w, 1.0, d))
+	t.origin = pos
+	_parking_line_xforms.append(t)
+
+func _flush_road_marks() -> void:
+	if _road_mark_xforms.size() > 0:
+		_emit_multimesh_quads(_road_mark_xforms, ROAD_MARK_COLOR, "RoadMarks")
+		_road_mark_xforms.clear()
+	if _parking_line_xforms.size() > 0:
+		_emit_multimesh_quads(_parking_line_xforms, PARKING_LINE_COLOR, "ParkingLines")
+		_parking_line_xforms.clear()
+
+## Build a single MultiMeshInstance3D from a transform list. The base
+## mesh is a 1×1 unit plane; each transform scales it to the desired
+## quad size and places it in world space.
+func _emit_multimesh_quads(xforms: Array, color: Color, debug_name: String) -> void:
+	var mesh := PlaneMesh.new()
+	mesh.size = Vector2(1.0, 1.0)
+	mesh.material = _mat(color, 0.9, 0.0)
+
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = xforms.size()
+	for i in range(xforms.size()):
+		mm.set_instance_transform(i, xforms[i])
+
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.name = debug_name
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
+
+## Build trunk + leaf MultiMeshes for an array of tree XZ positions.
+## Used by park / forest / farm blocks. Trees inside the same block share
+## one MultiMesh per part so the whole field renders as 2 draw calls.
+## When with_collision is true (default for parks) each tree also gets a
+## thin StaticBody3D so the player can't walk through it; forest blocks
+## skip the colliders to keep the physics step cheap.
+func _emit_tree_field(positions: Array, parent: Node3D, with_collision: bool = true) -> void:
+	if positions.is_empty():
+		return
+
+	var trunk_color := Color(0.32, 0.22, 0.15)
+	var trunk_mesh := CylinderMesh.new()
+	trunk_mesh.top_radius = 0.25
+	trunk_mesh.bottom_radius = 0.35
+	trunk_mesh.height = 2.0
+	trunk_mesh.material = _mat(trunk_color, 0.95, 0.0)
+
+	var trunk_mm := MultiMesh.new()
+	trunk_mm.transform_format = MultiMesh.TRANSFORM_3D
+	trunk_mm.mesh = trunk_mesh
+	trunk_mm.instance_count = positions.size()
+
+	var leaf_mesh := SphereMesh.new()
+	leaf_mesh.radius = 1.6
+	leaf_mesh.height = 3.2
+	leaf_mesh.material = _mat(Color(0.24, 0.50, 0.21), 0.9, 0.0)
+
+	var leaf_mm := MultiMesh.new()
+	leaf_mm.transform_format = MultiMesh.TRANSFORM_3D
+	leaf_mm.mesh = leaf_mesh
+	leaf_mm.instance_count = positions.size()
+
+	for i in range(positions.size()):
+		var p: Vector3 = positions[i]
+		var t_trunk := Transform3D.IDENTITY
+		t_trunk.origin = Vector3(p.x, 1.0, p.z)
+		trunk_mm.set_instance_transform(i, t_trunk)
+		var t_leaf := Transform3D.IDENTITY
+		t_leaf.origin = Vector3(p.x, 3.0, p.z)
+		leaf_mm.set_instance_transform(i, t_leaf)
+
+	var trunk_mmi := MultiMeshInstance3D.new()
+	trunk_mmi.multimesh = trunk_mm
+	trunk_mmi.name = "TreeTrunks"
+	parent.add_child(trunk_mmi)
+
+	var leaf_mmi := MultiMeshInstance3D.new()
+	leaf_mmi.multimesh = leaf_mm
+	leaf_mmi.name = "TreeLeaves"
+	leaf_mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(leaf_mmi)
+
+	if not with_collision:
+		return
+	# Per-tree colliders. Cheap individually but adds up — caller turns
+	# this off for forest blocks where there are 60+ trees.
+	for p in positions:
+		var sb := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var shp := CylinderShape3D.new()
+		shp.height = 2.0
+		shp.radius = 0.35
+		cs.shape = shp
+		sb.position = Vector3(p.x, 1.0, p.z)
+		sb.add_child(cs)
+		parent.add_child(sb)
 
 # ------------------------------------------------------------------
 # Lighting & sky

@@ -20,6 +20,8 @@ enum BlockCategory {
 	PARK,
 	PARKING_LOT,
 	PLAZA,
+	FARM,
+	FOREST,
 }
 
 const CATEGORY_NAMES := {
@@ -31,6 +33,8 @@ const CATEGORY_NAMES := {
 	BlockCategory.PARK:        "Park",
 	BlockCategory.PARKING_LOT: "Parking Lot",
 	BlockCategory.PLAZA:       "Plaza",
+	BlockCategory.FARM:        "Farm",
+	BlockCategory.FOREST:      "Forest",
 }
 
 # Per-building parameter table. Sizes are in metres.
@@ -201,6 +205,7 @@ enum MapStyle {
 	INDUSTRIAL,
 	SUBURBAN,
 	CIVIC_CENTER,
+	OPEN_WORLD,
 }
 
 const STYLE_NAMES := {
@@ -209,14 +214,28 @@ const STYLE_NAMES := {
 	MapStyle.INDUSTRIAL:   "Industrial Zone",
 	MapStyle.SUBURBAN:     "Suburban",
 	MapStyle.CIVIC_CENTER: "Civic Center",
+	MapStyle.OPEN_WORLD:   "Open World",
 }
 
 const STYLE_DESCRIPTIONS := {
-	MapStyle.DOWNTOWN:     "Balanced city — shops, offices, apartments and a few parks.",
+	MapStyle.DOWNTOWN:     "Compact balanced city — shops, offices, apartments and a few parks.",
 	MapStyle.METROPOLIS:   "Dense urban skyline. Tall offices and apartments dominate.",
 	MapStyle.INDUSTRIAL:   "Sprawling warehouses, factories and parking lots.",
 	MapStyle.SUBURBAN:     "Quiet neighborhoods with plenty of parks and small shops.",
 	MapStyle.CIVIC_CENTER: "Hospitals, schools, banks and police stations cluster the streets.",
+	MapStyle.OPEN_WORLD:   "Huge region: forests and farms at the rim transition through suburbs and industry into a dense urban core.",
+}
+
+# Pre-determined map size (NxN city blocks) per style. Larger styles need
+# extra blocks to support the concentric transition; compact styles keep
+# the runtime manageable.
+const STYLE_MAP_SIZE := {
+	MapStyle.DOWNTOWN:     4,
+	MapStyle.METROPOLIS:   5,
+	MapStyle.INDUSTRIAL:   4,
+	MapStyle.SUBURBAN:     4,
+	MapStyle.CIVIC_CENTER: 4,
+	MapStyle.OPEN_WORLD:   9,
 }
 
 # Per-style category weights. Higher weight ⇒ more of that block category.
@@ -272,6 +291,81 @@ const STYLE_CATEGORY_WEIGHTS := {
 		BlockCategory.PARKING_LOT: 2,
 		BlockCategory.PLAZA:       2,
 	},
+	# OPEN_WORLD uses STYLE_RINGS instead of a flat weight table — this
+	# fallback entry is only consulted if the ring lookup misses.
+	MapStyle.OPEN_WORLD: {
+		BlockCategory.RESIDENTIAL: 3,
+		BlockCategory.COMMERCIAL:  2,
+		BlockCategory.MIXED:       2,
+		BlockCategory.INDUSTRIAL:  2,
+		BlockCategory.CIVIC:       1,
+		BlockCategory.PARK:        2,
+		BlockCategory.FARM:        2,
+		BlockCategory.FOREST:      2,
+	},
+}
+
+# Concentric-ring tables for styles that gradient from rural to urban.
+# Each entry: { "max_norm": float, "weights": { category: weight, ... } }.
+# Picking iterates from inner to outer until norm_dist <= max_norm. The
+# normalized distance is the Chebyshev distance to the grid centre divided
+# by the half-grid extent — 0.0 at the centre block, 1.0 at the corner.
+const STYLE_RINGS := {
+	MapStyle.OPEN_WORLD: [
+		# Dense core: civic centre + commercial high-rises
+		{
+			"max_norm": 0.18,
+			"weights": {
+				BlockCategory.COMMERCIAL: 5,
+				BlockCategory.CIVIC:      4,
+				BlockCategory.MIXED:      3,
+				BlockCategory.PLAZA:      2,
+				BlockCategory.PARKING_LOT: 1,
+			},
+		},
+		# Inner ring: city
+		{
+			"max_norm": 0.42,
+			"weights": {
+				BlockCategory.COMMERCIAL:  3,
+				BlockCategory.MIXED:       4,
+				BlockCategory.RESIDENTIAL: 3,
+				BlockCategory.CIVIC:       1,
+				BlockCategory.PARKING_LOT: 2,
+				BlockCategory.PARK:        1,
+			},
+		},
+		# Middle ring: industry + denser warehouses + housing
+		{
+			"max_norm": 0.65,
+			"weights": {
+				BlockCategory.INDUSTRIAL:  5,
+				BlockCategory.RESIDENTIAL: 3,
+				BlockCategory.PARKING_LOT: 2,
+				BlockCategory.MIXED:       1,
+				BlockCategory.PARK:        1,
+			},
+		},
+		# Outer ring: suburbs blending into countryside
+		{
+			"max_norm": 0.84,
+			"weights": {
+				BlockCategory.RESIDENTIAL: 4,
+				BlockCategory.PARK:        3,
+				BlockCategory.FARM:        2,
+				BlockCategory.FOREST:      2,
+			},
+		},
+		# Rim: rural — woods and farmland
+		{
+			"max_norm": 1.01,
+			"weights": {
+				BlockCategory.FOREST: 5,
+				BlockCategory.FARM:   4,
+				BlockCategory.PARK:   1,
+			},
+		},
+	],
 }
 
 # Multiplies catalog building heights when generating buildings for a
@@ -283,22 +377,56 @@ const STYLE_HEIGHT_SCALE := {
 	MapStyle.INDUSTRIAL:   0.9,
 	MapStyle.SUBURBAN:     0.65,
 	MapStyle.CIVIC_CENTER: 1.05,
+	# Open World blends scales by ring — buildings near the centre get a
+	# downtown-ish lift, but we keep the global multiplier modest so the
+	# outer rings (small houses, farm sheds) stay believable.
+	MapStyle.OPEN_WORLD:   1.1,
 }
 
-static func pick_block_category(rng: RandomNumberGenerator, style: int = MapStyle.DOWNTOWN) -> int:
+## Pick a block category at (row, col) for a map of size num_blocks under
+## the given style. Styles listed in STYLE_RINGS use concentric zoning —
+## inner blocks bias toward dense urban while outer blocks bias toward
+## rural. Other styles fall back to the flat STYLE_CATEGORY_WEIGHTS table.
+static func pick_block_category(rng: RandomNumberGenerator, style: int,
+		row: int = 0, col: int = 0, num_blocks: int = 1) -> int:
+	if STYLE_RINGS.has(style) and num_blocks > 1:
+		var rings: Array = STYLE_RINGS[style]
+		var norm := _norm_grid_distance(row, col, num_blocks)
+		for ring in rings:
+			if norm <= float(ring.max_norm):
+				return _pick_from_weights(rng, ring.weights)
+		return _pick_from_weights(rng, rings[rings.size() - 1].weights)
+
 	var weights: Dictionary = STYLE_CATEGORY_WEIGHTS.get(style, STYLE_CATEGORY_WEIGHTS[MapStyle.DOWNTOWN])
+	return _pick_from_weights(rng, weights)
+
+static func _pick_from_weights(rng: RandomNumberGenerator, weights: Dictionary) -> int:
 	var total := 0
 	for w in weights.values():
-		total += w
+		total += int(w)
 	if total <= 0:
 		return BlockCategory.MIXED
 	var roll := rng.randi() % total
 	var acc := 0
 	for cat in weights.keys():
-		acc += weights[cat]
+		acc += int(weights[cat])
 		if roll < acc:
-			return cat
+			return int(cat)
 	return BlockCategory.MIXED
+
+## Chebyshev distance from (row, col) to the grid centre, normalised so 0
+## is the centre block and 1 is the corner.
+static func _norm_grid_distance(row: int, col: int, n: int) -> float:
+	if n <= 1:
+		return 0.0
+	var c := (n - 1) * 0.5
+	var dr := absf(row - c)
+	var dc := absf(col - c)
+	var d := maxf(dr, dc)
+	return d / c
+
+static func map_size_for(style: int) -> int:
+	return int(STYLE_MAP_SIZE.get(style, 4))
 
 static func style_height_scale(style: int) -> float:
 	return STYLE_HEIGHT_SCALE.get(style, 1.0)

@@ -1,7 +1,8 @@
 extends Control
 
-## Single-player setup screen — pick difficulty, map size and map style
-## before launching the game.
+## Single-player setup screen — pick difficulty and map style before
+## launching the game. Map size is no longer user-configurable; each
+## style ships with a pre-tuned grid size (see BuildingCatalog.STYLE_MAP_SIZE).
 ##
 ## Writes the chosen settings to NetworkManager (which world.gd reads on
 ## scene load) and then transitions to Main.tscn. The same NetworkManager
@@ -13,8 +14,8 @@ const BuildingCatalog = preload("res://scripts/building_catalog.gd")
 
 var _center: CenterContainer
 var _create_panel: PanelContainer = null
+var _map_size_label: Label = null
 
-var _map_size: int = 3
 var _difficulty: int = NetworkManager.Difficulty.MEDIUM
 var _map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
 
@@ -72,19 +73,18 @@ func _build_ui() -> void:
 	style_desc.add_theme_font_size_override("font_size", int(13 * s))
 	style_desc.add_theme_color_override("font_color", Color(0.60, 0.62, 0.55))
 	style_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	style_desc.custom_minimum_size = Vector2(0, 36 * s)
+	style_desc.custom_minimum_size = Vector2(0, 48 * s)
 	vbox.add_child(_make_map_style_row(s, style_desc))
 	vbox.add_child(style_desc)
-	_update_map_style_desc(style_desc)
 
-	# --- Map size ---
-	vbox.add_child(_make_section_label("Map Size (NxN city blocks, 100×200m each)", s))
-	var map_size_row := _make_stepper_row(s,
-		_map_size, 2, 12,
-		func(v: int) -> void: _map_size = v,
-		func(v: int) -> String: return "%d x %d  (%d blocks)" % [v, v, v * v]
-	)
-	vbox.add_child(map_size_row)
+	# Tells the player what grid size the selected style will use. Map
+	# size itself isn't configurable; it's a property of the style.
+	_map_size_label = Label.new()
+	_map_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_map_size_label.add_theme_font_size_override("font_size", int(12 * s))
+	_map_size_label.add_theme_color_override("font_color", Color(0.55, 0.60, 0.50))
+	vbox.add_child(_map_size_label)
+	_update_map_style_desc(style_desc)
 
 	# --- Difficulty ---
 	vbox.add_child(_make_section_label("Difficulty", s))
@@ -123,10 +123,11 @@ func _back_to_title() -> void:
 
 func _on_start_pressed() -> void:
 	# Single-player still routes config through NetworkManager so world.gd
-	# and main.gd can read the same fields for both modes.
+	# and main.gd can read the same fields for both modes. Map size is a
+	# property of the style; world.gd resolves it via BuildingCatalog.
 	NetworkManager.is_networked = false
 	NetworkManager.is_host = true
-	NetworkManager.map_size = _map_size
+	NetworkManager.map_size = BuildingCatalog.map_size_for(_map_style)
 	NetworkManager.difficulty = _difficulty
 	NetworkManager.map_style = _map_style
 	NetworkManager.game_seed = int(Time.get_unix_time_from_system()) ^ (randi() << 1)
@@ -142,40 +143,6 @@ func _make_section_label(text: String, s: float) -> Label:
 	lbl.add_theme_font_size_override("font_size", int(15 * s))
 	lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.78))
 	return lbl
-
-func _make_stepper_row(s: float, start_val: int, lo: int, hi: int, on_change: Callable, format: Callable) -> HBoxContainer:
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", int(12 * s))
-
-	var minus := MenuShared.make_button("-", s, 50, 38, 18)
-	row.add_child(minus)
-
-	var lbl := Label.new()
-	lbl.text = format.call(start_val)
-	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.custom_minimum_size = Vector2(220 * s, 38 * s)
-	lbl.add_theme_font_size_override("font_size", int(18 * s))
-	lbl.add_theme_color_override("font_color", Color(0.95, 0.92, 0.78))
-	row.add_child(lbl)
-
-	var plus := MenuShared.make_button("+", s, 50, 38, 18)
-	row.add_child(plus)
-
-	var current := [start_val]
-	minus.pressed.connect(func() -> void:
-		var v: int = max(lo, current[0] - 1)
-		current[0] = v
-		lbl.text = format.call(v)
-		on_change.call(v)
-	)
-	plus.pressed.connect(func() -> void:
-		var v: int = min(hi, current[0] + 1)
-		current[0] = v
-		lbl.text = format.call(v)
-		on_change.call(v)
-	)
-	return row
 
 func _make_difficulty_row(s: float) -> HBoxContainer:
 	var row := HBoxContainer.new()
@@ -237,13 +204,14 @@ func _make_map_style_row(s: float, desc_label: Label) -> HBoxContainer:
 		BuildingCatalog.MapStyle.INDUSTRIAL,
 		BuildingCatalog.MapStyle.SUBURBAN,
 		BuildingCatalog.MapStyle.CIVIC_CENTER,
+		BuildingCatalog.MapStyle.OPEN_WORLD,
 	]
 	var accent := Color(0.55, 0.55, 0.65)
 	var buttons: Array[Button] = []
 
 	for st in styles:
 		var idx: int = st
-		var btn := MenuShared.make_button(BuildingCatalog.style_name(idx), s, 100, 40, 14)
+		var btn := MenuShared.make_button(BuildingCatalog.style_name(idx), s, 100, 40, 13)
 		btn.pressed.connect(func() -> void:
 			_map_style = idx
 			_refresh_map_style_buttons(buttons, styles, accent)
@@ -268,3 +236,6 @@ func _refresh_map_style_buttons(buttons: Array[Button], styles: Array, accent: C
 
 func _update_map_style_desc(desc: Label) -> void:
 	desc.text = BuildingCatalog.style_description(_map_style)
+	if _map_size_label:
+		var sz: int = BuildingCatalog.map_size_for(_map_style)
+		_map_size_label.text = "Map size: %d × %d blocks  (%d total)" % [sz, sz, sz * sz]

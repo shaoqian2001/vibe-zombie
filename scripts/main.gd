@@ -42,10 +42,17 @@ const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 # (NetworkManager.difficulty_settings), tuned for the 100×200m blocks.
 # DEV_MODE keeps the count tiny for fast playtesting.
 const ENEMIES_PER_BLOCK_DEV := 2.0
+# Hard cap on initial spawn count regardless of (block × density) maths.
+# Stops Open World 9×9 + Nightmare from instantiating thousands of
+# zombies at scene-load time; the mission system still adds wave hordes
+# as missions progress.
+const MAX_INITIAL_ENEMIES := 400
 
 # Weapon pickup spawning — density scales with map size as well
 const WEAPON_PICKUPS_PER_BLOCK := 2.5
 const WEAPON_PICKUP_MIN_DIST := 20.0
+# Same idea for pickups — keeps the static-collision count tractable.
+const MAX_INITIAL_PICKUPS := 80
 
 const PlayerScene = preload("res://scenes/Player.tscn")
 
@@ -512,7 +519,7 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 		var diff := NetworkManager.difficulty_settings(NetworkManager.difficulty)
 		per_block = diff.enemies_per_block
 
-	var base_count := int(per_block * nb * nb)
+	var base_count := mini(int(per_block * nb * nb), MAX_INITIAL_ENEMIES)
 
 	for i in range(base_count):
 		var pos := _random_walkable_pos(rng)
@@ -589,7 +596,7 @@ func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 	var placed_positions: Array[Vector3] = []
 	var weapon_types := ["pistol", "shotgun", "smg", "ak47", "grenade_launcher", "bat"]
 
-	var pickup_count := int(WEAPON_PICKUPS_PER_BLOCK * nb * nb)
+	var pickup_count := mini(int(WEAPON_PICKUPS_PER_BLOCK * nb * nb), MAX_INITIAL_PICKUPS)
 
 	for i in range(pickup_count):
 		var pos := Vector3.ZERO

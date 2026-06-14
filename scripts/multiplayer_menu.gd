@@ -23,11 +23,12 @@ var _create_panel: PanelContainer = null
 var _join_panel: PanelContainer = null
 var _join_status_label: Label = null
 
-# Create-game working state (mirrors NetworkManager defaults)
-var _create_map_size: int = 3
+# Create-game working state (mirrors NetworkManager defaults). Map size
+# is deliberately *not* configurable — it's pinned by the chosen style.
 var _create_max_players: int = 4
 var _create_difficulty: int = NetworkManager.Difficulty.MEDIUM
 var _create_map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
+var _map_size_label: Label = null
 
 func _ready() -> void:
 	_build_root()
@@ -145,19 +146,17 @@ func _show_create() -> void:
 	style_desc.add_theme_font_size_override("font_size", int(13 * s))
 	style_desc.add_theme_color_override("font_color", Color(0.60, 0.62, 0.55))
 	style_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	style_desc.custom_minimum_size = Vector2(0, 36 * s)
+	style_desc.custom_minimum_size = Vector2(0, 48 * s)
 	vbox.add_child(_make_map_style_row(s, style_desc))
 	vbox.add_child(style_desc)
-	_update_map_style_desc(style_desc)
 
-	# --- Map size (2..12) — each block is ~100×200m ---
-	vbox.add_child(_make_section_label("Map Size (NxN city blocks, 100×200m each)", s))
-	var map_size_row := _make_stepper_row(s,
-		_create_map_size, 2, 12,
-		func(v: int) -> void: _create_map_size = v,
-		func(v: int) -> String: return "%d x %d  (%d blocks)" % [v, v, v * v]
-	)
-	vbox.add_child(map_size_row)
+	# Map size is fixed per style — show it as info, not a control.
+	_map_size_label = Label.new()
+	_map_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_map_size_label.add_theme_font_size_override("font_size", int(12 * s))
+	_map_size_label.add_theme_color_override("font_color", Color(0.55, 0.60, 0.50))
+	vbox.add_child(_map_size_label)
+	_update_map_style_desc(style_desc)
 
 	# --- Number of players (2..8) ---
 	vbox.add_child(_make_section_label("Number of Players", s))
@@ -302,13 +301,14 @@ func _make_map_style_row(s: float, desc_label: Label) -> HBoxContainer:
 		BuildingCatalog.MapStyle.INDUSTRIAL,
 		BuildingCatalog.MapStyle.SUBURBAN,
 		BuildingCatalog.MapStyle.CIVIC_CENTER,
+		BuildingCatalog.MapStyle.OPEN_WORLD,
 	]
 	var color := Color(0.55, 0.55, 0.65)
 	var buttons: Array[Button] = []
 
 	for st in styles:
 		var idx: int = st
-		var btn := MenuShared.make_button(BuildingCatalog.style_name(idx), s, 100, 40, 14)
+		var btn := MenuShared.make_button(BuildingCatalog.style_name(idx), s, 100, 40, 13)
 		btn.pressed.connect(func() -> void:
 			_create_map_style = idx
 			_refresh_map_style_buttons(buttons, styles, color)
@@ -333,9 +333,13 @@ func _refresh_map_style_buttons(buttons: Array[Button], styles: Array, accent: C
 
 func _update_map_style_desc(desc: Label) -> void:
 	desc.text = BuildingCatalog.style_description(_create_map_style)
+	if _map_size_label:
+		var sz: int = BuildingCatalog.map_size_for(_create_map_style)
+		_map_size_label.text = "Map size: %d × %d blocks  (%d total)" % [sz, sz, sz * sz]
 
 func _on_host_pressed() -> void:
-	var code := NetworkManager.host_game(_create_map_size, _create_max_players, _create_difficulty, _create_map_style)
+	var preset_size := BuildingCatalog.map_size_for(_create_map_style)
+	var code := NetworkManager.host_game(preset_size, _create_max_players, _create_difficulty, _create_map_style)
 	if code.is_empty():
 		_show_temporary_message("Failed to create server (port in use?)")
 		return

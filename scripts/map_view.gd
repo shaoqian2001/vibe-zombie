@@ -15,6 +15,8 @@ const SIDEWALK_COLOR   := Color(0.55, 0.55, 0.52)
 const PARK_COLOR       := Color(0.30, 0.50, 0.22)
 const PARKING_COLOR    := Color(0.22, 0.22, 0.24)
 const PLAZA_COLOR      := Color(0.68, 0.65, 0.58)
+const FARM_COLOR       := Color(0.55, 0.45, 0.22)
+const FOREST_COLOR     := Color(0.18, 0.32, 0.16)
 const BUILDING_COLOR   := Color(0.85, 0.82, 0.78)
 const BUILDING_BORDER  := Color(0.15, 0.15, 0.18)
 const MAP_BORDER_COLOR := Color(0.90, 0.85, 0.70)
@@ -128,6 +130,10 @@ func _render_map(ctrl: Control) -> void:
 				color = PARKING_COLOR
 			BuildingCatalog.BlockCategory.PLAZA:
 				color = PLAZA_COLOR
+			BuildingCatalog.BlockCategory.FARM:
+				color = FARM_COLOR
+			BuildingCatalog.BlockCategory.FOREST:
+				color = FOREST_COLOR
 		ctrl.draw_rect(
 			_world_rect(bx, bz, bx + block_w, bz + block_d, center, s),
 			color, true)

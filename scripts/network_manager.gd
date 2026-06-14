@@ -142,11 +142,13 @@ static func difficulty_name(d: int) -> String:
 
 func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1) -> String:
 	reset()
+	if p_map_style >= 0:
+		map_style = p_map_style
+	# Map size is a property of the style; the caller passes the style's
+	# preset and we just snap it to safe bounds.
 	map_size = clampi(p_map_size, 2, 12)
 	max_players = clampi(p_max_players, 2, 8)
 	difficulty = clampi(p_difficulty, 0, 3)
-	if p_map_style >= 0:
-		map_style = p_map_style
 	game_seed = int(Time.get_unix_time_from_system()) ^ (randi() << 1)
 	game_code = _generate_code()
 
@@ -224,6 +226,8 @@ func set_map_style(v: int) -> void:
 	if not is_host:
 		return
 	map_style = v
+	# Style controls map size — snap to the style's preset.
+	map_size = BuildingCatalog.map_size_for(v)
 	lobby_config_changed.emit()
 	rpc("_sync_lobby_config", map_size, max_players, difficulty, map_style)
 
