@@ -191,30 +191,123 @@ const CATEGORY_TYPES := {
 	],
 }
 
-# How blocks are sprinkled across the world. Park / parking-lot / plaza
-# tiles break up the cityscape and double as visual landmarks.
-const CATEGORY_WEIGHTS := {
-	BlockCategory.RESIDENTIAL: 5,
-	BlockCategory.COMMERCIAL:  4,
-	BlockCategory.MIXED:       3,
-	BlockCategory.INDUSTRIAL:  2,
-	BlockCategory.CIVIC:       2,
-	BlockCategory.PARK:        2,
-	BlockCategory.PARKING_LOT: 1,
-	BlockCategory.PLAZA:       1,
+# How blocks are sprinkled across the world. Each map style picks a
+# different category mix; pick one with `pick_block_category(rng, style)`.
+# Park / parking-lot / plaza tiles break up the cityscape and double as
+# visual landmarks.
+enum MapStyle {
+	DOWNTOWN,
+	METROPOLIS,
+	INDUSTRIAL,
+	SUBURBAN,
+	CIVIC_CENTER,
 }
 
-static func pick_block_category(rng: RandomNumberGenerator) -> int:
+const STYLE_NAMES := {
+	MapStyle.DOWNTOWN:     "Downtown",
+	MapStyle.METROPOLIS:   "Metropolis",
+	MapStyle.INDUSTRIAL:   "Industrial Zone",
+	MapStyle.SUBURBAN:     "Suburban",
+	MapStyle.CIVIC_CENTER: "Civic Center",
+}
+
+const STYLE_DESCRIPTIONS := {
+	MapStyle.DOWNTOWN:     "Balanced city — shops, offices, apartments and a few parks.",
+	MapStyle.METROPOLIS:   "Dense urban skyline. Tall offices and apartments dominate.",
+	MapStyle.INDUSTRIAL:   "Sprawling warehouses, factories and parking lots.",
+	MapStyle.SUBURBAN:     "Quiet neighborhoods with plenty of parks and small shops.",
+	MapStyle.CIVIC_CENTER: "Hospitals, schools, banks and police stations cluster the streets.",
+}
+
+# Per-style category weights. Higher weight ⇒ more of that block category.
+# Use 0 to suppress a category entirely for a given style.
+const STYLE_CATEGORY_WEIGHTS := {
+	MapStyle.DOWNTOWN: {
+		BlockCategory.RESIDENTIAL: 5,
+		BlockCategory.COMMERCIAL:  4,
+		BlockCategory.MIXED:       3,
+		BlockCategory.INDUSTRIAL:  2,
+		BlockCategory.CIVIC:       2,
+		BlockCategory.PARK:        2,
+		BlockCategory.PARKING_LOT: 1,
+		BlockCategory.PLAZA:       1,
+	},
+	MapStyle.METROPOLIS: {
+		BlockCategory.RESIDENTIAL: 3,
+		BlockCategory.COMMERCIAL:  6,
+		BlockCategory.MIXED:       4,
+		BlockCategory.INDUSTRIAL:  0,
+		BlockCategory.CIVIC:       2,
+		BlockCategory.PARK:        1,
+		BlockCategory.PARKING_LOT: 2,
+		BlockCategory.PLAZA:       2,
+	},
+	MapStyle.INDUSTRIAL: {
+		BlockCategory.RESIDENTIAL: 1,
+		BlockCategory.COMMERCIAL:  1,
+		BlockCategory.MIXED:       1,
+		BlockCategory.INDUSTRIAL:  8,
+		BlockCategory.CIVIC:       0,
+		BlockCategory.PARK:        1,
+		BlockCategory.PARKING_LOT: 4,
+		BlockCategory.PLAZA:       0,
+	},
+	MapStyle.SUBURBAN: {
+		BlockCategory.RESIDENTIAL: 7,
+		BlockCategory.COMMERCIAL:  2,
+		BlockCategory.MIXED:       1,
+		BlockCategory.INDUSTRIAL:  0,
+		BlockCategory.CIVIC:       1,
+		BlockCategory.PARK:        6,
+		BlockCategory.PARKING_LOT: 1,
+		BlockCategory.PLAZA:       2,
+	},
+	MapStyle.CIVIC_CENTER: {
+		BlockCategory.RESIDENTIAL: 2,
+		BlockCategory.COMMERCIAL:  2,
+		BlockCategory.MIXED:       3,
+		BlockCategory.INDUSTRIAL:  0,
+		BlockCategory.CIVIC:       6,
+		BlockCategory.PARK:        2,
+		BlockCategory.PARKING_LOT: 2,
+		BlockCategory.PLAZA:       2,
+	},
+}
+
+# Multiplies catalog building heights when generating buildings for a
+# given style — Metropolis gets towering skyscrapers, Suburban shrinks
+# down to cottage-scale rooflines.
+const STYLE_HEIGHT_SCALE := {
+	MapStyle.DOWNTOWN:     1.0,
+	MapStyle.METROPOLIS:   1.7,
+	MapStyle.INDUSTRIAL:   0.9,
+	MapStyle.SUBURBAN:     0.65,
+	MapStyle.CIVIC_CENTER: 1.05,
+}
+
+static func pick_block_category(rng: RandomNumberGenerator, style: int = MapStyle.DOWNTOWN) -> int:
+	var weights: Dictionary = STYLE_CATEGORY_WEIGHTS.get(style, STYLE_CATEGORY_WEIGHTS[MapStyle.DOWNTOWN])
 	var total := 0
-	for w in CATEGORY_WEIGHTS.values():
+	for w in weights.values():
 		total += w
+	if total <= 0:
+		return BlockCategory.MIXED
 	var roll := rng.randi() % total
 	var acc := 0
-	for cat in CATEGORY_WEIGHTS.keys():
-		acc += CATEGORY_WEIGHTS[cat]
+	for cat in weights.keys():
+		acc += weights[cat]
 		if roll < acc:
 			return cat
 	return BlockCategory.MIXED
+
+static func style_height_scale(style: int) -> float:
+	return STYLE_HEIGHT_SCALE.get(style, 1.0)
+
+static func style_name(style: int) -> String:
+	return STYLE_NAMES.get(style, "Custom")
+
+static func style_description(style: int) -> String:
+	return STYLE_DESCRIPTIONS.get(style, "")
 
 static func pick_building_for_category(rng: RandomNumberGenerator, category: int) -> int:
 	var pool: Array = CATEGORY_TYPES.get(category, CATEGORY_TYPES[BlockCategory.MIXED])

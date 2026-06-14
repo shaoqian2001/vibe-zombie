@@ -38,10 +38,9 @@ const BUILDING_TYPE_NAMES := [
 const DOOR_ANIM_DURATION := 0.4
 const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 
-# Enemy spawning — base density scales with map area so larger worlds feel
-# populated without exploding the entity count. Blocks are now ~100×200m so
-# the per-block enemy count goes up significantly; DEV_MODE keeps it tame.
-const ENEMIES_PER_BLOCK_NORMAL := 14.0
+# Enemy spawning — per-block density comes from the chosen difficulty
+# (NetworkManager.difficulty_settings), tuned for the 100×200m blocks.
+# DEV_MODE keeps the count tiny for fast playtesting.
 const ENEMIES_PER_BLOCK_DEV := 2.0
 
 # Weapon pickup spawning — density scales with map size as well
@@ -503,13 +502,15 @@ func _find_clear_fallback_spawn(rng: RandomNumberGenerator, hint: Vector3) -> Ve
 func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var nb: int = world.num_blocks
 
-	# Difficulty drives per-block enemy density when networked.
+	# Single-player honours the difficulty picked in the setup menu (which
+	# writes to NetworkManager just like the multiplayer host does). DEV
+	# mode keeps things sparse for playtesting.
 	var per_block: float
-	if _is_mp:
+	if DEV_MODE and not _is_mp:
+		per_block = ENEMIES_PER_BLOCK_DEV
+	else:
 		var diff := NetworkManager.difficulty_settings(NetworkManager.difficulty)
 		per_block = diff.enemies_per_block
-	else:
-		per_block = ENEMIES_PER_BLOCK_DEV if DEV_MODE else ENEMIES_PER_BLOCK_NORMAL
 
 	var base_count := int(per_block * nb * nb)
 

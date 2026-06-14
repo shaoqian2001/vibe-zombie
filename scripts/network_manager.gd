@@ -32,6 +32,8 @@ signal game_ended
 
 enum Difficulty { EASY, MEDIUM, TOUGH, NIGHTMARE }
 
+const BuildingCatalog = preload("res://scripts/building_catalog.gd")
+
 # Lobby / game config
 var is_host: bool = false
 var is_networked: bool = false
@@ -40,6 +42,7 @@ var game_seed: int = 0
 var map_size: int = 3              # world.num_blocks (each block ~100×200m)
 var max_players: int = 4           # 2..8
 var difficulty: int = Difficulty.MEDIUM
+var map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
 
 # Peers (id -> {name: String, ready: bool})
 var peers: Dictionary = {}
@@ -87,37 +90,39 @@ func _process(delta: float) -> void:
 # ------------------------------------------------------------------
 
 static func difficulty_settings(d: int) -> Dictionary:
+	# Density values are tuned for the 100×200 m block size — each block
+	# can comfortably hold a dozen+ enemies before things feel cramped.
 	match d:
 		Difficulty.EASY:
 			return {
-				"enemies_per_block": 0.8,
+				"enemies_per_block": 6.0,
 				"horde_mult": 0.55,
 				"starting_hordes": 0,
 				"starting_horde_size": 0,
 			}
 		Difficulty.MEDIUM:
 			return {
-				"enemies_per_block": 2.0,
+				"enemies_per_block": 14.0,
 				"horde_mult": 1.0,
 				"starting_hordes": 1,
 				"starting_horde_size": 6,
 			}
 		Difficulty.TOUGH:
 			return {
-				"enemies_per_block": 3.5,
+				"enemies_per_block": 22.0,
 				"horde_mult": 1.5,
 				"starting_hordes": 2,
 				"starting_horde_size": 10,
 			}
 		Difficulty.NIGHTMARE:
 			return {
-				"enemies_per_block": 5.0,
+				"enemies_per_block": 32.0,
 				"horde_mult": 2.2,
 				"starting_hordes": 4,
 				"starting_horde_size": 14,
 			}
 	return {
-		"enemies_per_block": 2.0,
+		"enemies_per_block": 14.0,
 		"horde_mult": 1.0,
 		"starting_hordes": 1,
 		"starting_horde_size": 6,
@@ -135,11 +140,13 @@ static func difficulty_name(d: int) -> String:
 # Host / join lifecycle
 # ------------------------------------------------------------------
 
-func host_game(p_map_size: int, p_max_players: int, p_difficulty: int) -> String:
+func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1) -> String:
 	reset()
-	map_size = clampi(p_map_size, 2, 6)
+	map_size = clampi(p_map_size, 2, 12)
 	max_players = clampi(p_max_players, 2, 8)
 	difficulty = clampi(p_difficulty, 0, 3)
+	if p_map_style >= 0:
+		map_style = p_map_style
 	game_seed = int(Time.get_unix_time_from_system()) ^ (randi() << 1)
 	game_code = _generate_code()
 
@@ -195,29 +202,37 @@ func reset() -> void:
 func set_map_size(v: int) -> void:
 	if not is_host:
 		return
-	map_size = clampi(v, 2, 6)
+	map_size = clampi(v, 2, 12)
 	lobby_config_changed.emit()
-	rpc("_sync_lobby_config", map_size, max_players, difficulty)
+	rpc("_sync_lobby_config", map_size, max_players, difficulty, map_style)
 
 func set_max_players(v: int) -> void:
 	if not is_host:
 		return
 	max_players = clampi(v, 2, 8)
 	lobby_config_changed.emit()
-	rpc("_sync_lobby_config", map_size, max_players, difficulty)
+	rpc("_sync_lobby_config", map_size, max_players, difficulty, map_style)
 
 func set_difficulty(v: int) -> void:
 	if not is_host:
 		return
 	difficulty = clampi(v, 0, 3)
 	lobby_config_changed.emit()
-	rpc("_sync_lobby_config", map_size, max_players, difficulty)
+	rpc("_sync_lobby_config", map_size, max_players, difficulty, map_style)
+
+func set_map_style(v: int) -> void:
+	if not is_host:
+		return
+	map_style = v
+	lobby_config_changed.emit()
+	rpc("_sync_lobby_config", map_size, max_players, difficulty, map_style)
 
 @rpc("authority", "call_remote", "reliable")
-func _sync_lobby_config(p_map_size: int, p_max_players: int, p_difficulty: int) -> void:
+func _sync_lobby_config(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = 0) -> void:
 	map_size = p_map_size
 	max_players = p_max_players
 	difficulty = p_difficulty
+	map_style = p_map_style
 	lobby_config_changed.emit()
 
 @rpc("authority", "call_remote", "reliable")
@@ -237,7 +252,7 @@ func _register_peer(peer_name: String) -> void:
 			dump[k] = peers[k]
 		rpc("_sync_peer_list", dump)
 		# Push current lobby config + seed so the new peer is in sync.
-		rpc_id(sender, "_sync_lobby_config", map_size, max_players, difficulty)
+		rpc_id(sender, "_sync_lobby_config", map_size, max_players, difficulty, map_style)
 		rpc_id(sender, "_sync_game_seed", game_seed, game_code)
 
 @rpc("authority", "call_remote", "reliable")

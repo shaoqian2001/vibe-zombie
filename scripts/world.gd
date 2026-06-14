@@ -83,6 +83,10 @@ const FovCuller        = preload("res://scripts/fov_culler.gd")
 
 var _rng := RandomNumberGenerator.new()
 
+## Map style — drives block-category mix and per-building height scaling.
+## Defaults to DOWNTOWN, overridden by NetworkManager.map_style.
+var map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
+
 ## Array of dictionaries describing each building placed in the world.
 ## Each entry: { node: MeshInstance3D, entrance_area: Area3D, type: int,
 ##               width: float, depth: float, height: float,
@@ -95,14 +99,16 @@ var buildings: Array = []
 var block_infos: Array = []
 
 func _ready() -> void:
-	# When networked, every peer must build the same world. Pull the seed
-	# and map size from NetworkManager so the host's choices are
-	# deterministic on all clients.
-	if NetworkManager.is_networked:
-		_rng.seed = NetworkManager.game_seed if NetworkManager.game_seed != 0 else 98765
-		num_blocks = NetworkManager.map_size
+	# Read map configuration from NetworkManager. The same fields are used
+	# for single-player (set by the setup menu) and multiplayer (set by
+	# the host and broadcast to clients). For networked play every peer
+	# must build an identical world, so we always pull the host's seed.
+	if NetworkManager.game_seed != 0:
+		_rng.seed = NetworkManager.game_seed
 	else:
 		_rng.seed = 98765
+	num_blocks = NetworkManager.map_size
+	map_style = NetworkManager.map_style
 	_generate_ground()
 	_generate_boundary_walls()
 	_generate_city_grid()
@@ -188,7 +194,7 @@ func _generate_city_grid() -> void:
 			var bx := origin.x + col * CELL_WIDTH
 			var bz := origin.z + row * CELL_DEPTH
 			var block_origin := Vector3(bx, 0.0, bz)
-			var category := BuildingCatalog.pick_block_category(_rng)
+			var category := BuildingCatalog.pick_block_category(_rng, map_style)
 
 			block_infos.append({
 				row = row,
@@ -263,7 +269,7 @@ func _populate_building_block(origin: Vector3, category: int) -> void:
 
 		var bw := _rng.randf_range(info.w_min, info.w_max)
 		var bd := _rng.randf_range(info.d_min, info.d_max)
-		var bh := _rng.randf_range(info.h_min, info.h_max)
+		var bh: float = _rng.randf_range(info.h_min, info.h_max) * BuildingCatalog.style_height_scale(map_style)
 
 		# Randomly rotate 90° on the long axis — adds variety so apartments
 		# don't all line up the same way.
