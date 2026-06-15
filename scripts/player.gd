@@ -7,6 +7,16 @@ const ACCELERATION = 18.0
 const GRAVITY = 24.0
 const ROTATION_SPEED = 14.0
 
+# Aim mode (hold the right mouse button while holding a ranged weapon): trades
+# mobility for precision and stopping power. Movement and turn speed drop, the
+# weapon barely sways and rounds scatter far less, and each shot lands for
+# AIM_DAMAGE_FACTOR× its normal damage.
+const AIM_MOVE_FACTOR := 0.45    # walk/sprint speed multiplier while aiming
+const AIM_TURN_FACTOR := 0.5     # body turn-rate multiplier while aiming
+const AIM_SPREAD_FACTOR := 0.25  # bullet-scatter multiplier while aiming
+const AIM_SWAY_FACTOR := 0.35    # weapon/arm shake multiplier while aiming
+const AIM_DAMAGE_FACTOR := 1.6   # per-shot damage multiplier while aiming
+
 # Stamina
 const STAMINA_MAX := 40.0
 const STAMINA_DRAIN := 15.0
@@ -32,6 +42,9 @@ var _weapon_ammo: Dictionary = {}
 var _current_weapon: String = ""
 var _weapon_stats: Dictionary = {}
 var _armed: bool = false
+# True while the local player holds the aim button with a ranged weapon out.
+# Owner-only (driven from input each physics frame); remote copies stay false.
+var _is_aiming: bool = false
 
 # Gun state (for the currently equipped weapon)
 var ammo: int = 0
@@ -868,10 +881,20 @@ func _physics_process(delta: float) -> void:
 		_update_animation(delta)
 		return
 
+	# Aim mode: held right mouse while a ranged weapon is equipped. Melee
+	# weapons (and bare hands) can't aim.
+	_is_aiming = (
+		_armed
+		and Input.is_action_pressed("aim")
+		and _weapon_stats.get("hit_mode", "") != "melee"
+	)
+
 	_apply_gravity(delta)
 	var move_dir := _get_world_movement_direction()
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
+	if _is_aiming:
+		current_speed *= AIM_MOVE_FACTOR
 	_apply_movement(move_dir, current_speed, delta)
 	# Layer recoil on top of input-driven movement and let it decay so
 	# the kick is a brief shove, not a sustained push.
@@ -1781,11 +1804,19 @@ func _fire_bullet() -> void:
 	# recoil in WeaponData so this is effectively a gun-only effect.
 	_apply_recoil()
 
+## Per-shot multipliers for aim mode. 1.0 when not aiming, so callers can apply
+## them unconditionally.
+func _aim_damage_mult() -> float:
+	return AIM_DAMAGE_FACTOR if _is_aiming else 1.0
+
+func _aim_spread_mult() -> float:
+	return AIM_SPREAD_FACTOR if _is_aiming else 1.0
+
 func _fire_single() -> void:
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 40.0)
-	var damage: float = _weapon_stats.get("damage", 10.0)
-	var spread_deg: float = _weapon_stats.get("spread", 0.0)
+	var damage: float = _weapon_stats.get("damage", 10.0) * _aim_damage_mult()
+	var spread_deg: float = _weapon_stats.get("spread", 0.0) * _aim_spread_mult()
 	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	if spread_deg > 0.0:
@@ -1823,8 +1854,8 @@ func _fire_pellet() -> void:
 	# by one or two. One shell = one pull of the trigger = one ammo tick.
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 15.0)
-	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0)
-	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0)
+	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0) * _aim_damage_mult()
+	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0) * _aim_spread_mult()
 	var pellet_count: int = _weapon_stats.get("pellet_count", 12)
 	var knockback_per_pellet: float = _weapon_stats.get("knockback", 0.0)
 	var spread_rad := deg_to_rad(spread_deg)
@@ -1869,7 +1900,7 @@ func _fire_pellet() -> void:
 func _fire_explosive() -> void:
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 25.0)
-	var damage: float = _weapon_stats.get("damage", 30.0)
+	var damage: float = _weapon_stats.get("damage", 30.0) * _aim_damage_mult()
 	var radius: float = _weapon_stats.get("explosion_radius", 5.0)
 	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
@@ -2172,7 +2203,8 @@ func _rotate_to_face_mouse(delta: float) -> void:
 		target_body_yaw = aim_yaw - signf(aim_offset) * MAX_TORSO_TWIST
 	else:
 		target_body_yaw = desired_body_yaw
-	rotation.y = lerp_angle(rotation.y, target_body_yaw, ROTATION_SPEED * delta)
+	var turn_speed := ROTATION_SPEED * (AIM_TURN_FACTOR if _is_aiming else 1.0)
+	rotation.y = lerp_angle(rotation.y, target_body_yaw, turn_speed * delta)
 
 func _update_animation(delta: float) -> void:
 	# Horizontal speed drives the walk cycle; scale the cycle faster and bigger
@@ -2187,9 +2219,11 @@ func _update_animation(delta: float) -> void:
 	var leg_swing_amp := deg_to_rad(lerpf(2.0, 32.0, clamped_ratio))
 	var knee_amp := deg_to_rad(lerpf(2.0, 48.0, clamped_ratio))
 	# A free arm hangs and pendulums broadly with the gait; a braced/IK arm
-	# is locked to the weapon and barely moves.
-	var braced_arm_amp := deg_to_rad(lerpf(0.5, 4.0, clamped_ratio))
-	var free_arm_amp := deg_to_rad(lerpf(2.0, 18.0, clamped_ratio))
+	# is locked to the weapon and barely moves. Aiming damps the arm swing
+	# further so the held weapon barely shakes.
+	var aim_sway := AIM_SWAY_FACTOR if _is_aiming else 1.0
+	var braced_arm_amp := deg_to_rad(lerpf(0.5, 4.0, clamped_ratio)) * aim_sway
+	var free_arm_amp := deg_to_rad(lerpf(2.0, 18.0, clamped_ratio)) * aim_sway
 	var bob_amp := lerpf(0.0, 0.04, clamped_ratio)
 	# Pelvis swivel is disabled: any non-zero yaw here rotates each hip's
 	# swing plane off the sagittal axis, so the swinging foot traces a slight
