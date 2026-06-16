@@ -339,6 +339,10 @@ const WEAPON_POSES := {
 
 # Network state — true if this peer owns this player (or in single-player).
 var _owns_input: bool = true
+# GD-Sync identity, assigned by main.gd. `peer_id` is the owner's GD-Sync client
+# id; `is_local_player` is true on the machine that controls this character.
+var peer_id: int = -1
+var is_local_player: bool = true
 
 # Network sync (for non-authority peers we just receive position updates)
 const NET_SYNC_HZ := 20.0
@@ -350,11 +354,12 @@ var _remote_last_pos: Vector3 = Vector3.ZERO
 var _remote_last_sync_time: float = 0.0
 
 func _ready() -> void:
-	# In MP, the player node has multiplayer_authority set by the spawner code
-	# in main.gd to the owning peer's id. In single-player the default
-	# (server-only) authority applies and _owns_input stays true.
+	# Under GD-Sync the player node has no Godot multiplayer authority —
+	# ownership is just a script-side flag. main.gd's spawner sets
+	# `is_local_player` on the input-owning copy; remote copies are
+	# read-only and animate from synced transforms.
 	if NetworkManager.is_networked:
-		_owns_input = is_multiplayer_authority()
+		_owns_input = is_local_player
 	_cache_body_parts()
 	# Single-player has no main.gd handoff that would call refresh_authority(),
 	# so camera lookup and weapon/aim-line building wouldn't otherwise run —
@@ -846,12 +851,13 @@ func set_dominant_hand(is_right: bool) -> void:
 func is_dominant_right() -> bool:
 	return _dominant_is_right
 
-## Called by main.gd after it sets set_multiplayer_authority() on this player,
-## to make sure `_owns_input` matches the authoritative state (in case Player._ready
-## ran with the default authority before main had a chance to override it).
+## Called by main.gd after it assigns `peer_id` / `is_local_player` on this
+## player, to make sure `_owns_input` matches ownership (in case Player._ready
+## ran before main had a chance to set it). Under GD-Sync the player node has
+## no Godot multiplayer authority — ownership is purely a script-side flag.
 func refresh_authority() -> void:
 	if NetworkManager.is_networked:
-		_owns_input = is_multiplayer_authority()
+		_owns_input = is_local_player
 
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
@@ -911,15 +917,22 @@ func _physics_process(delta: float) -> void:
 	_update_animation(delta)
 	_sync_hud()
 
-	# Push transform to remote peers (client-authoritative on own player).
+	# Push transform to remote peers (each peer is authoritative over its own
+	# player). Broadcast over GD-Sync's relay; main.gd routes it to the matching
+	# remote copy on every other peer.
 	if NetworkManager.is_networked:
 		_net_sync_timer -= delta
 		if _net_sync_timer <= 0.0:
 			_net_sync_timer = NET_SYNC_INTERVAL
-			rpc("_sync_player_transform", global_position, rotation.y, _is_sprinting)
+			NetworkManager.broadcast_event("player_xform", {
+				"peer_id": peer_id,
+				"x": global_position.x, "y": global_position.y, "z": global_position.z,
+				"yaw": rotation.y, "sprinting": _is_sprinting,
+			})
 
-@rpc("authority", "call_remote", "unreliable_ordered")
-func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
+## Applies a transform pushed by the owning peer (called by main.gd on remote
+## copies). Smooths on the receiving side; a big delta teleports.
+func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 	# Smooth on the receiving side. Big distance = teleport.
 	if global_position.distance_to(pos) > 5.0:
 		global_position = pos
@@ -948,10 +961,19 @@ func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 func _emit_player_sound(sound: String, pitch: float = 1.0, volume_db: float = 0.0) -> void:
 	SoundManager.play_2d(sound, pitch, volume_db)
 	if NetworkManager.is_networked:
-		rpc("_remote_player_sound", sound, pitch, volume_db)
+		# Broadcast so every other peer can play it as a positional voice on
+		# this player's remote copy. main.gd dispatches "player_sound" events
+		# in _on_net_event by looking the peer up in its _player_nodes map.
+		NetworkManager.broadcast_event("player_sound", {
+			"peer_id": peer_id,
+			"sound": sound,
+			"pitch": pitch,
+			"vol_db": volume_db,
+		})
 
-@rpc("authority", "call_remote", "unreliable")
-func _remote_player_sound(sound: String, pitch: float, volume_db: float) -> void:
+## Called by main.gd when a remote peer's "player_sound" event reaches us.
+## Plays the sound positionally on this player node.
+func play_remote_sound(sound: String, pitch: float, volume_db: float) -> void:
 	SoundManager.play_on(self, sound, pitch, volume_db)
 
 ## Map the equipped weapon to its gunshot timbre.
@@ -1007,16 +1029,16 @@ func _handle_auto_fire() -> void:
 
 func take_damage(amount: float) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
-	# authoritative for that player. Forward if we're not the authority.
-	if NetworkManager.is_networked and not is_multiplayer_authority():
-		rpc_id(get_multiplayer_authority(), "_take_damage_rpc", amount)
+	# authoritative for that player. The host's enemies call this on their local
+	# copy of a remote player; forward the hit to that player's owner over the
+	# GD-Sync channel instead of mutating a copy we don't own.
+	if NetworkManager.is_networked and not _owns_input:
+		NetworkManager.send_event_to(peer_id, "player_damage", {"amount": amount})
 		return
 	_apply_damage(amount)
 
-@rpc("any_peer", "call_remote", "reliable")
-func _take_damage_rpc(amount: float) -> void:
-	if not is_multiplayer_authority():
-		return
+## Called by main.gd when a "player_damage" event arrives for our local player.
+func apply_remote_damage(amount: float) -> void:
 	_apply_damage(amount)
 
 func _apply_damage(amount: float) -> void:

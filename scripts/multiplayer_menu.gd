@@ -22,6 +22,7 @@ var _root_panel: PanelContainer = null
 var _create_panel: PanelContainer = null
 var _join_panel: PanelContainer = null
 var _join_status_label: Label = null
+var _create_status_label: Label = null
 
 # Create-game working state (mirrors NetworkManager defaults). Map size
 # is deliberately *not* configurable — it's pinned by the chosen style.
@@ -182,6 +183,14 @@ func _show_create() -> void:
 	vbox.add_child(desc)
 	_update_difficulty_desc(desc)
 
+	# --- Status (shows "Creating room…" / errors during the async host flow) ---
+	_create_status_label = Label.new()
+	_create_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_create_status_label.add_theme_font_size_override("font_size", int(13 * s))
+	_create_status_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.55))
+	_create_status_label.custom_minimum_size = Vector2(0, 24 * s)
+	vbox.add_child(_create_status_label)
+
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 8 * s)
 	vbox.add_child(spacer)
@@ -338,12 +347,22 @@ func _update_map_style_desc(desc: Label) -> void:
 		_map_size_label.text = "Map size: %d × %d blocks  (%d total)" % [sz, sz, sz * sz]
 
 func _on_host_pressed() -> void:
+	# GD-Sync hosting is asynchronous (connect → create lobby → self-join). We
+	# generate the code immediately, then wait for join_succeeded (which fires
+	# for the host once the room is live) to open the lobby. Errors arrive via
+	# join_failed and are shown in the create-status label. Map size is a
+	# property of the chosen style — derive it from BuildingCatalog rather
+	# than letting the host pick freely.
 	var preset_size := BuildingCatalog.map_size_for(_create_map_style)
 	var code := NetworkManager.host_game(preset_size, _create_max_players, _create_difficulty, _create_map_style)
 	if code.is_empty():
-		_show_temporary_message("Failed to create server (port in use?)")
+		if _create_status_label:
+			_create_status_label.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
+			_create_status_label.text = "Could not start hosting (is the GD-Sync addon enabled?)"
 		return
-	_open_lobby()
+	if _create_status_label:
+		_create_status_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.55))
+		_create_status_label.text = "Creating room %s…" % code
 
 # ------------------------------------------------------------------
 # Join-game panel
@@ -431,6 +450,11 @@ func _on_join_succeeded() -> void:
 	_open_lobby()
 
 func _on_join_failed(reason: String) -> void:
+	# The same signal surfaces both join and host failures. Route the message to
+	# whichever panel is currently open.
+	if _create_panel and _create_panel.visible and _create_status_label:
+		_create_status_label.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
+		_create_status_label.text = reason
 	if _join_status_label:
 		_join_status_label.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
 		_join_status_label.text = reason

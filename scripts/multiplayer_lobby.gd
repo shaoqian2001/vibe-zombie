@@ -331,12 +331,12 @@ func _refresh_peers() -> void:
 		_peer_list_vbox.add_child(row)
 
 		var dot := ColorRect.new()
-		dot.color = Color(0.30, 0.80, 0.35) if id == 1 else Color(0.40, 0.60, 0.85)
+		dot.color = Color(0.30, 0.80, 0.35) if info.get("is_host", false) else Color(0.40, 0.60, 0.85)
 		dot.custom_minimum_size = Vector2(10 * s, 10 * s)
 		row.add_child(dot)
 
 		var lbl := Label.new()
-		lbl.text = "%s%s" % [info.get("name", "Player"), "  (you)" if id == multiplayer.get_unique_id() else ""]
+		lbl.text = "%s%s" % [info.get("name", "Player"), "  (you)" if id == NetworkManager.local_peer_id else ""]
 		lbl.add_theme_font_size_override("font_size", int(14 * s))
 		lbl.add_theme_color_override("font_color", Color(0.92, 0.92, 0.92))
 		row.add_child(lbl)

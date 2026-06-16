@@ -70,6 +70,11 @@ var _player_nodes: Dictionary = {}
 var _next_enemy_id: int = 0
 # Counter for unique weapon-pickup names.
 var _next_pickup_id: int = 0
+# Host -> client replication cadence (GD-Sync event channel).
+const NET_ENEMY_SYNC_HZ := 20.0
+const NET_PICKUP_SYNC_HZ := 1.0
+var _net_enemy_timer: float = 0.0
+var _net_pickup_timer: float = 0.0
 
 # UI
 var _prompt_label: Label = null
@@ -106,12 +111,15 @@ func _ready() -> void:
 	# Network state snapshot for this scene
 	_is_mp = NetworkManager.is_networked
 	_is_host = (not _is_mp) or NetworkManager.is_host
-	_local_peer_id = multiplayer.get_unique_id() if _is_mp else 1
+	_local_peer_id = NetworkManager.local_peer_id if _is_mp else 1
 
-	# Main is host-authoritative for enemy / pickup / world spawns. Set on every
-	# peer so @rpc("authority") routing matches.
+	# GD-Sync replication runs through NetworkManager's generic event channel
+	# (the @rpc replacement). Subscribe once; main is the single dispatcher that
+	# routes events to the right player / enemy / pickup node by id.
 	if _is_mp:
-		set_multiplayer_authority(1)
+		NetworkManager.net_event.connect(_on_net_event)
+		NetworkManager.peer_list_changed.connect(_on_roster_changed)
+		NetworkManager.game_ended.connect(_on_net_game_ended)
 
 	# In MP we want a deterministic shared RNG so spawn positions match across
 	# peers. The world is already seeded from NetworkManager.game_seed.
@@ -159,14 +167,17 @@ func _ready() -> void:
 	# The Player node baked into Main.tscn becomes the LOCAL player.
 	player.add_to_group("player")
 	if _is_mp:
-		player.set_multiplayer_authority(_local_peer_id)
+		# Ownership is decided by peer_id (GD-Sync client id) rather than Godot's
+		# multiplayer authority, since GD-Sync runs its own networking layer.
+		player.peer_id = _local_peer_id
+		player.is_local_player = true
 		if player.has_method("refresh_authority"):
 			player.refresh_authority()
 		player.name = "Player_%d" % _local_peer_id
 		player.global_position = spawn_assignments.get(_local_peer_id, valid_rim[0])
 		_player_nodes[_local_peer_id] = player
 
-		# Spawn a representation for every other peer.
+		# Spawn a representation for every other peer we already know about.
 		for peer_id in spawn_assignments.keys():
 			if peer_id == _local_peer_id:
 				continue
@@ -221,11 +232,13 @@ func _ready() -> void:
 
 	player.died.connect(_on_player_died)
 
-	# Late-joining peers (MP only): listen for new connections so we can spawn
-	# their player representation on already-running clients/host.
-	if _is_mp:
-		multiplayer.peer_connected.connect(_on_mp_peer_connected)
-		multiplayer.peer_disconnected.connect(_on_mp_peer_disconnected)
+	# MP only: clients ask the host for the current world snapshot once their
+	# scene is up, so late-joiners receive any already-spawned state. Ongoing
+	# enemy/pickup state is reconciled from the host's periodic broadcasts.
+	if _is_mp and not _is_host:
+		var hid := NetworkManager.host_peer_id()
+		if hid >= 0:
+			NetworkManager.send_event_to(hid, "client_ready", {"peer_id": _local_peer_id})
 
 func _shuffle_array(arr: Array, rng: RandomNumberGenerator) -> void:
 	for i in range(arr.size() - 1, 0, -1):
@@ -239,8 +252,9 @@ func _spawn_remote_player(peer_id: int, pos: Vector3) -> CharacterBody3D:
 		return _player_nodes[peer_id]
 	var p := PlayerScene.instantiate() as CharacterBody3D
 	p.name = "Player_%d" % peer_id
-	# Set authority BEFORE add_child so Player._ready sees the correct value.
-	p.set_multiplayer_authority(peer_id)
+	# Tag ownership BEFORE add_child so Player._ready sees the correct value.
+	p.peer_id = peer_id
+	p.is_local_player = false
 	add_child(p)
 	if p.has_method("refresh_authority"):
 		p.refresh_authority()
@@ -253,24 +267,24 @@ func _spawn_remote_player(peer_id: int, pos: Vector3) -> CharacterBody3D:
 	_player_nodes[peer_id] = p
 	return p
 
-func _on_mp_peer_connected(peer_id: int) -> void:
-	# Late joiner — give them a deterministic spawn near the rim.
-	if _player_nodes.has(peer_id):
-		return
-	var rim := _build_rim_spawn_candidates()
-	var pos: Vector3 = rim[peer_id % rim.size()]
-	_spawn_remote_player(peer_id, pos)
+func _on_roster_changed() -> void:
+	# Reconcile remote player nodes against the GD-Sync roster: drop anyone who
+	# left. (New peers are spawned lazily the first time their transform arrives,
+	# which is robust against roster-propagation lag.)
+	for peer_id in _player_nodes.keys():
+		if peer_id == _local_peer_id:
+			continue
+		if not NetworkManager.peers.has(peer_id):
+			var p: Node = _player_nodes[peer_id]
+			_player_nodes.erase(peer_id)
+			if is_instance_valid(p):
+				p.queue_free()
 	if _hud and _hud.has_method("update_peer_count"):
 		_hud.update_peer_count(NetworkManager.peers.size())
 
-func _on_mp_peer_disconnected(peer_id: int) -> void:
-	if _player_nodes.has(peer_id):
-		var p: Node = _player_nodes[peer_id]
-		_player_nodes.erase(peer_id)
-		if is_instance_valid(p):
-			p.queue_free()
-	if _hud and _hud.has_method("update_peer_count"):
-		_hud.update_peer_count(NetworkManager.peers.size())
+func _on_net_game_ended() -> void:
+	# Host left / disconnected mid-game — bail back to the title screen.
+	get_tree().change_scene_to_file("res://scenes/TitleMenu.tscn")
 
 func _process(delta: float) -> void:
 	if _game_state != GameState.PLAYING:
@@ -285,9 +299,169 @@ func _process(delta: float) -> void:
 	# O(N*M) search on the main thread.
 	if _is_host:
 		_update_enemy_ai_parallel()
+		if _is_mp:
+			_host_net_sync(delta)
 	if _mission_system:
 		_mission_system.process(delta)
 		_update_objective_label()
+
+# ------------------------------------------------------------------
+# GD-Sync replication (host broadcast + event dispatch)
+# ------------------------------------------------------------------
+
+func _host_net_sync(delta: float) -> void:
+	# Host broadcasts the FULL enemy / pickup set; clients reconcile (create
+	# unseen, update known, drop absent). This self-heals for late joiners and
+	# makes deaths / pickups propagate without separate despawn messages.
+	_net_enemy_timer -= delta
+	if _net_enemy_timer <= 0.0:
+		_net_enemy_timer = 1.0 / NET_ENEMY_SYNC_HZ
+		NetworkManager.broadcast_event("enemy_state", {"e": _build_enemy_state()})
+	_net_pickup_timer -= delta
+	if _net_pickup_timer <= 0.0:
+		_net_pickup_timer = 1.0 / NET_PICKUP_SYNC_HZ
+		NetworkManager.broadcast_event("pickup_state", {"p": _build_pickup_state()})
+
+func _build_enemy_state() -> Array:
+	var out: Array = []
+	for n in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(n):
+			continue
+		var e := n as Node3D
+		out.append([
+			int(e.get("network_id")), e.global_position.x, e.global_position.y,
+			e.global_position.z, e.rotation.y, float(e.get("hp")),
+		])
+	return out
+
+func _build_pickup_state() -> Array:
+	var out: Array = []
+	for child in get_children():
+		if not (child is Area3D) or not String(child.name).begins_with("WeaponPickup_"):
+			continue
+		var pos: Vector3 = (child as Node3D).global_position
+		out.append([int(child.get("network_id")), String(child.get("weapon_type")), pos.x, pos.y, pos.z])
+	return out
+
+func _on_net_event(event_name: String, payload: Dictionary) -> void:
+	match event_name:
+		"player_xform":
+			_apply_player_xform(payload)
+		"player_damage":
+			# Sent to this peer because our local player took a hit on the host.
+			var lp = _player_nodes.get(_local_peer_id)
+			if lp and lp.has_method("apply_remote_damage"):
+				lp.apply_remote_damage(float(payload.get("amount", 0.0)))
+		"enemy_state":
+			if not _is_host:
+				_apply_enemy_state(payload.get("e", []))
+		"pickup_state":
+			if not _is_host:
+				_apply_pickup_state(payload.get("p", []))
+		"pickup_despawn":
+			var pid := int(payload.get("id", -1))
+			var pn := get_node_or_null("WeaponPickup_%d" % pid)
+			if pn:
+				pn.queue_free()
+		"enemy_damage":
+			# Client -> host damage request.
+			if _is_host:
+				var en := get_node_or_null("Enemy_%d" % int(payload.get("id", -1)))
+				if en and en.has_method("apply_remote_damage"):
+					en.apply_remote_damage(
+						float(payload.get("amount", 0.0)),
+						Vector3(float(payload.get("kx", 0.0)), 0.0, float(payload.get("kz", 0.0))),
+					)
+		"client_ready":
+			# Host replies with the current world snapshot so the joiner catches up.
+			if _is_host:
+				var who := int(payload.get("peer_id", -1))
+				if who >= 0:
+					NetworkManager.send_event_to(who, "enemy_state", {"e": _build_enemy_state()})
+					NetworkManager.send_event_to(who, "pickup_state", {"p": _build_pickup_state()})
+		"player_sound":
+			# A peer fired a weapon / footstep / etc. Play it positionally on
+			# their remote copy. Skip if it's our own broadcast bouncing back.
+			var spid := int(payload.get("peer_id", -1))
+			if spid == _local_peer_id:
+				pass
+			else:
+				var sn = _player_nodes.get(spid)
+				if sn and sn.has_method("play_remote_sound"):
+					sn.play_remote_sound(
+						String(payload.get("sound", "")),
+						float(payload.get("pitch", 1.0)),
+						float(payload.get("vol_db", 0.0)),
+					)
+		"enemy_sound":
+			# Host broadcasts when a zombie lunges/attacks; play on the local
+			# copy of that enemy. The host already played it locally before
+			# broadcasting, so skip if we're the host.
+			if not _is_host:
+				var en := get_node_or_null("Enemy_%d" % int(payload.get("id", -1)))
+				if en and en.has_method("play_remote_sound"):
+					en.play_remote_sound(
+						String(payload.get("sound", "")),
+						float(payload.get("pitch", 1.0)),
+						float(payload.get("vol_db", 0.0)),
+					)
+
+func _apply_player_xform(payload: Dictionary) -> void:
+	var pid := int(payload.get("peer_id", -1))
+	if pid < 0 or pid == _local_peer_id:
+		return
+	var node = _player_nodes.get(pid)
+	if node == null or not is_instance_valid(node):
+		# Lazily materialise a peer we haven't been told about yet.
+		node = _spawn_remote_player(pid, Vector3(
+			float(payload.get("x", 0.0)), float(payload.get("y", 0.5)), float(payload.get("z", 0.0))))
+		if _hud and _hud.has_method("update_peer_count"):
+			_hud.update_peer_count(NetworkManager.peers.size())
+	if node.has_method("apply_remote_transform"):
+		node.apply_remote_transform(
+			Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.5)), float(payload.get("z", 0.0))),
+			float(payload.get("yaw", 0.0)),
+			bool(payload.get("sprinting", false)),
+		)
+
+func _apply_enemy_state(list: Array) -> void:
+	var seen: Dictionary = {}
+	for entry in list:
+		if typeof(entry) != TYPE_ARRAY or (entry as Array).size() < 6:
+			continue
+		var id := int(entry[0])
+		seen[id] = true
+		var pos := Vector3(float(entry[1]), float(entry[2]), float(entry[3]))
+		var yaw := float(entry[4])
+		var hp := float(entry[5])
+		var node := get_node_or_null("Enemy_%d" % id)
+		if node == null:
+			node = _create_enemy(id, pos)
+		if node.has_method("net_apply_transform"):
+			node.net_apply_transform(pos, yaw)
+		if node.has_method("net_set_hp"):
+			node.net_set_hp(hp)
+	# Remove enemies the host no longer reports (deaths / culling).
+	for n in get_tree().get_nodes_in_group("enemy"):
+		if not is_instance_valid(n):
+			continue
+		if not seen.has(int(n.get("network_id"))):
+			n.queue_free()
+
+func _apply_pickup_state(list: Array) -> void:
+	var seen: Dictionary = {}
+	for entry in list:
+		if typeof(entry) != TYPE_ARRAY or (entry as Array).size() < 5:
+			continue
+		var id := int(entry[0])
+		seen[id] = true
+		if get_node_or_null("WeaponPickup_%d" % id) == null:
+			_create_pickup(id, String(entry[1]), Vector3(float(entry[2]), float(entry[3]), float(entry[4])))
+	for child in get_children():
+		if not (child is Area3D) or not String(child.name).begins_with("WeaponPickup_"):
+			continue
+		if not seen.has(int(child.get("network_id"))):
+			child.queue_free()
 
 # ------------------------------------------------------------------
 # Parallel enemy AI (host only)
@@ -530,28 +704,27 @@ func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 func _spawn_enemy_at(pos: Vector3) -> CharacterBody3D:
 	var enemy_id := _next_enemy_id
 	_next_enemy_id += 1
-	if _is_mp:
-		# Server-authoritative: tell every peer (including ourselves) to create
-		# an identical enemy node. The host then owns its AI; clients only
-		# receive transform/HP updates via RPC.
-		rpc("_remote_spawn_enemy", enemy_id, pos)
-		# call_local equivalent for the host:
-		_remote_spawn_enemy(enemy_id, pos)
-	else:
-		_remote_spawn_enemy(enemy_id, pos)
-	# Find and return the just-created node (host side).
-	return get_node_or_null("Enemy_%d" % enemy_id) as CharacterBody3D
+	return _create_enemy(enemy_id, pos)
 
-@rpc("authority", "call_remote", "reliable")
-func _remote_spawn_enemy(enemy_id: int, pos: Vector3) -> void:
-	if has_node("Enemy_%d" % enemy_id):
-		return
+## Instantiates an enemy node locally. The host calls this for every spawn; each
+## client creates its own copy on demand when the host's `enemy_state` broadcast
+## first reports an id it hasn't seen. The host owns AI; clients only animate and
+## apply synced transform/HP (see enemy.gd).
+func _create_enemy(enemy_id: int, pos: Vector3) -> CharacterBody3D:
+	var existing := get_node_or_null("Enemy_%d" % enemy_id)
+	if existing:
+		return existing as CharacterBody3D
 	var enemy_script := preload("res://scripts/enemy.gd")
 	var enemy := CharacterBody3D.new()
 	enemy.set_script(enemy_script)
 	enemy.name = "Enemy_%d" % enemy_id
+	# network_id is set BEFORE add_child so enemy._ready can read it.
+	enemy.set("network_id", enemy_id)
 	enemy.global_position = pos
 	add_child(enemy)
+	if enemy_id >= _next_enemy_id:
+		_next_enemy_id = enemy_id + 1
+	return enemy
 
 func _random_walkable_pos(rng: RandomNumberGenerator) -> Vector3:
 	# Pick a random block, then a random spot inside the block area or on
@@ -631,23 +804,23 @@ func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 		var weapon_type: String = weapon_types[i % weapon_types.size()]
 		var pickup_id := _next_pickup_id
 		_next_pickup_id += 1
-		if _is_mp:
-			rpc("_remote_spawn_pickup", pickup_id, weapon_type, pos)
-			_remote_spawn_pickup(pickup_id, weapon_type, pos)
-		else:
-			_remote_spawn_pickup(pickup_id, weapon_type, pos)
+		_create_pickup(pickup_id, weapon_type, pos)
 
-@rpc("authority", "call_remote", "reliable")
-func _remote_spawn_pickup(pickup_id: int, weapon_type: String, pos: Vector3) -> void:
+## Instantiates a weapon pickup locally. Host spawns them; clients create their
+## copies from the host's `pickup_state` broadcast.
+func _create_pickup(pickup_id: int, weapon_type: String, pos: Vector3) -> void:
 	var node_name := "WeaponPickup_%d" % pickup_id
 	if has_node(node_name):
 		return
 	var pickup := Area3D.new()
 	pickup.set_script(WeaponPickup)
 	pickup.name = node_name
+	pickup.set("network_id", pickup_id)
 	pickup.weapon_type = weapon_type
 	pickup.global_position = pos
 	add_child(pickup)
+	if pickup_id >= _next_pickup_id:
+		_next_pickup_id = pickup_id + 1
 
 func _pos_inside_building(pos: Vector3) -> bool:
 	for binfo in world.buildings:
@@ -828,9 +1001,10 @@ func _on_debug_spawn_weapon(weapon_name: String) -> void:
 
 	var pickup_id := _next_pickup_id
 	_next_pickup_id += 1
-	if _is_mp:
-		rpc("_remote_spawn_pickup", pickup_id, weapon_name, pos)
-	_remote_spawn_pickup(pickup_id, weapon_name, pos)
+	# Under GD-Sync there's no per-spawn RPC — the host instantiates the
+	# pickup locally and the next periodic pickup_state broadcast covers
+	# joining clients (see _build_pickup_state + _apply_pickup_state).
+	_create_pickup(pickup_id, weapon_name, pos)
 
 # ------------------------------------------------------------------
 # Game Over / Win overlay
