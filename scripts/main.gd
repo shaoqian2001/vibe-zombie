@@ -347,6 +347,17 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 	match event_name:
 		"player_xform":
 			_apply_player_xform(payload)
+		"player_sound":
+			# Play another player's action sound positionally on their remote copy.
+			var spid := int(payload.get("peer_id", -1))
+			if spid != _local_peer_id:
+				var sp = _player_nodes.get(spid)
+				if sp and sp.has_method("play_remote_sound"):
+					sp.play_remote_sound(
+						String(payload.get("sound", "")),
+						float(payload.get("pitch", 1.0)),
+						float(payload.get("vol", 0.0)),
+					)
 		"player_damage":
 			# Sent to this peer because our local player took a hit on the host.
 			var lp = _player_nodes.get(_local_peer_id)

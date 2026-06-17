@@ -991,11 +991,62 @@ func _set_remote_weapon(weapon_name: String) -> void:
 	_pistol_node.visible = (weapon_name == "pistol")
 	_shotgun_node.visible = (weapon_name == "shotgun")
 	_smg_node.visible = (weapon_name == "smg")
+	_ak47_node.visible = (weapon_name == "ak47")
 	_grenade_launcher_node.visible = (weapon_name == "grenade_launcher")
 	_bat_node.visible = (weapon_name == "bat")
 	_weapon_stats = WeaponData.get_weapon(weapon_name) if weapon_name != "" else {}
 	# _apply_weapon_pose falls back to the unarmed pose for an empty/unknown name.
 	_apply_weapon_pose(weapon_name)
+
+# ------------------------------------------------------------------
+# Audio. The local (input-owning) player hears their own actions as crisp
+# non-positional 2D sounds; in multiplayer those same events are sent over the
+# GD-Sync event channel so every other peer plays them as positional 3D voices
+# on this player's remote copy. Footsteps are handled separately (driven by the
+# walk animation, which already runs on every peer's copy — see _handle_footsteps).
+# ------------------------------------------------------------------
+
+func _emit_player_sound(sound: String, pitch: float = 1.0, volume_db: float = 0.0) -> void:
+	SoundManager.play_2d(sound, pitch, volume_db)
+	if NetworkManager.is_networked:
+		# main.gd routes "player_sound" to this player's remote copy on each peer.
+		NetworkManager.broadcast_event("player_sound", {
+			"peer_id": peer_id, "sound": sound, "pitch": pitch, "vol": volume_db,
+		})
+
+## Plays a networked sound on a remote copy of this player (called by main.gd
+## when a "player_sound" event arrives for a non-local peer).
+func play_remote_sound(sound: String, pitch: float, volume_db: float) -> void:
+	SoundManager.play_on(self, sound, pitch, volume_db)
+
+## Map the equipped weapon to its gunshot timbre.
+func _gun_sound_name() -> String:
+	match _current_weapon:
+		"smg": return "gun_smg"
+		"ak47": return "gun_ak47"
+		"shotgun": return "gun_shotgun"
+		"grenade_launcher": return "gun_grenade"
+		_: return "gun_pistol"
+
+## Called from the walk animation each frame. Fires one footstep on each zero
+## crossing of the gait sine while the player is moving, so step cadence tracks
+## the animation (and therefore walk vs. sprint) automatically. Runs on every
+## peer's copy (the animation does), so footsteps need no networking: the owner
+## hears 2D, remote copies play positional 3D.
+func _handle_footsteps(horiz_speed: float, swing_sin: float) -> void:
+	if is_dead or horiz_speed < 0.6:
+		_prev_step_sign = 0
+		return
+	var sign_now: int = 1 if swing_sin >= 0.0 else -1
+	if _prev_step_sign != 0 and sign_now != _prev_step_sign:
+		var sprint := _is_sprinting
+		var pitch := randf_range(0.9, 1.08) * (1.12 if sprint else 1.0)
+		var vol := -13.0 if sprint else -19.0
+		if _owns_input:
+			SoundManager.play_2d("footstep", pitch, vol)
+		else:
+			SoundManager.play_on(self, "footstep", pitch, vol + 8.0)
+	_prev_step_sign = sign_now
 
 func _apply_recoil() -> void:
 	# Backward kick on the player's body for every trigger pull. Decays
