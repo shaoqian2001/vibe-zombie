@@ -304,15 +304,16 @@ const WEAPON_POSES := {
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
 	"smg": {
-		# Compact SMG tucked against the chest — the RIGHT (trigger) hand grips
-		# the receiver in front of the chest, slightly inboard of the right
-		# shoulder (negative shoulder_roll pulls it toward the centreline so the
-		# weapon sits in the hands rather than jammed up on the shoulder). The
-		# LEFT support hand IKs forward onto the rail, well ahead of the grip.
-		# Shared stance for all the two-handed guns; only the kick/recoil differs.
-		# elbow_bend kept fairly open so the trigger forearm hangs to the grip
-		# naturally instead of folding up tight against the chest.
-		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
+		# Compact SMG carried at the chest. The RIGHT (trigger) arm's UPPER arm
+		# hangs almost straight down at the side — shoulder_roll is kept small
+		# (only a slight inboard tilt) so the elbow stays under the shoulder
+		# instead of being pulled across the chest, which is how a real shooter's
+		# firing arm hangs. The forearm folds up (elbow_bend) to bring the grip
+		# in front of the body, and the gun mesh sits a touch higher and outboard
+		# of centre (see _build_smg position). The LEFT support hand IKs forward
+		# onto the rail, well ahead of the grip. Shared stance for all the
+		# two-handed guns; only the kick/recoil differs.
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -5.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
@@ -320,21 +321,21 @@ const WEAPON_POSES := {
 		# Long rifle held at the chest (see "smg" for the stance), the support
 		# hand reaching forward onto the forend. Stiffer kick than the SMG, but
 		# without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -5.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
 		# Long shotgun held at the chest (see "smg" for the stance), with a
 		# heavy kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -5.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
 		# Heavy launcher held at the chest (see "smg" for the stance), with
 		# the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -5.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
@@ -1384,9 +1385,9 @@ func _build_pistol() -> void:
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
-	# +X nudges the whole gun outboard of the hand so the stock/back clears the
-	# torso instead of sinking into it (the arm posture is unchanged).
-	_shotgun_node.position = Vector3(0.04, 0.0, 0.02)
+	# +X outboard of the body centreline so the stock/back clears the torso, and
+	# +Y lifts it higher toward the shoulder for the vertical trigger-arm carry.
+	_shotgun_node.position = Vector3(0.06, 0.05, 0.02)
 	_shotgun_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_shotgun_node)
 
@@ -1467,8 +1468,10 @@ func _build_shotgun() -> void:
 func _build_smg() -> void:
 	_smg_node = Node3D.new()
 	_smg_node.name = "SMG"
-	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
-	_smg_node.position = Vector3(0.04, 0.07, 0.02)
+	# +X nudges the gun outboard of the hand (clear of the torso, slightly off
+	# the body centreline) and +Y lifts it higher toward the shoulder so the
+	# carry reads naturally with the now-vertical trigger upper arm.
+	_smg_node.position = Vector3(0.06, 0.11, 0.02)
 	_smg_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_smg_node)
 
@@ -1523,8 +1526,9 @@ func _build_smg() -> void:
 func _build_ak47() -> void:
 	_ak47_node = Node3D.new()
 	_ak47_node.name = "AK47"
-	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
-	_ak47_node.position = Vector3(0.04, 0.07, 0.02)
+	# +X outboard of the body centreline, +Y higher toward the shoulder (matches
+	# the vertical trigger-arm carry).
+	_ak47_node.position = Vector3(0.06, 0.11, 0.02)
 	_ak47_node.scale = Vector3.ONE * 1.35
 	_attach_weapon(_ak47_node)
 
@@ -1607,8 +1611,9 @@ func _build_ak47() -> void:
 func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
-	# +X nudges the whole gun outboard of the hand so the back clears the torso.
-	_grenade_launcher_node.position = Vector3(0.04, 0.06, 0.06)
+	# +X outboard of the body centreline (back clears the torso), +Y higher
+	# toward the shoulder for the vertical trigger-arm carry.
+	_grenade_launcher_node.position = Vector3(0.06, 0.10, 0.06)
 	_grenade_launcher_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_grenade_launcher_node)
 
@@ -2395,8 +2400,13 @@ func _update_animation(delta: float) -> void:
 	# when sprinting so sprint visibly reads.
 	var horiz_speed := Vector2(velocity.x, velocity.z).length()
 	var speed_ratio := clampf(horiz_speed / SPEED, 0.0, 2.0)
-	# Cycle frequency in radians/sec — ~2 full swings/sec at walking speed.
-	var cycle_rate := 10.0 * speed_ratio
+	# Stride frequency grows SUB-linearly with speed. Stride *length* (the leg
+	# swing amplitude below) also grows with speed, and distance covered per
+	# step = speed / cadence — so letting cadence rise linearly with speed (as it
+	# used to) made a sprint read as frantic little steps. sqrt scaling keeps
+	# walking unchanged (sqrt(1)=1) while pulling the run cadence well down, so
+	# running becomes longer, slower strides that match the movement speed.
+	var cycle_rate := 10.0 * sqrt(speed_ratio)
 	_walk_phase = fposmod(_walk_phase + cycle_rate * delta, TAU)
 
 	var clamped_ratio: float = clampf(speed_ratio, 0.0, 1.5)
