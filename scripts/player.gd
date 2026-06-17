@@ -344,14 +344,23 @@ var _owns_input: bool = true
 var peer_id: int = -1
 var is_local_player: bool = true
 
-# Network sync (for non-authority peers we just receive position updates)
-const NET_SYNC_HZ := 20.0
+# Network sync. We push our own transform + equipped weapon at NET_SYNC_HZ;
+# remote copies interpolate toward the latest target every frame (rather than
+# snapping on packet arrival) so movement stays smooth between updates.
+const NET_SYNC_HZ := 30.0
 const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
+# How fast a remote copy chases its synced target. Higher = snappier but jitterier.
+const REMOTE_LERP_SPEED := 14.0
+# Beyond this gap we teleport instead of interpolating (covers spawns / big jumps).
+const REMOTE_TELEPORT_DIST := 5.0
 var _net_sync_timer := 0.0
 
 # Derived on receivers to drive animation (authority's `velocity` isn't synced).
 var _remote_last_pos: Vector3 = Vector3.ZERO
 var _remote_last_sync_time: float = 0.0
+# Latest transform target received from the owner; interpolated toward each frame.
+var _remote_target_pos: Vector3 = Vector3.INF
+var _remote_target_yaw: float = 0.0
 
 func _ready() -> void:
 	# Under GD-Sync the player node has no Godot multiplayer authority —
@@ -881,9 +890,11 @@ func _physics_process(delta: float) -> void:
 	if is_dead:
 		return
 
-	# Remote players: just consume synced transform — animate limbs from the
-	# synced horizontal velocity so they're not frozen mid-stride.
+	# Remote players: glide toward the latest synced transform every frame and
+	# animate limbs from the estimated horizontal velocity so they're not frozen
+	# mid-stride or stuttering between packets.
 	if not _owns_input:
+		_interpolate_remote(delta)
 		_update_animation(delta)
 		return
 
@@ -928,18 +939,20 @@ func _physics_process(delta: float) -> void:
 				"peer_id": peer_id,
 				"x": global_position.x, "y": global_position.y, "z": global_position.z,
 				"yaw": rotation.y, "sprinting": _is_sprinting,
+				# The equipped weapon (empty string = unarmed) so remote copies
+				# render the right gun in this player's hands.
+				"weapon": _current_weapon,
 			})
 
-## Applies a transform pushed by the owning peer (called by main.gd on remote
-## copies). Smooths on the receiving side; a big delta teleports.
-func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
-	# Smooth on the receiving side. Big distance = teleport.
-	if global_position.distance_to(pos) > 5.0:
-		global_position = pos
-	else:
-		global_position = global_position.lerp(pos, 0.5)
-	rotation.y = yaw
+## Records the latest transform + equipped weapon pushed by the owning peer
+## (called by main.gd on remote copies). We DON'T snap the position here — the
+## per-frame _interpolate_remote() glides toward it so motion stays smooth
+## between the ~30Hz packets instead of stuttering on each arrival.
+func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "") -> void:
+	_remote_target_pos = pos
+	_remote_target_yaw = yaw
 	_is_sprinting = sprinting
+	_set_remote_weapon(weapon)
 	# Estimate horizontal velocity from the position stream so the animation
 	# rig on remote copies can drive the walk cycle at the right cadence.
 	var now := Time.get_ticks_msec() / 1000.0
@@ -950,59 +963,39 @@ func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 	_remote_last_pos = pos
 	_remote_last_sync_time = now
 
-# ------------------------------------------------------------------
-# Audio. The local (input-owning) player hears their own actions as crisp
-# non-positional 2D sounds; in multiplayer those same events are broadcast so
-# every other peer plays them as positional 3D voices on this player's remote
-# copy. Footsteps are handled separately (driven by the walk animation, which
-# already runs on every peer's copy — see _handle_footsteps).
-# ------------------------------------------------------------------
-
-func _emit_player_sound(sound: String, pitch: float = 1.0, volume_db: float = 0.0) -> void:
-	SoundManager.play_2d(sound, pitch, volume_db)
-	if NetworkManager.is_networked:
-		# Broadcast so every other peer can play it as a positional voice on
-		# this player's remote copy. main.gd dispatches "player_sound" events
-		# in _on_net_event by looking the peer up in its _player_nodes map.
-		NetworkManager.broadcast_event("player_sound", {
-			"peer_id": peer_id,
-			"sound": sound,
-			"pitch": pitch,
-			"vol_db": volume_db,
-		})
-
-## Called by main.gd when a remote peer's "player_sound" event reaches us.
-## Plays the sound positionally on this player node.
-func play_remote_sound(sound: String, pitch: float, volume_db: float) -> void:
-	SoundManager.play_on(self, sound, pitch, volume_db)
-
-## Map the equipped weapon to its gunshot timbre.
-func _gun_sound_name() -> String:
-	match _current_weapon:
-		"smg": return "gun_smg"
-		"ak47": return "gun_ak47"
-		"shotgun": return "gun_shotgun"
-		"grenade_launcher": return "gun_grenade"
-		_: return "gun_pistol"
-
-## Called from the walk animation each frame. Fires one footstep on each zero
-## crossing of the gait sine while the player is moving, so step cadence tracks
-## the animation (and therefore walk vs. sprint) automatically.
-func _handle_footsteps(horiz_speed: float, swing_sin: float) -> void:
-	if is_dead or horiz_speed < 0.6:
-		_prev_step_sign = 0
+## Frame-rate-independent glide toward the last synced transform. Big gaps
+## (spawns / teleports) snap instead of sliding across the map.
+func _interpolate_remote(delta: float) -> void:
+	if _remote_target_pos == Vector3.INF:
 		return
-	var sign_now: int = 1 if swing_sin >= 0.0 else -1
-	if _prev_step_sign != 0 and sign_now != _prev_step_sign:
-		var sprint := _is_sprinting
-		var pitch := randf_range(0.9, 1.08) * (1.12 if sprint else 1.0)
-		var vol := -13.0 if sprint else -19.0
-		# Owner hears 2D; remote copies of other players play positional 3D.
-		if _owns_input:
-			SoundManager.play_2d("footstep", pitch, vol)
-		else:
-			SoundManager.play_on(self, "footstep", pitch, vol + 8.0)
-	_prev_step_sign = sign_now
+	if global_position.distance_to(_remote_target_pos) > REMOTE_TELEPORT_DIST:
+		global_position = _remote_target_pos
+	else:
+		var t: float = 1.0 - exp(-REMOTE_LERP_SPEED * delta)
+		global_position = global_position.lerp(_remote_target_pos, t)
+	rotation.y = lerp_angle(rotation.y, _remote_target_yaw, 1.0 - exp(-REMOTE_LERP_SPEED * delta))
+
+## Mirrors the locally-equipped weapon onto a remote copy: shows the right gun
+## mesh and re-poses the arms. The owner drives this via the synced "weapon"
+## field; we never run weapon input/ammo logic on a copy.
+func _set_remote_weapon(weapon_name: String) -> void:
+	# The weapon meshes are built in refresh_authority() after a frame; if the
+	# rig isn't ready yet, leave _current_weapon untouched so the next packet
+	# retries once the nodes exist.
+	if _pistol_node == null:
+		return
+	if weapon_name == _current_weapon:
+		return
+	_current_weapon = weapon_name
+	_armed = weapon_name != ""
+	_pistol_node.visible = (weapon_name == "pistol")
+	_shotgun_node.visible = (weapon_name == "shotgun")
+	_smg_node.visible = (weapon_name == "smg")
+	_grenade_launcher_node.visible = (weapon_name == "grenade_launcher")
+	_bat_node.visible = (weapon_name == "bat")
+	_weapon_stats = WeaponData.get_weapon(weapon_name) if weapon_name != "" else {}
+	# _apply_weapon_pose falls back to the unarmed pose for an empty/unknown name.
+	_apply_weapon_pose(weapon_name)
 
 func _apply_recoil() -> void:
 	# Backward kick on the player's body for every trigger pull. Decays
