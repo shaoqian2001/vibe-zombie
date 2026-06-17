@@ -10,6 +10,20 @@ Explore a procedurally generated small town, enter buildings, and survive among 
 - **Enter buildings** — press **F** to open/close doors and explore procedural interiors (convenience stores, apartments, offices, warehouses, diners)
 - **Sprint** with **Shift** (drains stamina; recovers after a cooldown)
 - **Survive** among 25 wandering zombies with visible HP bars
+- **Loot** weapons, consumables, and equipment that spawn around the map (mostly inside buildings)
+
+### Items & Equipment
+
+Pickups glow and float on the ground; walk over one to collect it.
+
+| Pickup | Type | Effect |
+|---|---|---|
+| Apple | Consumable | Restores a small amount of health |
+| Medical Kit | Consumable | Fully restores health |
+| Energy Drink | Consumable | Temporary move + turn speed boost (10s) |
+| Body Armor | Equipment | Adds armor that soaks damage before health |
+| Backpack | Equipment | Enlarges the stamina pool (sprint longer) |
+| Tactical Shoes | Equipment | Small permanent movement-speed boost |
 
 ### Controls
 
@@ -22,7 +36,7 @@ Explore a procedurally generated small town, enter buildings, and survive among 
 
 ### HUD
 
-The on-screen HUD displays Armor, Health, and Stamina bars.
+The on-screen HUD displays Armor, Health, and Stamina bars. Armor (filled by body-armor pickups) absorbs incoming damage before it reaches health.
 
 ## Screenshots
 

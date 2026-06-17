@@ -55,6 +55,15 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 
 `scripts/weapon_data.gd` defines all weapon stats (pistol, shotgun, SMG, grenade launcher, bat). `scripts/weapon_pickup.gd` handles world spawning and pickup. Player equips weapons via number keys; logic lives in `player.gd`.
 
+### Item & Equipment System
+
+`scripts/item_data.gd` (`ItemData`) is the consumable/equipment counterpart to `WeaponData` — a lookup table keyed by item id, each entry tagged `"consumable"` or `"equipment"`. `scripts/item_pickup.gd` (`ItemPickup`) mirrors `weapon_pickup.gd`: a floating, glowing, FOV-cullable `Area3D` with a procedural per-item model that calls `Player.pickup_item()` on contact. Items spawn mostly *inside* building footprints (`main._spawn_items`, weighted by `ItemData.random_id`).
+
+- **Consumables** apply instantly on pickup: apple (small heal), medical kit (full heal), energy drink (timed move + turn speed buff).
+- **Equipment** is a persistent passive bonus (no slot management yet): body armor (feeds the armor bar — damage hits armor before health in `Player._apply_damage`), backpack (enlarges the stamina pool via `_stamina_max()`), tactical shoes (raises base move speed).
+
+Networking mirrors weapons exactly: the host broadcasts the full set as `item_state` (~1 Hz) and clients reconcile; `item_despawn` drops a collected pickup. Pickups feed the HUD's toast (`show_toast`) and speed-buff indicator (`set_speed_buff`).
+
 ### Camera
 
 Isometric-style camera at 45° yaw / 42° pitch, smoothly following the player. Q/E rotate around the player. Configured in `scripts/camera_controller.gd`.

@@ -13,6 +13,7 @@ extends Node3D
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
+const ItemPickup = preload("res://scripts/item_pickup.gd")
 const MapView = preload("res://scripts/map_view.gd")
 const FovOverlay = preload("res://scripts/fov_overlay.gd")
 const FovCuller = preload("res://scripts/fov_culler.gd")
@@ -54,6 +55,13 @@ const WEAPON_PICKUP_MIN_DIST := 20.0
 # Same idea for pickups — keeps the static-collision count tractable.
 const MAX_INITIAL_PICKUPS := 80
 
+# Item / equipment pickup spawning. Items spawn MOSTLY inside buildings (loot to
+# find while exploring) with a smaller share dropped out on the streets.
+const ITEMS_PER_BLOCK := 2.0
+const ITEM_MIN_DIST := 6.0
+const ITEM_INDOOR_CHANCE := 0.8  # fraction placed inside building footprints
+const MAX_INITIAL_ITEMS := 90
+
 const PlayerScene = preload("res://scenes/Player.tscn")
 
 @onready var player: CharacterBody3D = $Player
@@ -70,11 +78,14 @@ var _player_nodes: Dictionary = {}
 var _next_enemy_id: int = 0
 # Counter for unique weapon-pickup names.
 var _next_pickup_id: int = 0
+# Counter for unique item-pickup names.
+var _next_item_id: int = 0
 # Host -> client replication cadence (GD-Sync event channel).
 const NET_ENEMY_SYNC_HZ := 20.0
 const NET_PICKUP_SYNC_HZ := 1.0
 var _net_enemy_timer: float = 0.0
 var _net_pickup_timer: float = 0.0
+var _net_item_timer: float = 0.0
 
 # UI
 var _prompt_label: Label = null
@@ -227,6 +238,7 @@ func _ready() -> void:
 		_setup_mission_system(rng)
 		_spawn_enemies(rng)
 		_spawn_weapon_pickups(rng)
+		_spawn_items(rng)
 
 	_connect_entrance_areas()
 
@@ -321,6 +333,10 @@ func _host_net_sync(delta: float) -> void:
 	if _net_pickup_timer <= 0.0:
 		_net_pickup_timer = 1.0 / NET_PICKUP_SYNC_HZ
 		NetworkManager.broadcast_event("pickup_state", {"p": _build_pickup_state()})
+	_net_item_timer -= delta
+	if _net_item_timer <= 0.0:
+		_net_item_timer = 1.0 / NET_PICKUP_SYNC_HZ
+		NetworkManager.broadcast_event("item_state", {"i": _build_item_state()})
 
 func _build_enemy_state() -> Array:
 	var out: Array = []
@@ -341,6 +357,15 @@ func _build_pickup_state() -> Array:
 			continue
 		var pos: Vector3 = (child as Node3D).global_position
 		out.append([int(child.get("network_id")), String(child.get("weapon_type")), pos.x, pos.y, pos.z])
+	return out
+
+func _build_item_state() -> Array:
+	var out: Array = []
+	for child in get_children():
+		if not (child is Area3D) or not String(child.name).begins_with("ItemPickup_"):
+			continue
+		var pos: Vector3 = (child as Node3D).global_position
+		out.append([int(child.get("network_id")), String(child.get("item_id")), pos.x, pos.y, pos.z])
 	return out
 
 func _on_net_event(event_name: String, payload: Dictionary) -> void:
@@ -374,6 +399,14 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 			var pn := get_node_or_null("WeaponPickup_%d" % pid)
 			if pn:
 				pn.queue_free()
+		"item_state":
+			if not _is_host:
+				_apply_item_state(payload.get("i", []))
+		"item_despawn":
+			var iid := int(payload.get("id", -1))
+			var inode := get_node_or_null("ItemPickup_%d" % iid)
+			if inode:
+				inode.queue_free()
 		"enemy_damage":
 			# Client -> host damage request.
 			if _is_host:
@@ -390,6 +423,7 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 				if who >= 0:
 					NetworkManager.send_event_to(who, "enemy_state", {"e": _build_enemy_state()})
 					NetworkManager.send_event_to(who, "pickup_state", {"p": _build_pickup_state()})
+					NetworkManager.send_event_to(who, "item_state", {"i": _build_item_state()})
 		"player_sound":
 			# A peer fired a weapon / footstep / etc. Play it positionally on
 			# their remote copy. Skip if it's our own broadcast bouncing back.
@@ -471,6 +505,21 @@ func _apply_pickup_state(list: Array) -> void:
 			_create_pickup(id, String(entry[1]), Vector3(float(entry[2]), float(entry[3]), float(entry[4])))
 	for child in get_children():
 		if not (child is Area3D) or not String(child.name).begins_with("WeaponPickup_"):
+			continue
+		if not seen.has(int(child.get("network_id"))):
+			child.queue_free()
+
+func _apply_item_state(list: Array) -> void:
+	var seen: Dictionary = {}
+	for entry in list:
+		if typeof(entry) != TYPE_ARRAY or (entry as Array).size() < 5:
+			continue
+		var id := int(entry[0])
+		seen[id] = true
+		if get_node_or_null("ItemPickup_%d" % id) == null:
+			_create_item_pickup(id, String(entry[1]), Vector3(float(entry[2]), float(entry[3]), float(entry[4])))
+	for child in get_children():
+		if not (child is Area3D) or not String(child.name).begins_with("ItemPickup_"):
 			continue
 		if not seen.has(int(child.get("network_id"))):
 			child.queue_free()
@@ -834,6 +883,80 @@ func _create_pickup(pickup_id: int, weapon_type: String, pos: Vector3) -> void:
 	if pickup_id >= _next_pickup_id:
 		_next_pickup_id = pickup_id + 1
 
+# ------------------------------------------------------------------
+# Item / equipment pickup spawning (host only). Items spawn mostly inside
+# building footprints — loot to discover while exploring rooms — with the
+# remainder scattered on the streets. The weighted item id comes from
+# ItemData.random_id so common consumables outnumber equipment.
+# ------------------------------------------------------------------
+
+func _spawn_items(rng: RandomNumberGenerator) -> void:
+	var nb: int = world.num_blocks
+	var item_count := mini(int(ITEMS_PER_BLOCK * nb * nb), MAX_INITIAL_ITEMS)
+	var placed_positions: Array[Vector3] = []
+	var has_buildings: bool = not world.buildings.is_empty()
+
+	for _i in range(item_count):
+		var pos := Vector3.ZERO
+		var valid := false
+
+		for _attempt in range(20):
+			if has_buildings and rng.randf() < ITEM_INDOOR_CHANCE:
+				# Inside a random building's footprint (pulled in from the walls).
+				var binfo = world.buildings[rng.randi() % world.buildings.size()]
+				var bpos: Vector3 = binfo.node.position
+				var hw: float = binfo.width * 0.5 - 1.5
+				var hd: float = binfo.depth * 0.5 - 1.5
+				if hw < 0.5 or hd < 0.5:
+					continue
+				pos = Vector3(bpos.x + rng.randf_range(-hw, hw), 0.0, bpos.z + rng.randf_range(-hd, hd))
+			else:
+				# Out on the streets — reuse the walkable sampler and skip any
+				# spot that lands inside a building footprint.
+				pos = _random_walkable_pos(rng)
+				pos.y = 0.0
+				if _pos_inside_building(pos):
+					continue
+
+			if pos.distance_to(player.global_position) < 8.0:
+				continue
+
+			var too_close := false
+			for prev in placed_positions:
+				if pos.distance_to(prev) < ITEM_MIN_DIST:
+					too_close = true
+					break
+			if too_close:
+				continue
+
+			valid = true
+			break
+
+		if not valid:
+			continue
+
+		placed_positions.append(pos)
+		var item_id := ItemData.random_id(rng)
+		var item_pickup_id := _next_item_id
+		_next_item_id += 1
+		_create_item_pickup(item_pickup_id, item_id, pos)
+
+## Instantiates an item pickup locally. Host spawns them; clients create their
+## copies from the host's `item_state` broadcast (mirrors _create_pickup).
+func _create_item_pickup(item_pickup_id: int, item_id: String, pos: Vector3) -> void:
+	var node_name := "ItemPickup_%d" % item_pickup_id
+	if has_node(node_name):
+		return
+	var pickup := Area3D.new()
+	pickup.set_script(ItemPickup)
+	pickup.name = node_name
+	pickup.set("network_id", item_pickup_id)
+	pickup.item_id = item_id
+	pickup.global_position = pos
+	add_child(pickup)
+	if item_pickup_id >= _next_item_id:
+		_next_item_id = item_pickup_id + 1
+
 func _pos_inside_building(pos: Vector3) -> bool:
 	for binfo in world.buildings:
 		var bpos: Vector3 = binfo.node.position
@@ -980,6 +1103,7 @@ func _setup_debug_panel() -> void:
 	_debug_panel.god_mode_changed.connect(_on_debug_god_mode_changed)
 	_debug_panel.spawn_horde_requested.connect(_on_debug_spawn_horde)
 	_debug_panel.spawn_weapon_requested.connect(_on_debug_spawn_weapon)
+	_debug_panel.spawn_item_requested.connect(_on_debug_spawn_item)
 	_debug_panel.dominant_hand_changed.connect(_on_debug_dominant_hand_changed)
 
 func _on_debug_density_changed(multiplier: float) -> void:
@@ -1017,6 +1141,22 @@ func _on_debug_spawn_weapon(weapon_name: String) -> void:
 	# pickup locally and the next periodic pickup_state broadcast covers
 	# joining clients (see _build_pickup_state + _apply_pickup_state).
 	_create_pickup(pickup_id, weapon_name, pos)
+
+## Debug: drop an item / equipment pickup just in front of the player. Mirrors
+## the weapon-drop path (host instantiates locally; item_state covers clients).
+func _on_debug_spawn_item(item_id: String) -> void:
+	if player == null:
+		return
+	var fwd := player.global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length() < 0.01:
+		fwd = Vector3.FORWARD
+	var pos := player.global_position + fwd.normalized() * 2.5
+	pos.y = 0.0
+
+	var item_pickup_id := _next_item_id
+	_next_item_id += 1
+	_create_item_pickup(item_pickup_id, item_id, pos)
 
 # ------------------------------------------------------------------
 # Game Over / Win overlay
