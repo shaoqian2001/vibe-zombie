@@ -37,6 +37,8 @@ signal net_event(event_name: String, payload: Dictionary)
 
 enum Difficulty { EASY, MEDIUM, TOUGH, NIGHTMARE }
 
+const BuildingCatalog = preload("res://scripts/building_catalog.gd")
+
 const CODE_LENGTH := 6
 const CODE_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I
 const MIN_PLAYERS := 2
@@ -51,6 +53,7 @@ const CFG_MAP_KEY := "cfg_map"
 const CFG_PLAYERS_KEY := "cfg_players"
 const CFG_DIFF_KEY := "cfg_diff"
 const CFG_SEED_KEY := "cfg_seed"
+const CFG_STYLE_KEY := "cfg_style"
 
 # GD-Sync enum mirrors (from addons/GD-Sync/Scripts/Enums/Enums.gd) so error
 # messages are human-readable instead of "code 2".
@@ -73,9 +76,10 @@ var is_host: bool = false
 var is_networked: bool = false             # true once we're in a room
 var game_code: String = ""
 var game_seed: int = 0
-var map_size: int = 9                       # world.num_blocks
+var map_size: int = 3                       # world.num_blocks (each block ~100×200m)
 var max_players: int = 4                    # 2..8
 var difficulty: int = Difficulty.MEDIUM
+var map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
 var local_player_name: String = "Player"
 var local_peer_id: int = -1
 
@@ -128,16 +132,18 @@ func _init_gdsync() -> void:
 # ------------------------------------------------------------------
 
 static func difficulty_settings(d: int) -> Dictionary:
+	# Density values are tuned for the 100×200 m block size — each block
+	# can comfortably hold a dozen+ enemies before things feel cramped.
 	match d:
 		Difficulty.EASY:
-			return {"enemies_per_block": 0.8, "horde_mult": 0.55, "starting_hordes": 0, "starting_horde_size": 0}
+			return {"enemies_per_block": 6.0, "horde_mult": 0.55, "starting_hordes": 0, "starting_horde_size": 0}
 		Difficulty.MEDIUM:
-			return {"enemies_per_block": 2.0, "horde_mult": 1.0, "starting_hordes": 1, "starting_horde_size": 6}
+			return {"enemies_per_block": 14.0, "horde_mult": 1.0, "starting_hordes": 1, "starting_horde_size": 6}
 		Difficulty.TOUGH:
-			return {"enemies_per_block": 3.5, "horde_mult": 1.5, "starting_hordes": 2, "starting_horde_size": 10}
+			return {"enemies_per_block": 22.0, "horde_mult": 1.5, "starting_hordes": 2, "starting_horde_size": 10}
 		Difficulty.NIGHTMARE:
-			return {"enemies_per_block": 5.0, "horde_mult": 2.2, "starting_hordes": 4, "starting_horde_size": 14}
-	return {"enemies_per_block": 2.0, "horde_mult": 1.0, "starting_hordes": 1, "starting_horde_size": 6}
+			return {"enemies_per_block": 32.0, "horde_mult": 2.2, "starting_hordes": 4, "starting_horde_size": 14}
+	return {"enemies_per_block": 14.0, "horde_mult": 1.0, "starting_hordes": 1, "starting_horde_size": 6}
 
 static func difficulty_name(d: int) -> String:
 	match d:
@@ -151,14 +157,18 @@ static func difficulty_name(d: int) -> String:
 # Host / join lifecycle (public API consumed by the menu)
 # ------------------------------------------------------------------
 
-func host_game(p_map_size: int, p_max_players: int, p_difficulty: int) -> String:
+func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1) -> String:
 	## Kicks off an asynchronous GD-Sync host. Returns the generated room code
 	## immediately (so the menu can show it); success/failure arrives later via
 	## the join_succeeded / join_failed signals.
 	if not _ensure_addon():
 		return ""
 	reset()
-	map_size = clampi(p_map_size, 5, 20)
+	if p_map_style >= 0:
+		map_style = p_map_style
+	# Map size is a property of the chosen style; the caller passes the
+	# style's preset and we just snap it to safe bounds.
+	map_size = clampi(p_map_size, 2, 12)
 	max_players = clampi(p_max_players, MIN_PLAYERS, MAX_PLAYERS_HARD_CAP)
 	difficulty = clampi(p_difficulty, 0, 3)
 	game_seed = int(Time.get_unix_time_from_system()) ^ (randi() << 1)
@@ -239,7 +249,7 @@ func reset() -> void:
 
 func set_map_size(v: int) -> void:
 	if not is_host: return
-	map_size = clampi(v, 5, 20)
+	map_size = clampi(v, 2, 12)
 	lobby_config_changed.emit()
 	_publish_config()
 
@@ -255,6 +265,14 @@ func set_difficulty(v: int) -> void:
 	lobby_config_changed.emit()
 	_publish_config()
 
+func set_map_style(v: int) -> void:
+	if not is_host: return
+	map_style = v
+	# Style controls map size — snap to the style's preset.
+	map_size = BuildingCatalog.map_size_for(v)
+	lobby_config_changed.emit()
+	_publish_config()
+
 func _publish_config() -> void:
 	if _gdsync == null or not _gdsync.has_method("lobby_set_data"):
 		return
@@ -262,10 +280,12 @@ func _publish_config() -> void:
 	_gdsync.call("lobby_set_data", CFG_PLAYERS_KEY, str(max_players))
 	_gdsync.call("lobby_set_data", CFG_DIFF_KEY, str(difficulty))
 	_gdsync.call("lobby_set_data", CFG_SEED_KEY, str(game_seed))
+	_gdsync.call("lobby_set_data", CFG_STYLE_KEY, str(map_style))
 	# Belt-and-braces: broadcast as an event too, for builds whose
 	# lobby_data_changed signal is unreliable.
 	broadcast_event("cfg_sync", {
-		"map": map_size, "players": max_players, "diff": difficulty, "seed": game_seed,
+		"map": map_size, "players": max_players, "diff": difficulty,
+		"seed": game_seed, "style": map_style,
 	})
 
 func _ingest_config_from_lobby_data() -> void:
@@ -288,6 +308,9 @@ func _ingest_config_from_lobby_data() -> void:
 	if d.has(CFG_SEED_KEY):
 		var vs := int(str(d[CFG_SEED_KEY]))
 		if vs != game_seed: game_seed = vs; changed = true
+	if d.has(CFG_STYLE_KEY):
+		var vst := int(str(d[CFG_STYLE_KEY]))
+		if vst != map_style: map_style = vst; changed = true
 	if changed:
 		lobby_config_changed.emit()
 
@@ -304,7 +327,8 @@ func start_game() -> void:
 	# Carry the world seed + config in the start event so every client builds the
 	# exact same procedural city / difficulty even if lobby-data sync lagged.
 	broadcast_event("game_started", {
-		"seed": game_seed, "map": map_size, "players": max_players, "diff": difficulty,
+		"seed": game_seed, "map": map_size, "players": max_players,
+		"diff": difficulty, "style": map_style,
 	})
 	_enter_game_scene()
 
@@ -385,6 +409,7 @@ func _on_event_received(event_name: String, payload: Dictionary) -> void:
 			if payload.has("players") and int(payload["players"]) != max_players: max_players = int(payload["players"]); changed = true
 			if payload.has("diff") and int(payload["diff"]) != difficulty: difficulty = int(payload["diff"]); changed = true
 			if payload.has("seed") and int(payload["seed"]) != game_seed: game_seed = int(payload["seed"]); changed = true
+			if payload.has("style") and int(payload["style"]) != map_style: map_style = int(payload["style"]); changed = true
 			if changed:
 				lobby_config_changed.emit()
 		"game_started":
@@ -395,6 +420,7 @@ func _on_event_received(event_name: String, payload: Dictionary) -> void:
 				if payload.has("map"): map_size = int(payload["map"])
 				if payload.has("players"): max_players = int(payload["players"])
 				if payload.has("diff"): difficulty = int(payload["diff"])
+				if payload.has("style"): map_style = int(payload["style"])
 				_set_state(State.IN_GAME)
 				_enter_game_scene()
 	net_event.emit(event_name, payload)
@@ -655,7 +681,7 @@ func _on_hello_received(payload: Dictionary) -> void:
 	if is_host:
 		# Reply with the canonical roster + config so newcomers sync up.
 		broadcast_event("roster_sync", {"host_id": host_peer_id(), "peers": sorted_peers()})
-		broadcast_event("cfg_sync", {"map": map_size, "players": max_players, "diff": difficulty, "seed": game_seed})
+		broadcast_event("cfg_sync", {"map": map_size, "players": max_players, "diff": difficulty, "seed": game_seed, "style": map_style})
 		broadcast_event("hello", {"peer_id": local_peer_id, "name": local_player_name, "is_host": true})
 
 func _apply_roster_sync(remote_peers: Array) -> void:

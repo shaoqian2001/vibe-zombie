@@ -89,6 +89,11 @@ const NET_TELEPORT_DIST := 4.0
 var _net_target_pos: Vector3 = Vector3.INF
 var _net_target_yaw: float = 0.0
 
+# Ambient groan timer. Counts down on every peer (sound is cosmetic and runs
+# independently per client — no need to network it). Reset to a random
+# interval after each groan so a horde doesn't moan in lockstep.
+var _groan_timer := 0.0
+
 # Cached target supplied by main.gd's parallel AI coordinator (host only).
 # Vector3.INF means "no cached value, fall back to the single-threaded search".
 var cached_target_pos: Vector3 = Vector3.INF
@@ -110,6 +115,8 @@ func _ready() -> void:
 	set_meta(&"fov_cull_entity_type", "moving")
 	set_meta(&"fov_cull_memory_range", 6.0)
 	_rng.randomize()
+	# Stagger the first groan so freshly-spawned zombies don't all moan at once.
+	_groan_timer = _rng.randf_range(0.5, 6.0)
 	_pick_new_wander()
 	_build_model()
 	_build_hp_bar()
@@ -125,6 +132,8 @@ func _physics_process(delta: float) -> void:
 	# Drive the zombie's walk/shuffle animation on every peer — clients see
 	# the host-synced transform updates, but limbs still need to swing.
 	_update_animation(delta)
+	# Ambient groans run on every peer (cosmetic, distance-gated).
+	_maybe_groan(delta)
 	if not _is_authority_cached:
 		# Client copy — the host pushes transform/HP through main.gd's batched
 		# enemy_state. Glide toward the latest target every frame (rather than
@@ -270,9 +279,34 @@ func _apply_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 		for ms in mission_nodes:
 			if ms.has_method("notify_enemy_killed"):
 				ms.notify_enemy_killed()
+		# Detached one-shot death voice at the local death position — the node
+		# is freed this frame, so it can't be parented. Plays on host and
+		# clients alike (each peer sees the despawn via the next enemy_state
+		# broadcast and gets to fire the voice locally) — there's no cross-peer
+		# despawn RPC under GD-Sync.
+		SoundManager.play_at("zombie_death", global_position, randf_range(0.9, 1.1), 0.0)
 		# Host frees the enemy locally; clients drop their copy when it stops
 		# appearing in the host's next enemy_state broadcast (main.gd reconcile).
 		queue_free()
+
+# ------------------------------------------------------------------
+# Audio
+# ------------------------------------------------------------------
+
+## Periodic idle/chase groan. Only the zombies near a player are voiced, which
+## naturally caps how many of a large horde are audible at once.
+func _maybe_groan(delta: float) -> void:
+	_groan_timer -= delta
+	if _groan_timer > 0.0:
+		return
+	_groan_timer = _rng.randf_range(3.5, 8.0)
+	var p := _player_ref
+	if p == null or not is_instance_valid(p):
+		p = _find_player()
+		_player_ref = p
+	if p == null or global_position.distance_to(p.global_position) > 24.0:
+		return
+	SoundManager.play_on(self, "zombie_groan", _rng.randf_range(0.82, 1.2), -3.0)
 
 func _try_attack() -> void:
 	_try_attack_at(_player_ref.global_position if _player_ref else Vector3.INF)
@@ -288,8 +322,22 @@ func _try_attack_at(target_pos: Vector3) -> void:
 	if _player_ref == null:
 		return
 	_attack_timer = ATTACK_COOLDOWN
+	# Lunge snarl — play locally and broadcast so other peers can hear it
+	# as a positional voice on their copy of this zombie. main.gd routes
+	# "enemy_sound" events back to the corresponding Enemy_<id> node.
+	var pitch := _rng.randf_range(0.9, 1.12)
+	SoundManager.play_on(self, "zombie_attack", pitch, 0.0)
+	if NetworkManager.is_networked:
+		NetworkManager.broadcast_event("enemy_sound", {
+			"id": network_id, "sound": "zombie_attack", "pitch": pitch,
+		})
 	if _player_ref.has_method("take_damage"):
 		_player_ref.take_damage(ATTACK_DAMAGE)
+
+## Called by main.gd when an "enemy_sound" event arrives for this enemy.
+## Plays the sound positionally on this node so peers hear it in 3D.
+func play_remote_sound(sound: String, pitch: float, volume_db: float = 0.0) -> void:
+	SoundManager.play_on(self, sound, pitch, volume_db)
 
 func _find_closest_player(near: Vector3) -> CharacterBody3D:
 	var best: CharacterBody3D = null

@@ -27,22 +27,32 @@ const BUILDING_TYPE_NAMES := [
 	"Office",
 	"Warehouse",
 	"Diner",
+	"Shop",
+	"Factory",
+	"Bank",
+	"Police Station",
+	"Hospital",
+	"School",
 ]
 
 const DOOR_ANIM_DURATION := 0.4
 const OCCLUDE_ALPHA := 0.25  # transparency when building blocks player view
 
-# Enemy spawning — base density scales with map area so larger worlds feel populated
-# without exploding the entity count. DEV_MODE keeps the playtest count tiny.
-const ENEMIES_PER_BLOCK_NORMAL := 2.0
-const ENEMIES_PER_BLOCK_DEV := 0.2
-const ENEMY_BLOCK_SIZE := 26.0
-const ENEMY_ROAD_WIDTH := 4.0
-const ENEMY_CELL_SIZE := ENEMY_BLOCK_SIZE + ENEMY_ROAD_WIDTH
+# Enemy spawning — per-block density comes from the chosen difficulty
+# (NetworkManager.difficulty_settings), tuned for the 100×200m blocks.
+# DEV_MODE keeps the count tiny for fast playtesting.
+const ENEMIES_PER_BLOCK_DEV := 2.0
+# Hard cap on initial spawn count regardless of (block × density) maths.
+# Stops Open World 9×9 + Nightmare from instantiating thousands of
+# zombies at scene-load time; the mission system still adds wave hordes
+# as missions progress.
+const MAX_INITIAL_ENEMIES := 400
 
 # Weapon pickup spawning — density scales with map size as well
-const WEAPON_PICKUPS_PER_BLOCK := 0.5
-const WEAPON_PICKUP_MIN_DIST := 15.0
+const WEAPON_PICKUPS_PER_BLOCK := 2.5
+const WEAPON_PICKUP_MIN_DIST := 20.0
+# Same idea for pickups — keeps the static-collision count tractable.
+const MAX_INITIAL_PICKUPS := 80
 
 const PlayerScene = preload("res://scenes/Player.tscn")
 
@@ -369,6 +379,32 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 				if who >= 0:
 					NetworkManager.send_event_to(who, "enemy_state", {"e": _build_enemy_state()})
 					NetworkManager.send_event_to(who, "pickup_state", {"p": _build_pickup_state()})
+		"player_sound":
+			# A peer fired a weapon / footstep / etc. Play it positionally on
+			# their remote copy. Skip if it's our own broadcast bouncing back.
+			var spid := int(payload.get("peer_id", -1))
+			if spid == _local_peer_id:
+				pass
+			else:
+				var sn = _player_nodes.get(spid)
+				if sn and sn.has_method("play_remote_sound"):
+					sn.play_remote_sound(
+						String(payload.get("sound", "")),
+						float(payload.get("pitch", 1.0)),
+						float(payload.get("vol_db", 0.0)),
+					)
+		"enemy_sound":
+			# Host broadcasts when a zombie lunges/attacks; play on the local
+			# copy of that enemy. The host already played it locally before
+			# broadcasting, so skip if we're the host.
+			if not _is_host:
+				var en := get_node_or_null("Enemy_%d" % int(payload.get("id", -1)))
+				if en and en.has_method("play_remote_sound"):
+					en.play_remote_sound(
+						String(payload.get("sound", "")),
+						float(payload.get("pitch", 1.0)),
+						float(payload.get("vol_db", 0.0)),
+					)
 
 func _apply_player_xform(payload: Dictionary) -> void:
 	var pid := int(payload.get("peer_id", -1))
@@ -609,17 +645,21 @@ func _close_map() -> void:
 # ------------------------------------------------------------------
 
 func _build_rim_spawn_candidates() -> Array:
-	var extent: float = world.num_blocks * world.CELL_SIZE * 0.5 - 4.0
-	var diag: float = extent * 0.9
+	# Blocks are rectangular now, so use each axis half-extent separately
+	# and pull the spawn slightly in from the boundary wall.
+	var ex: float = world.num_blocks * world.CELL_WIDTH * 0.5 - 4.0
+	var ez: float = world.num_blocks * world.CELL_DEPTH * 0.5 - 4.0
+	var dx := ex * 0.9
+	var dz := ez * 0.9
 	return [
-		Vector3( extent, 0.5,  0.0),
-		Vector3(-extent, 0.5,  0.0),
-		Vector3(  0.0,   0.5,  extent),
-		Vector3(  0.0,   0.5, -extent),
-		Vector3( diag,   0.5,  diag),
-		Vector3(-diag,   0.5,  diag),
-		Vector3( diag,   0.5, -diag),
-		Vector3(-diag,   0.5, -diag),
+		Vector3( ex,  0.5,  0.0),
+		Vector3(-ex,  0.5,  0.0),
+		Vector3(  0.0, 0.5,  ez),
+		Vector3(  0.0, 0.5, -ez),
+		Vector3( dx,  0.5,  dz),
+		Vector3(-dx,  0.5,  dz),
+		Vector3( dx,  0.5, -dz),
+		Vector3(-dx,  0.5, -dz),
 	]
 
 ## Random-sample a nearby spawn point that isn't wedged inside a building.
@@ -643,23 +683,23 @@ func _find_clear_fallback_spawn(rng: RandomNumberGenerator, hint: Vector3) -> Ve
 
 func _spawn_enemies(rng: RandomNumberGenerator) -> void:
 	var nb: int = world.num_blocks
-	var total := ENEMY_CELL_SIZE * nb
-	var grid_origin := -total * 0.5
 
-	# Difficulty drives per-block enemy density when networked.
+	# Single-player honours the difficulty picked in the setup menu (which
+	# writes to NetworkManager just like the multiplayer host does). DEV
+	# mode keeps things sparse for playtesting.
 	var per_block: float
-	if _is_mp:
+	if DEV_MODE and not _is_mp:
+		per_block = ENEMIES_PER_BLOCK_DEV
+	else:
 		var diff := NetworkManager.difficulty_settings(NetworkManager.difficulty)
 		per_block = diff.enemies_per_block
-	else:
-		per_block = ENEMIES_PER_BLOCK_DEV if DEV_MODE else ENEMIES_PER_BLOCK_NORMAL
 
-	var base_count := int(per_block * nb * nb)
+	var base_count := mini(int(per_block * nb * nb), MAX_INITIAL_ENEMIES)
 
 	for i in range(base_count):
-		var pos := _random_walkable_pos(rng, grid_origin)
-		if pos.distance_to(player.global_position) < 8.0:
-			pos = _random_walkable_pos(rng, grid_origin)
+		var pos := _random_walkable_pos(rng)
+		if pos.distance_to(player.global_position) < 12.0:
+			pos = _random_walkable_pos(rng)
 		_spawn_enemy_at(pos)
 
 func _spawn_enemy_at(pos: Vector3) -> CharacterBody3D:
@@ -687,27 +727,38 @@ func _create_enemy(enemy_id: int, pos: Vector3) -> CharacterBody3D:
 		_next_enemy_id = enemy_id + 1
 	return enemy
 
-func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vector3:
-	var last_block: int = world.num_blocks - 1
-	var block_col := rng.randi_range(0, last_block)
-	var block_row := rng.randi_range(0, last_block)
-	var bx := grid_origin + block_col * ENEMY_CELL_SIZE
-	var bz := grid_origin + block_row * ENEMY_CELL_SIZE
+func _random_walkable_pos(rng: RandomNumberGenerator) -> Vector3:
+	# Pick a random block, then a random spot inside the block area or on
+	# one of the adjacent roads. Pulls block dimensions straight from the
+	# world so enemy distribution matches whatever block geometry it picks.
+	var nb: int = world.num_blocks
+	var block_w: float = world.BLOCK_WIDTH
+	var block_d: float = world.BLOCK_DEPTH
+	var road_w: float = world.ROAD_WIDTH
+	var cell_w: float = world.CELL_WIDTH
+	var cell_d: float = world.CELL_DEPTH
+	var grid_origin_x := -nb * cell_w * 0.5
+	var grid_origin_z := -nb * cell_d * 0.5
 
-	if rng.randf() < 0.5:
+	var block_col := rng.randi_range(0, nb - 1)
+	var block_row := rng.randi_range(0, nb - 1)
+	var bx := grid_origin_x + block_col * cell_w
+	var bz := grid_origin_z + block_row * cell_d
+
+	if rng.randf() < 0.4:
 		# On a road
 		if rng.randf() < 0.5:
-			var x := bx + ENEMY_BLOCK_SIZE + rng.randf_range(0.5, ENEMY_ROAD_WIDTH - 0.5)
-			var z := bz + rng.randf_range(0.0, ENEMY_CELL_SIZE)
+			var x := bx + block_w + rng.randf_range(0.5, road_w - 0.5)
+			var z := bz + rng.randf_range(0.0, cell_d)
 			return Vector3(x, 0.5, z)
 		else:
-			var x := bx + rng.randf_range(0.0, ENEMY_CELL_SIZE)
-			var z := bz + ENEMY_BLOCK_SIZE + rng.randf_range(0.5, ENEMY_ROAD_WIDTH - 0.5)
+			var x := bx + rng.randf_range(0.0, cell_w)
+			var z := bz + block_d + rng.randf_range(0.5, road_w - 0.5)
 			return Vector3(x, 0.5, z)
 	else:
-		# On sidewalk
-		var x := bx + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
-		var z := bz + rng.randf_range(0.3, ENEMY_BLOCK_SIZE - 0.3)
+		# Inside / on the block
+		var x := bx + rng.randf_range(1.0, block_w - 1.0)
+		var z := bz + rng.randf_range(1.0, block_d - 1.0)
 		return Vector3(x, 0.5, z)
 
 # ------------------------------------------------------------------
@@ -716,19 +767,17 @@ func _random_walkable_pos(rng: RandomNumberGenerator, grid_origin: float) -> Vec
 
 func _spawn_weapon_pickups(rng: RandomNumberGenerator) -> void:
 	var nb: int = world.num_blocks
-	var total := ENEMY_CELL_SIZE * nb
-	var grid_origin := -total * 0.5
 	var placed_positions: Array[Vector3] = []
-	var weapon_types := ["pistol", "shotgun", "smg", "grenade_launcher", "bat"]
+	var weapon_types := ["pistol", "shotgun", "smg", "ak47", "grenade_launcher", "bat"]
 
-	var pickup_count := int(WEAPON_PICKUPS_PER_BLOCK * nb * nb)
+	var pickup_count := mini(int(WEAPON_PICKUPS_PER_BLOCK * nb * nb), MAX_INITIAL_PICKUPS)
 
 	for i in range(pickup_count):
 		var pos := Vector3.ZERO
 		var valid := false
 
 		for _attempt in range(20):
-			pos = _random_walkable_pos(rng, grid_origin)
+			pos = _random_walkable_pos(rng)
 			pos.y = 0.0
 
 			if pos.distance_to(player.global_position) < 10.0:
@@ -919,6 +968,8 @@ func _setup_debug_panel() -> void:
 	_debug_panel.density_changed.connect(_on_debug_density_changed)
 	_debug_panel.god_mode_changed.connect(_on_debug_god_mode_changed)
 	_debug_panel.spawn_horde_requested.connect(_on_debug_spawn_horde)
+	_debug_panel.spawn_weapon_requested.connect(_on_debug_spawn_weapon)
+	_debug_panel.dominant_hand_changed.connect(_on_debug_dominant_hand_changed)
 
 func _on_debug_density_changed(multiplier: float) -> void:
 	if _mission_system:
@@ -927,9 +978,34 @@ func _on_debug_density_changed(multiplier: float) -> void:
 func _on_debug_god_mode_changed(enabled: bool) -> void:
 	player.god_mode = enabled
 
+func _on_debug_dominant_hand_changed(is_right: bool) -> void:
+	if player and player.has_method("set_dominant_hand"):
+		player.set_dominant_hand(is_right)
+
 func _on_debug_spawn_horde(count: int) -> void:
 	if _mission_system:
 		_mission_system.spawn_horde_at(player.global_position + Vector3(10, 0, 10), count)
+
+## Debug: drop a weapon pickup just in front of the player so it can be grabbed
+## and tested. Reuses the same networked pickup spawn path as world generation.
+func _on_debug_spawn_weapon(weapon_name: String) -> void:
+	if player == null:
+		return
+	# Place it a couple of metres ahead — beyond the pickup's collect radius so
+	# it lands on the ground rather than being auto-collected on spawn.
+	var fwd := player.global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length() < 0.01:
+		fwd = Vector3.FORWARD
+	var pos := player.global_position + fwd.normalized() * 2.5
+	pos.y = 0.0
+
+	var pickup_id := _next_pickup_id
+	_next_pickup_id += 1
+	# Under GD-Sync there's no per-spawn RPC — the host instantiates the
+	# pickup locally and the next periodic pickup_state broadcast covers
+	# joining clients (see _build_pickup_state + _apply_pickup_state).
+	_create_pickup(pickup_id, weapon_name, pos)
 
 # ------------------------------------------------------------------
 # Game Over / Win overlay

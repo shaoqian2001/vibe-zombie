@@ -9,6 +9,7 @@ extends Control
 ##   - Start Game (host only) / Leave buttons
 
 const MenuShared = preload("res://scripts/menu_shared.gd")
+const BuildingCatalog = preload("res://scripts/building_catalog.gd")
 
 const PANEL_WIDTH := 640.0
 const PANEL_HEIGHT := 560.0
@@ -21,6 +22,7 @@ var _config_summary: Label
 var _start_btn: Button
 var _status_label: Label
 var _difficulty_buttons: Array[Button] = []
+var _map_style_buttons: Array[Button] = []
 var _map_size_label: Label = null
 var _max_players_label: Label = null
 
@@ -212,7 +214,8 @@ func _build_ui() -> void:
 		actions.add_child(_start_btn)
 
 func _build_host_config_controls(parent: VBoxContainer, s: float) -> void:
-	# Map size
+	# Map size is determined by the chosen map style — display only,
+	# host can't tune it independently anymore.
 	var ms_row := HBoxContainer.new()
 	ms_row.add_theme_constant_override("separation", int(8 * s))
 	parent.add_child(ms_row)
@@ -223,24 +226,11 @@ func _build_host_config_controls(parent: VBoxContainer, s: float) -> void:
 	ms_lbl.add_theme_font_size_override("font_size", int(13 * s))
 	ms_row.add_child(ms_lbl)
 
-	var ms_minus := MenuShared.make_button("-", s, 36, 32, 14)
-	ms_minus.pressed.connect(func() -> void:
-		NetworkManager.set_map_size(NetworkManager.map_size - 1)
-	)
-	ms_row.add_child(ms_minus)
-
 	_map_size_label = Label.new()
-	_map_size_label.custom_minimum_size = Vector2(110 * s, 32 * s)
-	_map_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_map_size_label.custom_minimum_size = Vector2(180 * s, 32 * s)
 	_map_size_label.add_theme_font_size_override("font_size", int(15 * s))
 	_map_size_label.add_theme_color_override("font_color", Color(0.95, 0.92, 0.78))
 	ms_row.add_child(_map_size_label)
-
-	var ms_plus := MenuShared.make_button("+", s, 36, 32, 14)
-	ms_plus.pressed.connect(func() -> void:
-		NetworkManager.set_map_size(NetworkManager.map_size + 1)
-	)
-	ms_row.add_child(ms_plus)
 
 	# Max players
 	var mp_row := HBoxContainer.new()
@@ -292,6 +282,35 @@ func _build_host_config_controls(parent: VBoxContainer, s: float) -> void:
 		_difficulty_buttons.append(btn)
 		diff_row.add_child(btn)
 
+	# Map style — symmetric with difficulty so the host can switch the
+	# city look without leaving the lobby.
+	var style_lbl := Label.new()
+	style_lbl.text = "Style:"
+	style_lbl.add_theme_font_size_override("font_size", int(13 * s))
+	parent.add_child(style_lbl)
+
+	var style_row := HBoxContainer.new()
+	style_row.add_theme_constant_override("separation", int(4 * s))
+	parent.add_child(style_row)
+
+	var styles := [
+		BuildingCatalog.MapStyle.DOWNTOWN,
+		BuildingCatalog.MapStyle.METROPOLIS,
+		BuildingCatalog.MapStyle.INDUSTRIAL,
+		BuildingCatalog.MapStyle.SUBURBAN,
+		BuildingCatalog.MapStyle.CIVIC_CENTER,
+		BuildingCatalog.MapStyle.OPEN_WORLD,
+	]
+	for st in styles:
+		var idx: int = st
+		var btn := MenuShared.make_button(BuildingCatalog.style_name(idx), s, 84, 36, 11)
+		btn.pressed.connect(func() -> void:
+			# Changing style also pins the map size to the style's preset.
+			NetworkManager.set_map_style(idx)
+		)
+		_map_style_buttons.append(btn)
+		style_row.add_child(btn)
+
 # ------------------------------------------------------------------
 # Refresh handlers
 # ------------------------------------------------------------------
@@ -332,14 +351,15 @@ func _refresh_config() -> void:
 	_code_label.text = NetworkManager.game_code
 
 	if _map_size_label:
-		_map_size_label.text = "%d x %d" % [NetworkManager.map_size, NetworkManager.map_size]
+		var n: int = NetworkManager.map_size
+		_map_size_label.text = "%d x %d  (%d blocks)" % [n, n, n * n]
 	if _max_players_label:
 		_max_players_label.text = "%d" % NetworkManager.max_players
 
 	# Highlight selected difficulty button (host)
+	var s := MenuShared.ui_scale()
 	for i in range(_difficulty_buttons.size()):
 		var btn := _difficulty_buttons[i]
-		var s := MenuShared.ui_scale()
 		if i == NetworkManager.difficulty:
 			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(_difficulty_color(i), s))
 			btn.add_theme_color_override("font_color", Color(1, 1, 1))
@@ -347,11 +367,31 @@ func _refresh_config() -> void:
 			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.20, 0.20, 0.24, 0.9), s))
 			btn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
 
+	# Highlight selected map style (host)
+	var style_order := [
+		BuildingCatalog.MapStyle.DOWNTOWN,
+		BuildingCatalog.MapStyle.METROPOLIS,
+		BuildingCatalog.MapStyle.INDUSTRIAL,
+		BuildingCatalog.MapStyle.SUBURBAN,
+		BuildingCatalog.MapStyle.CIVIC_CENTER,
+		BuildingCatalog.MapStyle.OPEN_WORLD,
+	]
+	var style_accent := Color(0.55, 0.55, 0.65)
+	for i in range(_map_style_buttons.size()):
+		var sbtn := _map_style_buttons[i]
+		if i < style_order.size() and style_order[i] == NetworkManager.map_style:
+			sbtn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(style_accent, s))
+			sbtn.add_theme_color_override("font_color", Color(1, 1, 1))
+		else:
+			sbtn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.20, 0.20, 0.24, 0.9), s))
+			sbtn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
+
 	# Client-side summary
 	if _config_summary:
-		_config_summary.text = "Map: %dx%d\nPlayers: up to %d\nDifficulty: %s" % [
-			NetworkManager.map_size,
-			NetworkManager.map_size,
+		var ns: int = NetworkManager.map_size
+		_config_summary.text = "Style: %s\nMap: %dx%d (%d blocks)\nPlayers: up to %d\nDifficulty: %s" % [
+			BuildingCatalog.style_name(NetworkManager.map_style),
+			ns, ns, ns * ns,
 			NetworkManager.max_players,
 			NetworkManager.difficulty_name(NetworkManager.difficulty),
 		]

@@ -118,13 +118,16 @@ static func apply_shader_to_subtree(root: Node) -> void:
 static func _apply_shader_recursive(node: Node, mat: ShaderMaterial) -> void:
 	if node is Node3D and node.has_meta(META_SHADOW_EXEMPT):
 		return
-	if node is MeshInstance3D:
-		var mi: MeshInstance3D = node
+	# Catch every GeometryInstance3D subclass, not just MeshInstance3D.
+	# That includes MultiMeshInstance3D (trees, road marks) so the FOV
+	# shadow stays consistent across the batched draw calls.
+	if node is GeometryInstance3D:
+		var gi: GeometryInstance3D = node
 		# Don't trample an existing overlay — some assets (HP bars, glow
 		# discs) deliberately use their own. Only fill the slot when it's
 		# untouched, so a single recursive sweep stays idempotent.
-		if mi.material_overlay == null:
-			mi.material_overlay = mat
+		if gi.material_overlay == null:
+			gi.material_overlay = mat
 	for child in node.get_children():
 		_apply_shader_recursive(child, mat)
 

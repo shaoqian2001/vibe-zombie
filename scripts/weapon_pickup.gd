@@ -85,6 +85,7 @@ func _build_model() -> void:
 		"pistol": _build_pistol_model()
 		"shotgun": _build_shotgun_model()
 		"smg": _build_smg_model()
+		"ak47": _build_ak47_model()
 		"grenade_launcher": _build_grenade_launcher_model()
 		"bat": _build_bat_model()
 
@@ -189,6 +190,53 @@ func _build_smg_model() -> void:
 	mag.position = Vector3(0.0, -0.10, 0.06)
 	_model.add_child(mag)
 
+func _build_ak47_model() -> void:
+	var body_mat := StandardMaterial3D.new()
+	body_mat.albedo_color = Color(0.18, 0.18, 0.20, 1)
+	var body_mesh := BoxMesh.new()
+	body_mesh.size = Vector3(0.09, 0.13, 0.40)
+	body_mesh.material = body_mat
+	var body_mi := MeshInstance3D.new()
+	body_mi.mesh = body_mesh
+	body_mi.position = Vector3(0.0, 0.04, 0.04)
+	_model.add_child(body_mi)
+
+	var wood_mat := StandardMaterial3D.new()
+	wood_mat.albedo_color = Color(0.42, 0.27, 0.13, 1)
+	var forend_mesh := BoxMesh.new()
+	forend_mesh.size = Vector3(0.09, 0.09, 0.18)
+	forend_mesh.material = wood_mat
+	var forend := MeshInstance3D.new()
+	forend.mesh = forend_mesh
+	forend.position = Vector3(0.0, 0.02, 0.22)
+	_model.add_child(forend)
+
+	# Curved banana magazine.
+	var mag_mat := StandardMaterial3D.new()
+	mag_mat.albedo_color = Color(0.20, 0.16, 0.10, 1)
+	for i in range(3):
+		var seg_mesh := BoxMesh.new()
+		seg_mesh.size = Vector3(0.06, 0.10, 0.07)
+		seg_mesh.material = mag_mat
+		var seg := MeshInstance3D.new()
+		seg.mesh = seg_mesh
+		seg.position = Vector3(0.0, -0.10 - i * 0.07, 0.06 + i * 0.035)
+		seg.rotation_degrees = Vector3(-18.0 * (i + 1), 0, 0)
+		_model.add_child(seg)
+
+	var barrel_mat := StandardMaterial3D.new()
+	barrel_mat.albedo_color = Color(0.10, 0.10, 0.10, 1)
+	var barrel_mesh := CylinderMesh.new()
+	barrel_mesh.top_radius = 0.025
+	barrel_mesh.bottom_radius = 0.028
+	barrel_mesh.height = 0.20
+	barrel_mesh.material = barrel_mat
+	var barrel := MeshInstance3D.new()
+	barrel.mesh = barrel_mesh
+	barrel.position = Vector3(0.0, 0.05, 0.40)
+	barrel.rotation_degrees = Vector3(90, 0, 0)
+	_model.add_child(barrel)
+
 func _build_grenade_launcher_model() -> void:
 	var body_mat := StandardMaterial3D.new()
 	body_mat.albedo_color = Color(0.28, 0.30, 0.22, 1)
@@ -244,6 +292,7 @@ func _build_glow() -> void:
 		"pistol": Color(0.3, 0.6, 1.0, 0.35),
 		"shotgun": Color(1.0, 0.5, 0.2, 0.35),
 		"smg": Color(0.4, 1.0, 0.4, 0.35),
+		"ak47": Color(1.0, 0.75, 0.2, 0.35),
 		"grenade_launcher": Color(1.0, 0.3, 0.1, 0.35),
 		"bat": Color(0.8, 0.6, 0.2, 0.35),
 	}

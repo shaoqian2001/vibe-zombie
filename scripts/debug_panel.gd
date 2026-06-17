@@ -7,11 +7,24 @@ extends CanvasLayer
 signal density_changed(multiplier: float)
 signal god_mode_changed(enabled: bool)
 signal spawn_horde_requested(count: int)
+signal spawn_weapon_requested(weapon_name: String)
+signal dominant_hand_changed(is_right: bool)
+
+# Weapons offered as one-click spawn buttons (internal name -> button label).
+const SPAWNABLE_WEAPONS := [
+	["pistol", "Pistol"],
+	["shotgun", "Shotgun"],
+	["smg", "SMG"],
+	["ak47", "AK-47"],
+	["grenade_launcher", "Grenade Launcher"],
+	["bat", "Baseball Bat"],
+]
 
 var _panel: PanelContainer
 var _density_slider: HSlider
 var _density_label: Label
 var _god_mode_check: CheckButton
+var _hand_check: CheckButton
 var _horde_spin: SpinBox
 var _apply_btn: Button
 var _visible := true
@@ -44,8 +57,8 @@ func _build_panel() -> void:
 	_panel.anchor_bottom = 0.5
 	_panel.offset_left = -320
 	_panel.offset_right = -10
-	_panel.offset_top = -140
-	_panel.offset_bottom = 140
+	_panel.offset_top = -240
+	_panel.offset_bottom = 240
 
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.1, 0.1, 0.12, 0.92)
@@ -103,6 +116,17 @@ func _build_panel() -> void:
 	_god_mode_check.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
 	vbox.add_child(_god_mode_check)
 
+	# Dominant hand. ON = right-handed (weapons ride the right side); OFF =
+	# left-handed (everything, guns and melee, mirrors to the left). Applies
+	# instantly on toggle so the change is immediately visible.
+	_hand_check = CheckButton.new()
+	_hand_check.text = "Right-handed (off = left)"
+	_hand_check.button_pressed = true
+	_hand_check.add_theme_font_size_override("font_size", 13)
+	_hand_check.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+	_hand_check.toggled.connect(_on_hand_toggled)
+	vbox.add_child(_hand_check)
+
 	# Apply button
 	_apply_btn = Button.new()
 	_apply_btn.text = "Apply"
@@ -142,6 +166,38 @@ func _build_panel() -> void:
 	spawn_btn.pressed.connect(_on_spawn_horde)
 	vbox.add_child(spawn_btn)
 
+	# Separator
+	var sep3 := HSeparator.new()
+	vbox.add_child(sep3)
+
+	# Weapon spawner — one button per weapon. Clicking drops that weapon as a
+	# pickup next to the player so it can be grabbed and tested immediately.
+	var weapon_label := Label.new()
+	weapon_label.text = "Drop weapon:"
+	weapon_label.add_theme_font_size_override("font_size", 13)
+	weapon_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+	vbox.add_child(weapon_label)
+
+	var weapon_grid := GridContainer.new()
+	weapon_grid.columns = 2
+	weapon_grid.add_theme_constant_override("h_separation", 6)
+	weapon_grid.add_theme_constant_override("v_separation", 6)
+	vbox.add_child(weapon_grid)
+
+	var weapon_style := StyleBoxFlat.new()
+	weapon_style.bg_color = Color(0.25, 0.3, 0.5, 0.9)
+	weapon_style.set_corner_radius_all(4)
+	weapon_style.set_content_margin_all(5)
+	for entry in SPAWNABLE_WEAPONS:
+		var weapon_name: String = entry[0]
+		var btn := Button.new()
+		btn.text = entry[1]
+		btn.add_theme_font_size_override("font_size", 12)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.add_theme_stylebox_override("normal", weapon_style)
+		btn.pressed.connect(_on_spawn_weapon.bind(weapon_name))
+		weapon_grid.add_child(btn)
+
 	# Hint
 	var hint := Label.new()
 	hint.text = "Press F3 to toggle this panel"
@@ -169,3 +225,9 @@ func _on_apply() -> void:
 func _on_spawn_horde() -> void:
 	var count: int = int(_horde_spin.value)
 	spawn_horde_requested.emit(count)
+
+func _on_hand_toggled(pressed: bool) -> void:
+	dominant_hand_changed.emit(pressed)
+
+func _on_spawn_weapon(weapon_name: String) -> void:
+	spawn_weapon_requested.emit(weapon_name)
