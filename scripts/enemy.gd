@@ -83,6 +83,11 @@ var _gait_speed: float = 1.0
 # Network state
 var _net_sync_timer := 0.0
 var _is_authority_cached := true
+# Client-side interpolation toward the host's last reported transform.
+const NET_LERP_SPEED := 12.0
+const NET_TELEPORT_DIST := 4.0
+var _net_target_pos: Vector3 = Vector3.INF
+var _net_target_yaw: float = 0.0
 
 # Cached target supplied by main.gd's parallel AI coordinator (host only).
 # Vector3.INF means "no cached value, fall back to the single-threaded search".
@@ -121,8 +126,11 @@ func _physics_process(delta: float) -> void:
 	# the host-synced transform updates, but limbs still need to swing.
 	_update_animation(delta)
 	if not _is_authority_cached:
-		# Client copy — host pushes transform updates via RPC. Just refresh
-		# the HP bar (HP is replicated separately) and exit.
+		# Client copy — the host pushes transform/HP through main.gd's batched
+		# enemy_state. Glide toward the latest target every frame (rather than
+		# snapping on packet arrival) so movement reads smoothly, then refresh
+		# the HP bar and exit.
+		_interpolate_net(delta)
 		_update_hp_bar()
 		return
 
@@ -206,15 +214,23 @@ func _physics_process(delta: float) -> void:
 	# "enemy_state" event (see main.gd _host_net_sync), so there's nothing to
 	# push per-enemy here.
 
-## Applies a host-pushed transform on client copies (called by main.gd).
+## Records the host-pushed transform on client copies (called by main.gd). The
+## actual move is interpolated per-frame in _interpolate_net() so the zombie
+## glides between the ~20Hz updates instead of stuttering on each one.
 func net_apply_transform(pos: Vector3, yaw: float) -> void:
-	# Smooth-snap on the client side. Distance check avoids visible jumps from
-	# packet jitter while keeping us in sync over time.
-	if global_position.distance_to(pos) > 4.0:
-		global_position = pos
+	_net_target_pos = pos
+	_net_target_yaw = yaw
+
+## Frame-rate-independent glide toward the last host transform; big gaps snap.
+func _interpolate_net(delta: float) -> void:
+	if _net_target_pos == Vector3.INF:
+		return
+	if global_position.distance_to(_net_target_pos) > NET_TELEPORT_DIST:
+		global_position = _net_target_pos
 	else:
-		global_position = global_position.lerp(pos, 0.5)
-	rotation.y = yaw
+		var t: float = 1.0 - exp(-NET_LERP_SPEED * delta)
+		global_position = global_position.lerp(_net_target_pos, t)
+	rotation.y = lerp_angle(rotation.y, _net_target_yaw, 1.0 - exp(-NET_LERP_SPEED * delta))
 
 ## Applies host-pushed HP on client copies (called by main.gd).
 func net_set_hp(new_hp: float) -> void:
