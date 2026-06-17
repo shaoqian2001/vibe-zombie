@@ -9,6 +9,7 @@ extends Control
 ## After hosting or joining, control transfers to the lobby (multiplayer_lobby.gd).
 
 const MenuShared = preload("res://scripts/menu_shared.gd")
+const BuildingCatalog = preload("res://scripts/building_catalog.gd")
 
 const BUTTON_WIDTH := 320.0
 const BUTTON_HEIGHT := 50.0
@@ -21,11 +22,14 @@ var _root_panel: PanelContainer = null
 var _create_panel: PanelContainer = null
 var _join_panel: PanelContainer = null
 var _join_status_label: Label = null
+var _create_status_label: Label = null
 
-# Create-game working state (mirrors NetworkManager defaults)
-var _create_map_size: int = 9
+# Create-game working state (mirrors NetworkManager defaults). Map size
+# is deliberately *not* configurable — it's pinned by the chosen style.
 var _create_max_players: int = 4
 var _create_difficulty: int = NetworkManager.Difficulty.MEDIUM
+var _create_map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
+var _map_size_label: Label = null
 
 func _ready() -> void:
 	_build_root()
@@ -120,7 +124,7 @@ func _show_create() -> void:
 
 	var s := MenuShared.ui_scale()
 	_create_panel = PanelContainer.new()
-	_create_panel.custom_minimum_size = Vector2(540 * s, 540 * s)
+	_create_panel.custom_minimum_size = Vector2(580 * s, 660 * s)
 	_create_panel.add_theme_stylebox_override("panel", MenuShared.make_panel_style(s))
 	_center.add_child(_create_panel)
 
@@ -135,14 +139,25 @@ func _show_create() -> void:
 	title.add_theme_color_override("font_color", Color(0.90, 0.85, 0.70))
 	vbox.add_child(title)
 
-	# --- Map size (5..20) ---
-	vbox.add_child(_make_section_label("Map Size (NxN city blocks)", s))
-	var map_size_row := _make_stepper_row(s,
-		_create_map_size, 5, 20,
-		func(v: int) -> void: _create_map_size = v,
-		func(v: int) -> String: return "%d x %d  (%d blocks)" % [v, v, v * v]
-	)
-	vbox.add_child(map_size_row)
+	# --- Map style ---
+	vbox.add_child(_make_section_label("Map Style", s))
+	var style_desc := Label.new()
+	style_desc.name = "MapStyleDesc"
+	style_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	style_desc.add_theme_font_size_override("font_size", int(13 * s))
+	style_desc.add_theme_color_override("font_color", Color(0.60, 0.62, 0.55))
+	style_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	style_desc.custom_minimum_size = Vector2(0, 48 * s)
+	vbox.add_child(_make_map_style_row(s, style_desc))
+	vbox.add_child(style_desc)
+
+	# Map size is fixed per style — show it as info, not a control.
+	_map_size_label = Label.new()
+	_map_size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_map_size_label.add_theme_font_size_override("font_size", int(12 * s))
+	_map_size_label.add_theme_color_override("font_color", Color(0.55, 0.60, 0.50))
+	vbox.add_child(_map_size_label)
+	_update_map_style_desc(style_desc)
 
 	# --- Number of players (2..8) ---
 	vbox.add_child(_make_section_label("Number of Players", s))
@@ -167,6 +182,14 @@ func _show_create() -> void:
 	desc.custom_minimum_size = Vector2(0, 48 * s)
 	vbox.add_child(desc)
 	_update_difficulty_desc(desc)
+
+	# --- Status (shows "Creating room…" / errors during the async host flow) ---
+	_create_status_label = Label.new()
+	_create_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_create_status_label.add_theme_font_size_override("font_size", int(13 * s))
+	_create_status_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.55))
+	_create_status_label.custom_minimum_size = Vector2(0, 24 * s)
+	vbox.add_child(_create_status_label)
 
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 8 * s)
@@ -271,17 +294,75 @@ func _refresh_difficulty_buttons(buttons: Array[Button], colors: Array) -> void:
 func _update_difficulty_desc(desc: Label) -> void:
 	var settings := NetworkManager.difficulty_settings(_create_difficulty)
 	desc.text = "Zombie density x%.1f  •  Horde size x%.1f  •  %d starting hordes" % [
-		settings.enemies_per_block / 2.0,
+		settings.enemies_per_block / 14.0,
 		settings.horde_mult,
 		settings.starting_hordes,
 	]
 
+func _make_map_style_row(s: float, desc_label: Label) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", int(8 * s))
+
+	var styles := [
+		BuildingCatalog.MapStyle.DOWNTOWN,
+		BuildingCatalog.MapStyle.METROPOLIS,
+		BuildingCatalog.MapStyle.INDUSTRIAL,
+		BuildingCatalog.MapStyle.SUBURBAN,
+		BuildingCatalog.MapStyle.CIVIC_CENTER,
+		BuildingCatalog.MapStyle.OPEN_WORLD,
+	]
+	var color := Color(0.55, 0.55, 0.65)
+	var buttons: Array[Button] = []
+
+	for st in styles:
+		var idx: int = st
+		var btn := MenuShared.make_button(BuildingCatalog.style_name(idx), s, 100, 40, 13)
+		btn.pressed.connect(func() -> void:
+			_create_map_style = idx
+			_refresh_map_style_buttons(buttons, styles, color)
+			_update_map_style_desc(desc_label)
+		)
+		buttons.append(btn)
+		row.add_child(btn)
+
+	_refresh_map_style_buttons(buttons, styles, color)
+	return row
+
+func _refresh_map_style_buttons(buttons: Array[Button], styles: Array, accent: Color) -> void:
+	var s := MenuShared.ui_scale()
+	for i in range(buttons.size()):
+		var btn := buttons[i]
+		if styles[i] == _create_map_style:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(accent, s))
+			btn.add_theme_color_override("font_color", Color(1, 1, 1))
+		else:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.20, 0.20, 0.24, 0.9), s))
+			btn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
+
+func _update_map_style_desc(desc: Label) -> void:
+	desc.text = BuildingCatalog.style_description(_create_map_style)
+	if _map_size_label:
+		var sz: int = BuildingCatalog.map_size_for(_create_map_style)
+		_map_size_label.text = "Map size: %d × %d blocks  (%d total)" % [sz, sz, sz * sz]
+
 func _on_host_pressed() -> void:
-	var code := NetworkManager.host_game(_create_map_size, _create_max_players, _create_difficulty)
+	# GD-Sync hosting is asynchronous (connect → create lobby → self-join). We
+	# generate the code immediately, then wait for join_succeeded (which fires
+	# for the host once the room is live) to open the lobby. Errors arrive via
+	# join_failed and are shown in the create-status label. Map size is a
+	# property of the chosen style — derive it from BuildingCatalog rather
+	# than letting the host pick freely.
+	var preset_size := BuildingCatalog.map_size_for(_create_map_style)
+	var code := NetworkManager.host_game(preset_size, _create_max_players, _create_difficulty, _create_map_style)
 	if code.is_empty():
-		_show_temporary_message("Failed to create server (port in use?)")
+		if _create_status_label:
+			_create_status_label.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
+			_create_status_label.text = "Could not start hosting (is the GD-Sync addon enabled?)"
 		return
-	_open_lobby()
+	if _create_status_label:
+		_create_status_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.55))
+		_create_status_label.text = "Creating room %s…" % code
 
 # ------------------------------------------------------------------
 # Join-game panel
@@ -369,6 +450,11 @@ func _on_join_succeeded() -> void:
 	_open_lobby()
 
 func _on_join_failed(reason: String) -> void:
+	# The same signal surfaces both join and host failures. Route the message to
+	# whichever panel is currently open.
+	if _create_panel and _create_panel.visible and _create_status_label:
+		_create_status_label.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
+		_create_status_label.text = reason
 	if _join_status_label:
 		_join_status_label.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))
 		_join_status_label.text = reason

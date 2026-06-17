@@ -97,7 +97,7 @@ func _build_main_panel(s: float) -> void:
 # ------------------------------------------------------------------
 
 func _on_single_player() -> void:
-	get_tree().change_scene_to_file("res://scenes/Main.tscn")
+	get_tree().change_scene_to_file("res://scenes/SinglePlayerSetup.tscn")
 
 func _on_multiplayer() -> void:
 	get_tree().change_scene_to_file("res://scenes/MultiplayerMenu.tscn")

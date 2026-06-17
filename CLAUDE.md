@@ -25,9 +25,13 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 
 **Building Interiors** (`scripts/building_interior.gd`): Each building has a procedurally generated interior. Five building types with distinct furniture arrangements, all created from primitive meshes at runtime.
 
-**Networking** (`scripts/network_manager.gd`): Autoloaded singleton. The host (peer 1) has authority over enemies and game state. LAN discovery uses UDP broadcast. Players sync at ~20Hz via RPCs. Enemy AI runs on the host using `WorkerThreadPool` for parallel processing.
+**Networking** (`scripts/network_manager.gd`): Autoloaded `NetworkManager` singleton — a high-level wrapper around the **GD-Sync** addon (cloud relay, no port-forwarding). Scenes talk only to `NetworkManager`, never to the `GDSync` node directly. It owns connect/lobby lifecycle, 6-char room codes, the lobby-data peer roster, lobby config (map size / players / difficulty / shared world seed), and a generic host↔client event channel: `broadcast_event(name, payload)` / `send_event_to(peer, name, payload)` → the `net_event` signal. This event channel is the GD-Sync replacement for Godot's `@rpc`. The host is authoritative over enemies and world state; enemy AI runs on the host using `WorkerThreadPool` for parallel processing.
 
-**Enemy AI** (`scripts/enemy.gd`): Wander/chase/attack state machine, networked health, HP bars. The host runs AI; clients receive position updates.
+`main.gd` is the single gameplay dispatcher: it subscribes to `NetworkManager.net_event` and routes events to the right player/enemy/pickup node by id. The host broadcasts the full enemy set ("enemy_state", ~20Hz) and pickup set ("pickup_state", ~1Hz); clients reconcile (create unseen, update known, drop absent), which self-heals for late joiners and propagates deaths/pickups without explicit despawn messages. Each player broadcasts its own transform ("player_xform"); damage requests flow client→host ("enemy_damage") or host→owner ("player_damage").
+
+> Setup: enable the GD-Sync plugin and set its API key in **Project → Tools → GD-Sync**. Order the `GDSync` autoload **before** `NetworkManager` (NetworkManager retries once deferred if not). Without the addon, single-player still runs; multiplayer is disabled with a warning.
+
+**Enemy AI** (`scripts/enemy.gd`): Wander/chase/attack state machine, networked health, HP bars. The host runs AI; clients apply host-pushed transform/HP via `net_apply_transform()` / `net_set_hp()`.
 
 ### Key Patterns
 

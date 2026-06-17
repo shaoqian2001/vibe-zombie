@@ -7,6 +7,16 @@ const ACCELERATION = 18.0
 const GRAVITY = 24.0
 const ROTATION_SPEED = 14.0
 
+# Aim mode (hold the right mouse button while holding a ranged weapon): trades
+# mobility for precision and stopping power. Movement and turn speed drop, the
+# weapon barely sways and rounds scatter far less, and each shot lands for
+# AIM_DAMAGE_FACTOR× its normal damage.
+const AIM_MOVE_FACTOR := 0.45    # walk/sprint speed multiplier while aiming
+const AIM_TURN_FACTOR := 0.5     # body turn-rate multiplier while aiming
+const AIM_SPREAD_FACTOR := 0.25  # bullet-scatter multiplier while aiming
+const AIM_SWAY_FACTOR := 0.35    # weapon/arm shake multiplier while aiming
+const AIM_DAMAGE_FACTOR := 1.6   # per-shot damage multiplier while aiming
+
 # Stamina
 const STAMINA_MAX := 40.0
 const STAMINA_DRAIN := 15.0
@@ -32,6 +42,9 @@ var _weapon_ammo: Dictionary = {}
 var _current_weapon: String = ""
 var _weapon_stats: Dictionary = {}
 var _armed: bool = false
+# True while the local player holds the aim button with a ranged weapon out.
+# Owner-only (driven from input each physics frame); remote copies stay false.
+var _is_aiming: bool = false
 
 # Gun state (for the currently equipped weapon)
 var ammo: int = 0
@@ -112,10 +125,18 @@ var _left_elbow: Node3D = null
 # cross that distance — but trimmed so the arms don't dangle past the hips.
 var _upper_arm_len: float = 0.30
 var _forearm_len: float = 0.30
-# Weapons are parented to this anchor on the right hand (dominant trigger
-# hand) so they follow the full walk / kick animation without any extra
-# bookkeeping.
+# A WeaponGrip anchor is built on BOTH hands; the equipped weapon parents to
+# whichever one is currently the dominant (main) hand so it follows the full
+# walk / kick animation without any extra bookkeeping. `_weapon_grip` points at
+# the active one (see _bind_handed_chains / set_dominant_hand).
 var _weapon_grip: Node3D = null
+var _right_grip: Node3D = null
+var _left_grip: Node3D = null
+# Which hand is the dominant / main (weapon) hand. true → right-handed: the
+# main hand is the right hand and every weapon (guns + melee) rides the right
+# side; false → left-handed: everything mirrors to the left. Toggled live from
+# the debug panel via set_dominant_hand().
+var _dominant_is_right: bool = true
 # Rest-pose transforms captured at rig build so animation is relative to
 # the constructed setup. Hips/spine rest is identity (built at known offset).
 var _hip_l_rest := Transform3D.IDENTITY
@@ -133,6 +154,11 @@ var _left_elbow_rest := Transform3D.IDENTITY
 #   • "ik"     — driven by 2-bone IK to grip the weapon's off-hand anchor
 var _right_arm_mode: String = "free"
 var _left_arm_mode: String = "free"
+# Same modes, but resolved by ROLE rather than physical side — these track the
+# main (weapon) and support arms regardless of handedness, so the animation
+# step can drive the kick on the main arm and IK on the support arm.
+var _main_arm_mode: String = "free"
+var _support_arm_mode: String = "free"
 # IK target position (in weapon-local space) for the off-hand. Only used
 # when an arm's mode is "ik" — see _solve_arm_ik.
 var _off_hand_anchor_local: Vector3 = Vector3.ZERO
@@ -254,39 +280,42 @@ const WEAPON_POSES := {
 		# chest level. Off-hand (left) hangs and pendulums while walking.
 		# Negative elbow_bend tucks the elbow DOWN (forearm comes up off the
 		# extended upper arm); positive bend chicken-wings the elbow.
-		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "shoulder_roll": -10.0, "elbow_bend": -10.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -75.0, "shoulder_yaw": -3.0, "shoulder_roll": -16.0, "elbow_bend": -10.0, "mode": "braced" },
 		"left":  { "shoulder_pitch": -8.0,  "shoulder_yaw":  0.0, "elbow_bend": -14.0, "mode": "free" },
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
 	"smg": {
-		# SHOULDERED carry — the RIGHT (trigger) hand is folded up to shoulder
-		# height on the right side (a tight elbow_bend keeps it tucked back near
-		# the body instead of stretched out in front), so the weapon rides "on
-		# the right shoulder". The LEFT support hand IKs forward onto the rail,
-		# in front of the right hand. Shared by all the two-handed guns; only
-		# the kick/recoil differs per weapon.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		# Compact SMG tucked against the chest — the RIGHT (trigger) hand grips
+		# the receiver in front of the chest, slightly inboard of the right
+		# shoulder (negative shoulder_roll pulls it toward the centreline so the
+		# weapon sits in the hands rather than jammed up on the shoulder). The
+		# LEFT support hand IKs forward onto the rail, well ahead of the grip.
+		# Shared stance for all the two-handed guns; only the kick/recoil differs.
+		# elbow_bend kept fairly open so the trigger forearm hangs to the grip
+		# naturally instead of folding up tight against the chest.
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
 	"ak47": {
-		# Long rifle on the right shoulder (see "smg" for the stance). Stiffer
-		# kick than the SMG, but without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		# Long rifle held at the chest (see "smg" for the stance), the support
+		# hand reaching forward onto the forend. Stiffer kick than the SMG, but
+		# without the shotgun's big shoulder rock.
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
-		# Long shotgun on the right shoulder (see "smg" for the stance), with a
+		# Long shotgun held at the chest (see "smg" for the stance), with a
 		# heavy kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
-		# Heavy launcher on the right shoulder (see "smg" for the stance), with
+		# Heavy launcher held at the chest (see "smg" for the stance), with
 		# the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -6.0, "shoulder_roll": -8.0, "elbow_bend": -135.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
@@ -310,22 +339,36 @@ const WEAPON_POSES := {
 
 # Network state — true if this peer owns this player (or in single-player).
 var _owns_input: bool = true
+# GD-Sync identity, assigned by main.gd. `peer_id` is the owner's GD-Sync client
+# id; `is_local_player` is true on the machine that controls this character.
+var peer_id: int = -1
+var is_local_player: bool = true
 
-# Network sync (for non-authority peers we just receive position updates)
-const NET_SYNC_HZ := 20.0
+# Network sync. We push our own transform + equipped weapon at NET_SYNC_HZ;
+# remote copies interpolate toward the latest target every frame (rather than
+# snapping on packet arrival) so movement stays smooth between updates.
+const NET_SYNC_HZ := 30.0
 const NET_SYNC_INTERVAL := 1.0 / NET_SYNC_HZ
+# How fast a remote copy chases its synced target. Higher = snappier but jitterier.
+const REMOTE_LERP_SPEED := 14.0
+# Beyond this gap we teleport instead of interpolating (covers spawns / big jumps).
+const REMOTE_TELEPORT_DIST := 5.0
 var _net_sync_timer := 0.0
 
 # Derived on receivers to drive animation (authority's `velocity` isn't synced).
 var _remote_last_pos: Vector3 = Vector3.ZERO
 var _remote_last_sync_time: float = 0.0
+# Latest transform target received from the owner; interpolated toward each frame.
+var _remote_target_pos: Vector3 = Vector3.INF
+var _remote_target_yaw: float = 0.0
 
 func _ready() -> void:
-	# In MP, the player node has multiplayer_authority set by the spawner code
-	# in main.gd to the owning peer's id. In single-player the default
-	# (server-only) authority applies and _owns_input stays true.
+	# Under GD-Sync the player node has no Godot multiplayer authority —
+	# ownership is just a script-side flag. main.gd's spawner sets
+	# `is_local_player` on the input-owning copy; remote copies are
+	# read-only and animate from synced transforms.
 	if NetworkManager.is_networked:
-		_owns_input = is_multiplayer_authority()
+		_owns_input = is_local_player
 	_cache_body_parts()
 	# Single-player has no main.gd handoff that would call refresh_authority(),
 	# so camera lookup and weapon/aim-line building wouldn't otherwise run —
@@ -674,18 +717,19 @@ func _build_arm_chain(
 	hand.position = Vector3(0, -0.05, 0)
 	wrist.add_child(hand)
 
+	# A WeaponGrip anchor lives on EACH hand so either can be the dominant hand.
+	# Weapons are designed with +Z as the muzzle direction, so the active grip's
+	# basis inverts the cumulative shoulder + elbow rotation (for guns) to keep
+	# the muzzle aimed along the player's +Z axis. _apply_weapon_pose recomputes
+	# this for whichever grip is currently active when the pose changes.
+	var grip := Node3D.new()
+	grip.name = "WeaponGrip"
+	grip.position = Vector3(0, -0.02, 0.02)
+	wrist.add_child(grip)
 	if is_right:
-		# WeaponGrip lives on the RIGHT hand — the dominant / trigger hand.
-		# Weapons are designed with +Z as the muzzle direction, so the
-		# grip's basis must invert the cumulative shoulder + elbow rotation
-		# (for guns) to keep the muzzle aimed along the player's +Z axis.
-		# _apply_weapon_pose recomputes this whenever the equipped weapon
-		# (and therefore the rest pose) changes.
-		var grip := Node3D.new()
-		grip.name = "WeaponGrip"
-		grip.position = Vector3(0, -0.02, 0.02)
-		wrist.add_child(grip)
-		_weapon_grip = grip
+		_right_grip = grip
+	else:
+		_left_grip = grip
 
 	return shoulder
 
@@ -697,15 +741,37 @@ func _build_arm_chain(
 func _apply_weapon_pose(weapon_name: String) -> void:
 	if _right_shoulder == null or _left_shoulder == null:
 		return
+	# Make sure the role→physical-side mapping (and the active grip) matches the
+	# current handedness before we pose anything.
+	_bind_handed_chains()
 	var pose: Dictionary = WEAPON_POSES.get(weapon_name, WEAPON_POSES["unarmed"])
-	var right: Dictionary = pose["right"]
-	var left: Dictionary = pose["left"]
+	# The pose dict is authored for a right-handed shooter: "right" = the main
+	# (weapon/trigger) hand, "left" = the support hand. In left-handed mode the
+	# main role is served by the physical LEFT arm and vice-versa, and every
+	# sideways component (shoulder_yaw / shoulder_roll, the IK pole) is mirrored
+	# by `lat`.
+	var main_pose: Dictionary = pose["right"]
+	var support_pose: Dictionary = pose["left"]
+	var lat: float = 1.0 if _dominant_is_right else -1.0
 
-	_right_arm_mode = right.get("mode", "free")
-	_left_arm_mode = left.get("mode", "free")
+	_main_arm_mode = main_pose.get("mode", "free")
+	_support_arm_mode = support_pose.get("mode", "free")
+	# Mirror the role modes onto the physical sides so the walk-cycle sway logic
+	# (which is keyed off the physical right/left arms) stays correct.
+	if _dominant_is_right:
+		_right_arm_mode = _main_arm_mode
+		_left_arm_mode = _support_arm_mode
+	else:
+		_left_arm_mode = _main_arm_mode
+		_right_arm_mode = _support_arm_mode
 
-	_pose_arm(_right_shoulder, _right_elbow, right)
-	_pose_arm(_left_shoulder, _left_elbow, left)
+	var main_shoulder: Node3D = _right_shoulder if _dominant_is_right else _left_shoulder
+	var main_elbow: Node3D = _right_elbow if _dominant_is_right else _left_elbow
+	var support_shoulder: Node3D = _left_shoulder if _dominant_is_right else _right_shoulder
+	var support_elbow: Node3D = _left_elbow if _dominant_is_right else _right_elbow
+
+	_pose_arm(main_shoulder, main_elbow, main_pose, lat)
+	_pose_arm(support_shoulder, support_elbow, support_pose, lat)
 
 	_right_shoulder_rest = _right_shoulder.transform
 	_left_shoulder_rest = _left_shoulder.transform
@@ -719,7 +785,7 @@ func _apply_weapon_pose(weapon_name: String) -> void:
 	var weapon_stats: Dictionary = WeaponData.get_weapon(weapon_name)
 	_off_hand_anchor_local = weapon_stats.get("off_hand_anchor", Vector3.ZERO)
 
-	# Re-align the grip so the weapon sits naturally for the chosen pose:
+	# Re-align the active grip so the weapon sits naturally for the chosen pose:
 	#   • "player_forward" (default, used by guns): basis = inverse of the
 	#     accumulated shoulder + elbow rotation, so the muzzle aims along
 	#     the player's +Z regardless of how the arm is posed.
@@ -727,13 +793,13 @@ func _apply_weapon_pose(weapon_name: String) -> void:
 	#     around X, mapping the weapon's +Z axis to the wrist's -Y, so the
 	#     bat extends out of the wrist along the arm's direction. Cocking
 	#     the arm back over the shoulder then naturally cocks the bat too.
-	# Grip lives on the right arm, so we invert the right chain.
-	if _weapon_grip and _right_elbow:
+	# Invert the MAIN (dominant) chain since the weapon hangs off its grip.
+	if _weapon_grip and main_elbow:
 		var grip_align: String = pose.get("grip_align", "player_forward")
 		if grip_align == "along_arm":
 			_weapon_grip.basis = Basis(Vector3.RIGHT, PI * 0.5)
 		else:
-			var combined: Basis = _right_shoulder.basis * _right_elbow.basis
+			var combined: Basis = main_shoulder.basis * main_elbow.basis
 			_weapon_grip.basis = combined.inverse()
 
 	_kick_pitch_deg = pose.get("kick_pitch", 0.0)
@@ -741,7 +807,15 @@ func _apply_weapon_pose(weapon_name: String) -> void:
 	_kick_duration = pose.get("kick_duration", SHOOT_ANIM_DURATION)
 	_chest_recoil_deg = pose.get("chest_recoil", 0.0)
 
-func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
+## Point `_weapon_grip` at the dominant hand's grip. Cheap; safe to call
+## whenever the handedness might have changed.
+func _bind_handed_chains() -> void:
+	_weapon_grip = _right_grip if _dominant_is_right else _left_grip
+
+## `lat` mirrors the sideways pose components (+1 right-handed, -1 left-handed):
+## pitch/elbow_bend are sagittal and stay put, yaw/roll flip so the arm tucks
+## inboard on whichever side it is on.
+func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary, lat: float) -> void:
 	# IK-driven arms are placed each frame in _update_animation; here we
 	# just clear the rotation so the IK pass starts from a clean slate and
 	# doesn't carry over angles from the previous weapon.
@@ -753,23 +827,46 @@ func _pose_arm(shoulder: Node3D, elbow: Node3D, pose: Dictionary) -> void:
 		# shoulder_roll (rotation around the shoulder's forward axis) tilts the
 		# whole arm sideways in the frontal plane. A NEGATIVE roll on the right
 		# (weapon) arm swings the elbow + hand INWARD toward the body
-		# centreline, so a held weapon rests slightly inside the right shoulder
-		# rather than straight out from it — which shortens the left support
-		# arm's reach to the off-hand anchor.
+		# centreline, so a held weapon rests slightly inside the shoulder
+		# rather than straight out from it. `lat` flips it for the left hand.
 		shoulder.rotation = Vector3(
 			deg_to_rad(pose.get("shoulder_pitch", 0.0)),
-			deg_to_rad(pose.get("shoulder_yaw", 0.0)),
-			deg_to_rad(pose.get("shoulder_roll", 0.0)),
+			deg_to_rad(pose.get("shoulder_yaw", 0.0)) * lat,
+			deg_to_rad(pose.get("shoulder_roll", 0.0)) * lat,
 		)
 	if elbow:
 		elbow.rotation = Vector3(deg_to_rad(pose.get("elbow_bend", 0.0)), 0.0, 0.0)
 
-## Called by main.gd after it sets set_multiplayer_authority() on this player,
-## to make sure `_owns_input` matches the authoritative state (in case Player._ready
-## ran with the default authority before main had a chance to override it).
+## Switch the dominant (main / weapon) hand at runtime. true → right-handed,
+## false → left-handed. Reparents the equipped weapon to the new hand's grip
+## and re-applies the current pose so guns AND melee mirror to that side. Local
+## and cosmetic — not networked.
+func set_dominant_hand(is_right: bool) -> void:
+	if is_right == _dominant_is_right:
+		return
+	_dominant_is_right = is_right
+	_bind_handed_chains()
+	# Move every built weapon mesh to the now-active grip. The grip geometry is
+	# identical on both hands, so keep each weapon's local transform.
+	var new_grip: Node3D = _weapon_grip
+	if new_grip != null:
+		for w in [_pistol_node, _shotgun_node, _smg_node, _ak47_node,
+				  _grenade_launcher_node, _bat_node]:
+			if w != null and w.get_parent() != null and w.get_parent() != new_grip:
+				w.reparent(new_grip, false)
+	# Re-pose both arms (and recompute the grip basis) for the new side.
+	_apply_weapon_pose(_current_weapon if (_armed and _current_weapon != "") else "unarmed")
+
+func is_dominant_right() -> bool:
+	return _dominant_is_right
+
+## Called by main.gd after it assigns `peer_id` / `is_local_player` on this
+## player, to make sure `_owns_input` matches ownership (in case Player._ready
+## ran before main had a chance to set it). Under GD-Sync the player node has
+## no Godot multiplayer authority — ownership is purely a script-side flag.
 func refresh_authority() -> void:
 	if NetworkManager.is_networked:
-		_owns_input = is_multiplayer_authority()
+		_owns_input = is_local_player
 
 	await get_tree().process_frame
 	_camera = get_viewport().get_camera_3d()
@@ -793,16 +890,28 @@ func _physics_process(delta: float) -> void:
 	if is_dead:
 		return
 
-	# Remote players: just consume synced transform — animate limbs from the
-	# synced horizontal velocity so they're not frozen mid-stride.
+	# Remote players: glide toward the latest synced transform every frame and
+	# animate limbs from the estimated horizontal velocity so they're not frozen
+	# mid-stride or stuttering between packets.
 	if not _owns_input:
+		_interpolate_remote(delta)
 		_update_animation(delta)
 		return
+
+	# Aim mode: held right mouse while a ranged weapon is equipped. Melee
+	# weapons (and bare hands) can't aim.
+	_is_aiming = (
+		_armed
+		and Input.is_action_pressed("aim")
+		and _weapon_stats.get("hit_mode", "") != "melee"
+	)
 
 	_apply_gravity(delta)
 	var move_dir := _get_world_movement_direction()
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
+	if _is_aiming:
+		current_speed *= AIM_MOVE_FACTOR
 	_apply_movement(move_dir, current_speed, delta)
 	# Layer recoil on top of input-driven movement and let it decay so
 	# the kick is a brief shove, not a sustained push.
@@ -819,22 +928,31 @@ func _physics_process(delta: float) -> void:
 	_update_animation(delta)
 	_sync_hud()
 
-	# Push transform to remote peers (client-authoritative on own player).
+	# Push transform to remote peers (each peer is authoritative over its own
+	# player). Broadcast over GD-Sync's relay; main.gd routes it to the matching
+	# remote copy on every other peer.
 	if NetworkManager.is_networked:
 		_net_sync_timer -= delta
 		if _net_sync_timer <= 0.0:
 			_net_sync_timer = NET_SYNC_INTERVAL
-			rpc("_sync_player_transform", global_position, rotation.y, _is_sprinting)
+			NetworkManager.broadcast_event("player_xform", {
+				"peer_id": peer_id,
+				"x": global_position.x, "y": global_position.y, "z": global_position.z,
+				"yaw": rotation.y, "sprinting": _is_sprinting,
+				# The equipped weapon (empty string = unarmed) so remote copies
+				# render the right gun in this player's hands.
+				"weapon": _current_weapon,
+			})
 
-@rpc("authority", "call_remote", "unreliable_ordered")
-func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
-	# Smooth on the receiving side. Big distance = teleport.
-	if global_position.distance_to(pos) > 5.0:
-		global_position = pos
-	else:
-		global_position = global_position.lerp(pos, 0.5)
-	rotation.y = yaw
+## Records the latest transform + equipped weapon pushed by the owning peer
+## (called by main.gd on remote copies). We DON'T snap the position here — the
+## per-frame _interpolate_remote() glides toward it so motion stays smooth
+## between the ~30Hz packets instead of stuttering on each arrival.
+func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "") -> void:
+	_remote_target_pos = pos
+	_remote_target_yaw = yaw
 	_is_sprinting = sprinting
+	_set_remote_weapon(weapon)
 	# Estimate horizontal velocity from the position stream so the animation
 	# rig on remote copies can drive the walk cycle at the right cadence.
 	var now := Time.get_ticks_msec() / 1000.0
@@ -845,21 +963,60 @@ func _sync_player_transform(pos: Vector3, yaw: float, sprinting: bool) -> void:
 	_remote_last_pos = pos
 	_remote_last_sync_time = now
 
+## Frame-rate-independent glide toward the last synced transform. Big gaps
+## (spawns / teleports) snap instead of sliding across the map.
+func _interpolate_remote(delta: float) -> void:
+	if _remote_target_pos == Vector3.INF:
+		return
+	if global_position.distance_to(_remote_target_pos) > REMOTE_TELEPORT_DIST:
+		global_position = _remote_target_pos
+	else:
+		var t: float = 1.0 - exp(-REMOTE_LERP_SPEED * delta)
+		global_position = global_position.lerp(_remote_target_pos, t)
+	rotation.y = lerp_angle(rotation.y, _remote_target_yaw, 1.0 - exp(-REMOTE_LERP_SPEED * delta))
+
+## Mirrors the locally-equipped weapon onto a remote copy: shows the right gun
+## mesh and re-poses the arms. The owner drives this via the synced "weapon"
+## field; we never run weapon input/ammo logic on a copy.
+func _set_remote_weapon(weapon_name: String) -> void:
+	# The weapon meshes are built in refresh_authority() after a frame; if the
+	# rig isn't ready yet, leave _current_weapon untouched so the next packet
+	# retries once the nodes exist.
+	if _pistol_node == null:
+		return
+	if weapon_name == _current_weapon:
+		return
+	_current_weapon = weapon_name
+	_armed = weapon_name != ""
+	_pistol_node.visible = (weapon_name == "pistol")
+	_shotgun_node.visible = (weapon_name == "shotgun")
+	_smg_node.visible = (weapon_name == "smg")
+	_ak47_node.visible = (weapon_name == "ak47")
+	_grenade_launcher_node.visible = (weapon_name == "grenade_launcher")
+	_bat_node.visible = (weapon_name == "bat")
+	_weapon_stats = WeaponData.get_weapon(weapon_name) if weapon_name != "" else {}
+	# _apply_weapon_pose falls back to the unarmed pose for an empty/unknown name.
+	_apply_weapon_pose(weapon_name)
+
 # ------------------------------------------------------------------
 # Audio. The local (input-owning) player hears their own actions as crisp
-# non-positional 2D sounds; in multiplayer those same events are broadcast so
-# every other peer plays them as positional 3D voices on this player's remote
-# copy. Footsteps are handled separately (driven by the walk animation, which
-# already runs on every peer's copy — see _handle_footsteps).
+# non-positional 2D sounds; in multiplayer those same events are sent over the
+# GD-Sync event channel so every other peer plays them as positional 3D voices
+# on this player's remote copy. Footsteps are handled separately (driven by the
+# walk animation, which already runs on every peer's copy — see _handle_footsteps).
 # ------------------------------------------------------------------
 
 func _emit_player_sound(sound: String, pitch: float = 1.0, volume_db: float = 0.0) -> void:
 	SoundManager.play_2d(sound, pitch, volume_db)
 	if NetworkManager.is_networked:
-		rpc("_remote_player_sound", sound, pitch, volume_db)
+		# main.gd routes "player_sound" to this player's remote copy on each peer.
+		NetworkManager.broadcast_event("player_sound", {
+			"peer_id": peer_id, "sound": sound, "pitch": pitch, "vol": volume_db,
+		})
 
-@rpc("authority", "call_remote", "unreliable")
-func _remote_player_sound(sound: String, pitch: float, volume_db: float) -> void:
+## Plays a networked sound on a remote copy of this player (called by main.gd
+## when a "player_sound" event arrives for a non-local peer).
+func play_remote_sound(sound: String, pitch: float, volume_db: float) -> void:
 	SoundManager.play_on(self, sound, pitch, volume_db)
 
 ## Map the equipped weapon to its gunshot timbre.
@@ -873,7 +1030,9 @@ func _gun_sound_name() -> String:
 
 ## Called from the walk animation each frame. Fires one footstep on each zero
 ## crossing of the gait sine while the player is moving, so step cadence tracks
-## the animation (and therefore walk vs. sprint) automatically.
+## the animation (and therefore walk vs. sprint) automatically. Runs on every
+## peer's copy (the animation does), so footsteps need no networking: the owner
+## hears 2D, remote copies play positional 3D.
 func _handle_footsteps(horiz_speed: float, swing_sin: float) -> void:
 	if is_dead or horiz_speed < 0.6:
 		_prev_step_sign = 0
@@ -883,7 +1042,6 @@ func _handle_footsteps(horiz_speed: float, swing_sin: float) -> void:
 		var sprint := _is_sprinting
 		var pitch := randf_range(0.9, 1.08) * (1.12 if sprint else 1.0)
 		var vol := -13.0 if sprint else -19.0
-		# Owner hears 2D; remote copies of other players play positional 3D.
 		if _owns_input:
 			SoundManager.play_2d("footstep", pitch, vol)
 		else:
@@ -915,16 +1073,16 @@ func _handle_auto_fire() -> void:
 
 func take_damage(amount: float) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
-	# authoritative for that player. Forward if we're not the authority.
-	if NetworkManager.is_networked and not is_multiplayer_authority():
-		rpc_id(get_multiplayer_authority(), "_take_damage_rpc", amount)
+	# authoritative for that player. The host's enemies call this on their local
+	# copy of a remote player; forward the hit to that player's owner over the
+	# GD-Sync channel instead of mutating a copy we don't own.
+	if NetworkManager.is_networked and not _owns_input:
+		NetworkManager.send_event_to(peer_id, "player_damage", {"amount": amount})
 		return
 	_apply_damage(amount)
 
-@rpc("any_peer", "call_remote", "reliable")
-func _take_damage_rpc(amount: float) -> void:
-	if not is_multiplayer_authority():
-		return
+## Called by main.gd when a "player_damage" event arrives for our local player.
+func apply_remote_damage(amount: float) -> void:
 	_apply_damage(amount)
 
 func _apply_damage(amount: float) -> void:
@@ -1123,7 +1281,9 @@ func _build_pistol() -> void:
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
-	_shotgun_node.position = Vector3(0.0, 0.0, 0.02)
+	# +X nudges the whole gun outboard of the hand so the stock/back clears the
+	# torso instead of sinking into it (the arm posture is unchanged).
+	_shotgun_node.position = Vector3(0.04, 0.0, 0.02)
 	_shotgun_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_shotgun_node)
 
@@ -1204,7 +1364,8 @@ func _build_shotgun() -> void:
 func _build_smg() -> void:
 	_smg_node = Node3D.new()
 	_smg_node.name = "SMG"
-	_smg_node.position = Vector3(0.0, 0.07, 0.02)
+	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
+	_smg_node.position = Vector3(0.04, 0.07, 0.02)
 	_smg_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_smg_node)
 
@@ -1259,7 +1420,8 @@ func _build_smg() -> void:
 func _build_ak47() -> void:
 	_ak47_node = Node3D.new()
 	_ak47_node.name = "AK47"
-	_ak47_node.position = Vector3(0.0, 0.07, 0.02)
+	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
+	_ak47_node.position = Vector3(0.04, 0.07, 0.02)
 	_ak47_node.scale = Vector3.ONE * 1.35
 	_attach_weapon(_ak47_node)
 
@@ -1342,7 +1504,8 @@ func _build_ak47() -> void:
 func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
-	_grenade_launcher_node.position = Vector3(0.0, 0.06, 0.06)
+	# +X nudges the whole gun outboard of the hand so the back clears the torso.
+	_grenade_launcher_node.position = Vector3(0.04, 0.06, 0.06)
 	_grenade_launcher_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_grenade_launcher_node)
 
@@ -1707,11 +1870,19 @@ func _fire_bullet() -> void:
 	# recoil in WeaponData so this is effectively a gun-only effect.
 	_apply_recoil()
 
+## Per-shot multipliers for aim mode. 1.0 when not aiming, so callers can apply
+## them unconditionally.
+func _aim_damage_mult() -> float:
+	return AIM_DAMAGE_FACTOR if _is_aiming else 1.0
+
+func _aim_spread_mult() -> float:
+	return AIM_SPREAD_FACTOR if _is_aiming else 1.0
+
 func _fire_single() -> void:
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 40.0)
-	var damage: float = _weapon_stats.get("damage", 10.0)
-	var spread_deg: float = _weapon_stats.get("spread", 0.0)
+	var damage: float = _weapon_stats.get("damage", 10.0) * _aim_damage_mult()
+	var spread_deg: float = _weapon_stats.get("spread", 0.0) * _aim_spread_mult()
 	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
 	if spread_deg > 0.0:
@@ -1749,8 +1920,8 @@ func _fire_pellet() -> void:
 	# by one or two. One shell = one pull of the trigger = one ammo tick.
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 15.0)
-	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0)
-	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0)
+	var damage_per_pellet: float = _weapon_stats.get("damage", 5.0) * _aim_damage_mult()
+	var spread_deg: float = _weapon_stats.get("pellet_spread", 4.0) * _aim_spread_mult()
 	var pellet_count: int = _weapon_stats.get("pellet_count", 12)
 	var knockback_per_pellet: float = _weapon_stats.get("knockback", 0.0)
 	var spread_rad := deg_to_rad(spread_deg)
@@ -1795,7 +1966,7 @@ func _fire_pellet() -> void:
 func _fire_explosive() -> void:
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 25.0)
-	var damage: float = _weapon_stats.get("damage", 30.0)
+	var damage: float = _weapon_stats.get("damage", 30.0) * _aim_damage_mult()
 	var radius: float = _weapon_stats.get("explosion_radius", 5.0)
 	var knockback: float = _weapon_stats.get("knockback", 0.0)
 
@@ -2098,7 +2269,8 @@ func _rotate_to_face_mouse(delta: float) -> void:
 		target_body_yaw = aim_yaw - signf(aim_offset) * MAX_TORSO_TWIST
 	else:
 		target_body_yaw = desired_body_yaw
-	rotation.y = lerp_angle(rotation.y, target_body_yaw, ROTATION_SPEED * delta)
+	var turn_speed := ROTATION_SPEED * (AIM_TURN_FACTOR if _is_aiming else 1.0)
+	rotation.y = lerp_angle(rotation.y, target_body_yaw, turn_speed * delta)
 
 func _update_animation(delta: float) -> void:
 	# Horizontal speed drives the walk cycle; scale the cycle faster and bigger
@@ -2113,9 +2285,11 @@ func _update_animation(delta: float) -> void:
 	var leg_swing_amp := deg_to_rad(lerpf(2.0, 32.0, clamped_ratio))
 	var knee_amp := deg_to_rad(lerpf(2.0, 48.0, clamped_ratio))
 	# A free arm hangs and pendulums broadly with the gait; a braced/IK arm
-	# is locked to the weapon and barely moves.
-	var braced_arm_amp := deg_to_rad(lerpf(0.5, 4.0, clamped_ratio))
-	var free_arm_amp := deg_to_rad(lerpf(2.0, 18.0, clamped_ratio))
+	# is locked to the weapon and barely moves. Aiming damps the arm swing
+	# further so the held weapon barely shakes.
+	var aim_sway := AIM_SWAY_FACTOR if _is_aiming else 1.0
+	var braced_arm_amp := deg_to_rad(lerpf(0.5, 4.0, clamped_ratio)) * aim_sway
+	var free_arm_amp := deg_to_rad(lerpf(2.0, 18.0, clamped_ratio)) * aim_sway
 	var bob_amp := lerpf(0.0, 0.04, clamped_ratio)
 	# Pelvis swivel is disabled: any non-zero yaw here rotates each hip's
 	# swing plane off the sagittal axis, so the swinging foot traces a slight
@@ -2251,34 +2425,47 @@ func _update_animation(delta: float) -> void:
 	if _neck:
 		_neck.transform = _neck_rest
 
-	# --- Fire animation: the RIGHT shoulder + elbow drive the kick (right is
-	# the trigger / weapon hand). For guns this is a small barrel-rise + brief
-	# return; for the bat it's a large pitch swing plus elbow extension. The
-	# LEFT (support) arm IKs onto the weapon's off-hand anchor afterward, so
-	# the kick naturally propagates through the moving weapon to the off-hand.
-	if _right_shoulder:
-		_right_shoulder.transform = _right_shoulder_rest * Transform3D(
-			Basis(Vector3.RIGHT, right_sway + kick_pitch), Vector3.ZERO
+	# --- Fire animation: the MAIN (dominant/weapon) shoulder + elbow drive the
+	# kick. For guns this is a small barrel-rise + brief return; for the bat it's
+	# a large pitch swing plus elbow extension. The SUPPORT arm IKs onto the
+	# weapon's off-hand anchor afterward, so the kick naturally propagates
+	# through the moving weapon to the off-hand. Which physical arm is which is
+	# resolved here from the handedness; the kick/sway are sagittal so no mirror.
+	var main_sh: Node3D = _right_shoulder if _dominant_is_right else _left_shoulder
+	var main_el: Node3D = _right_elbow if _dominant_is_right else _left_elbow
+	var main_sh_rest: Transform3D = _right_shoulder_rest if _dominant_is_right else _left_shoulder_rest
+	var main_el_rest: Transform3D = _right_elbow_rest if _dominant_is_right else _left_elbow_rest
+	var main_sway: float = right_sway if _dominant_is_right else left_sway
+	var sup_sh: Node3D = _left_shoulder if _dominant_is_right else _right_shoulder
+	var sup_el: Node3D = _left_elbow if _dominant_is_right else _right_elbow
+	var sup_sh_rest: Transform3D = _left_shoulder_rest if _dominant_is_right else _right_shoulder_rest
+	var sup_el_rest: Transform3D = _left_elbow_rest if _dominant_is_right else _right_elbow_rest
+	var sup_sway: float = left_sway if _dominant_is_right else right_sway
+	var sup_braced: bool = _support_arm_mode != "free"
+
+	if main_sh:
+		main_sh.transform = main_sh_rest * Transform3D(
+			Basis(Vector3.RIGHT, main_sway + kick_pitch), Vector3.ZERO
 		)
-	if _right_elbow:
-		_right_elbow.transform = _right_elbow_rest * Transform3D(
+	if main_el:
+		main_el.transform = main_el_rest * Transform3D(
 			Basis(Vector3.RIGHT, kick_elbow), Vector3.ZERO
 		)
 
-	# Left (support) arm: pendulum at the side (free), brace-with-sway
-	# (braced — static pose with tiny sway), or IK-locked onto the weapon's
-	# off-hand anchor (two-handed weapons). IK re-solves onto the already-
-	# kicked weapon, so the support hand stays glued through recoil.
-	if _left_arm_mode == "ik":
+	# Support arm: pendulum at the side (free), brace-with-sway (braced — static
+	# pose with tiny sway), or IK-locked onto the weapon's off-hand anchor
+	# (two-handed weapons). IK re-solves onto the already-kicked weapon, so the
+	# support hand stays glued through recoil.
+	if _support_arm_mode == "ik":
 		_solve_off_hand_ik()
 	else:
-		if _left_shoulder:
-			var left_kick: float = kick_pitch * (0.5 if left_braced else 0.0)
-			_left_shoulder.transform = _left_shoulder_rest * Transform3D(
-				Basis(Vector3.RIGHT, left_sway + left_kick), Vector3.ZERO
+		if sup_sh:
+			var sup_kick: float = kick_pitch * (0.5 if sup_braced else 0.0)
+			sup_sh.transform = sup_sh_rest * Transform3D(
+				Basis(Vector3.RIGHT, sup_sway + sup_kick), Vector3.ZERO
 			)
-		if _left_elbow and left_braced:
-			_left_elbow.transform = _left_elbow_rest * Transform3D(
+		if sup_el and sup_braced:
+			sup_el.transform = sup_el_rest * Transform3D(
 				Basis(Vector3.RIGHT, kick_elbow * 0.5), Vector3.ZERO
 			)
 
@@ -2311,30 +2498,32 @@ func _update_animation(delta: float) -> void:
 				Basis(Vector3.RIGHT, punch_elbow), Vector3.ZERO
 			)
 
-## Resolve the LEFT (support) arm so its hand reaches the equipped weapon's
-## off-hand anchor (the forend on guns, lower handle on the bat). Runs each
-## frame for two-handed weapons; the right (trigger) arm has already been
-## animated, so reading the weapon's current world transform here gives us a
-## target that already includes the trigger-hand kick.
+## Resolve the SUPPORT arm so its hand reaches the equipped weapon's off-hand
+## anchor (the forend on guns, lower handle on the bat). Runs each frame for
+## two-handed weapons; the main (trigger) arm has already been animated, so
+## reading the weapon's current world transform here gives us a target that
+## already includes the trigger-hand kick. The support arm is the LEFT hand in
+## right-handed mode and the RIGHT hand when left-handed.
 func _solve_off_hand_ik() -> void:
-	if _torso_top == null or _left_shoulder == null or _left_elbow == null:
+	var sup_sh: Node3D = _left_shoulder if _dominant_is_right else _right_shoulder
+	var sup_el: Node3D = _left_elbow if _dominant_is_right else _right_elbow
+	if _torso_top == null or sup_sh == null or sup_el == null:
 		return
 	var weapon_node := _current_weapon_node()
 	if weapon_node == null:
 		return
-	# Target in WORLD space → convert into _torso_top-local since the
-	# left shoulder is a direct child of the upper-body anchor.
+	# Target in WORLD space → convert into _torso_top-local since the support
+	# shoulder is a direct child of the upper-body anchor.
 	var target_world: Vector3 = weapon_node.global_transform * _off_hand_anchor_local
 	var target_local: Vector3 = _torso_top.global_transform.affine_inverse() * target_world
-	# Left shoulder pivot lives at -SHOULDER_X inside _torso_top.
-	var shoulder_pos := Vector3(-SHOULDER_X, SHOULDER_Y, SHOULDER_Z)
-	# Pole vector — defines which way the elbow bulges. We want the elbow
-	# to drop straight down (and a hair inward, toward the body centerline,
-	# which is +X for the left arm) so the support arm looks tucked rather
-	# than chicken-winged outward.
-	var pole_pos := shoulder_pos + Vector3(0.08, -1.0, 0.0)
+	# Support shoulder pivot: -SHOULDER_X (left) in right-handed mode, +SHOULDER_X
+	# (right) when left-handed. `lat` also flips which way the elbow bulges so it
+	# stays tucked toward the body centreline rather than chicken-winging out.
+	var lat: float = 1.0 if _dominant_is_right else -1.0
+	var shoulder_pos := Vector3(-SHOULDER_X * lat, SHOULDER_Y, SHOULDER_Z)
+	var pole_pos := shoulder_pos + Vector3(0.08 * lat, -1.0, 0.0)
 	_solve_arm_ik(
-		_left_shoulder, _left_elbow,
+		sup_sh, sup_el,
 		shoulder_pos, target_local, pole_pos,
 		_upper_arm_len, _forearm_len,
 	)
