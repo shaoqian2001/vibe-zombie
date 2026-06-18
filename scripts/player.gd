@@ -1096,6 +1096,8 @@ func _physics_process(delta: float) -> void:
 		_net_sync_timer -= delta
 		if _net_sync_timer <= 0.0:
 			_net_sync_timer = NET_SYNC_INTERVAL
+			# Unreliable: a dropped transform is covered by remote interpolation;
+			# reliable retransmits at 30Hz would queue up into visible lag.
 			NetworkManager.broadcast_event("player_xform", {
 				"peer_id": peer_id,
 				"x": global_position.x, "y": global_position.y, "z": global_position.z,
@@ -1201,9 +1203,11 @@ func _emit_player_sound(sound: String, pitch: float = 1.0, volume_db: float = 0.
 	SoundManager.play_2d(sound, pitch, volume_db)
 	if NetworkManager.is_networked:
 		# main.gd routes "player_sound" to this player's remote copy on each peer.
+		# Unreliable — a missed gunshot/footstep is cosmetic and not worth a
+		# retransmit that would compete with the transform stream.
 		NetworkManager.broadcast_event("player_sound", {
 			"peer_id": peer_id, "sound": sound, "pitch": pitch, "vol": volume_db,
-		})
+		}, false)
 
 ## Plays a networked sound on a remote copy of this player (called by main.gd
 ## when a "player_sound" event arrives for a non-local peer).
