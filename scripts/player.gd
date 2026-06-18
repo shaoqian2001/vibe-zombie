@@ -31,6 +31,25 @@ var god_mode: bool = false
 
 signal died
 
+# Armor — picked up via body armor (ItemData). Absorbs incoming damage before
+# health and drives the HUD armor bar (which was previously cosmetic). Starts
+# empty; the player has no armor until they find some.
+const ARMOR_MAX := 100.0
+var armor: float = 0.0
+
+# Item-driven modifiers (see pickup_item).
+#   • _equip_speed_mult  — persistent multiplier from tactical shoes (applies once).
+#   • _speed_boost_mult / _turn_boost_mult — temporary energy-drink buff, active
+#     while _buff_timer > 0; reset to 1.0 when it expires.
+#   • _bonus_stamina_max — extra stamina pool granted by the backpack.
+var _equip_speed_mult: float = 1.0
+var _speed_boost_mult: float = 1.0
+var _turn_boost_mult: float = 1.0
+var _buff_timer: float = 0.0
+var _bonus_stamina_max: float = 0.0
+var _has_backpack: bool = false
+var _has_shoes: bool = false
+
 var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0
 var _is_sprinting: bool = false
@@ -285,15 +304,16 @@ const WEAPON_POSES := {
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
 	"smg": {
-		# Compact SMG tucked against the chest — the RIGHT (trigger) hand grips
-		# the receiver in front of the chest, slightly inboard of the right
-		# shoulder (negative shoulder_roll pulls it toward the centreline so the
-		# weapon sits in the hands rather than jammed up on the shoulder). The
-		# LEFT support hand IKs forward onto the rail, well ahead of the grip.
-		# Shared stance for all the two-handed guns; only the kick/recoil differs.
-		# elbow_bend kept fairly open so the trigger forearm hangs to the grip
-		# naturally instead of folding up tight against the chest.
-		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
+		# Compact SMG carried at the chest. The RIGHT (trigger) arm's UPPER arm
+		# hangs almost straight down at the side — shoulder_roll is kept small
+		# (only a slight inboard tilt) so the elbow stays under the shoulder
+		# instead of being pulled across the chest, which is how a real shooter's
+		# firing arm hangs. The forearm folds up (elbow_bend) to bring the grip
+		# in front of the body, and the gun mesh sits a touch higher and outboard
+		# of centre (see _build_smg position). The LEFT support hand IKs forward
+		# onto the rail, well ahead of the grip. Shared stance for all the
+		# two-handed guns; only the kick/recoil differs.
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -5.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
@@ -301,21 +321,21 @@ const WEAPON_POSES := {
 		# Long rifle held at the chest (see "smg" for the stance), the support
 		# hand reaching forward onto the forend. Stiffer kick than the SMG, but
 		# without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -5.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
 		# Long shotgun held at the chest (see "smg" for the stance), with a
 		# heavy kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -5.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
 		# Heavy launcher held at the chest (see "smg" for the stance), with
 		# the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -5.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
@@ -906,10 +926,14 @@ func _physics_process(delta: float) -> void:
 		and _weapon_stats.get("hit_mode", "") != "melee"
 	)
 
+	_update_buffs(delta)
+
 	_apply_gravity(delta)
 	var move_dir := _get_world_movement_direction()
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
+	# Tactical shoes (persistent) and the energy-drink buff (temporary) stack.
+	current_speed *= _equip_speed_mult * _speed_boost_mult
 	if _is_aiming:
 		current_speed *= AIM_MOVE_FACTOR
 	_apply_movement(move_dir, current_speed, delta)
@@ -1088,9 +1112,17 @@ func apply_remote_damage(amount: float) -> void:
 func _apply_damage(amount: float) -> void:
 	if is_dead or god_mode:
 		return
-	health = max(health - amount, 0.0)
-	if hud:
-		hud.set_health(health / HEALTH_MAX * 100.0)
+	# Armor soaks the hit first, then any remainder carries through to health.
+	if armor > 0.0:
+		var absorbed: float = min(armor, amount)
+		armor -= absorbed
+		amount -= absorbed
+		if hud:
+			hud.set_armor(armor / ARMOR_MAX * 100.0)
+	if amount > 0.0:
+		health = max(health - amount, 0.0)
+		if hud:
+			hud.set_health(health / HEALTH_MAX * 100.0)
 	if health <= 0.0:
 		is_dead = true
 		velocity = Vector3.ZERO
@@ -1141,6 +1173,78 @@ func pickup_weapon(weapon_name: String) -> void:
 
 	var new_idx := _weapons.size() - 1
 	_equip_weapon(new_idx)
+
+# ------------------------------------------------------------------
+# Items & equipment (consumables apply instantly; equipment is a persistent
+# passive bonus). Walked into via ItemPickup.body_entered → pickup_item().
+# ------------------------------------------------------------------
+
+func pickup_item(item_id: String) -> void:
+	var data := ItemData.get_item(item_id)
+	if data.is_empty():
+		return
+
+	var msg := ""
+	match data.get("category", ""):
+		"consumable":
+			msg = _apply_consumable(data)
+		"equipment":
+			msg = _apply_equipment(data)
+		_:
+			return
+
+	# Push the affected bars to the HUD right away (don't wait for _sync_hud).
+	if hud:
+		hud.set_health(health / HEALTH_MAX * 100.0)
+		hud.set_armor(armor / ARMOR_MAX * 100.0)
+		hud.set_stamina(stamina / _stamina_max() * 100.0)
+		if msg != "" and hud.has_method("show_toast"):
+			hud.show_toast(msg, data.get("glow_color", Color(1, 1, 1, 1)))
+
+	# Pleasant pickup chime — 2D for the local player, positional on remote copies.
+	_emit_player_sound("item_pickup", randf_range(0.97, 1.03), -5.0)
+
+## Apply a consumable's instant effect. Returns the HUD toast text.
+func _apply_consumable(data: Dictionary) -> String:
+	var item_name: String = data.get("display_name", "Item")
+	if data.get("heal_full", false):
+		health = HEALTH_MAX
+		return "%s — fully healed" % item_name
+	if data.has("heal"):
+		var amount: float = data["heal"]
+		var before := health
+		health = min(health + amount, HEALTH_MAX)
+		return "%s  +%d HP" % [item_name, int(round(health - before))]
+	if data.has("speed_boost"):
+		_speed_boost_mult = data.get("speed_boost", 1.0)
+		_turn_boost_mult = data.get("turn_boost", 1.0)
+		_buff_timer = data.get("boost_duration", 10.0)
+		return "%s — speed boost!" % item_name
+	return ""
+
+## Apply a piece of equipment as a persistent bonus. Returns the HUD toast text.
+func _apply_equipment(data: Dictionary) -> String:
+	var item_name: String = data.get("display_name", "Equipment")
+	if data.has("armor"):
+		armor = min(armor + float(data["armor"]), ARMOR_MAX)
+		return "%s equipped  +%d armor" % [item_name, int(data["armor"])]
+	if data.has("stamina_bonus"):
+		# Backpack applies once; grant the extra pool and top the player off.
+		if not _has_backpack:
+			_has_backpack = true
+			var bonus: float = data["stamina_bonus"]
+			_bonus_stamina_max += bonus
+			stamina = min(stamina + bonus, _stamina_max())
+			return "%s equipped  +%d stamina" % [item_name, int(bonus)]
+		return "%s (already equipped)" % item_name
+	if data.has("speed_mult"):
+		# Shoes apply once so speed doesn't compound on repeat pickups.
+		if not _has_shoes:
+			_has_shoes = true
+			_equip_speed_mult *= float(data["speed_mult"])
+			return "%s equipped  +%d%% speed" % [item_name, int(round((data["speed_mult"] - 1.0) * 100.0))]
+		return "%s (already equipped)" % item_name
+	return ""
 
 func _switch_weapon(slot: int) -> void:
 	if slot < 0 or slot >= _weapons.size():
@@ -1281,9 +1385,9 @@ func _build_pistol() -> void:
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
-	# +X nudges the whole gun outboard of the hand so the stock/back clears the
-	# torso instead of sinking into it (the arm posture is unchanged).
-	_shotgun_node.position = Vector3(0.04, 0.0, 0.02)
+	# +X outboard of the body centreline so the stock/back clears the torso, and
+	# +Y lifts it higher toward the shoulder for the vertical trigger-arm carry.
+	_shotgun_node.position = Vector3(0.06, 0.05, 0.02)
 	_shotgun_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_shotgun_node)
 
@@ -1364,8 +1468,10 @@ func _build_shotgun() -> void:
 func _build_smg() -> void:
 	_smg_node = Node3D.new()
 	_smg_node.name = "SMG"
-	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
-	_smg_node.position = Vector3(0.04, 0.07, 0.02)
+	# +X nudges the gun outboard of the hand (clear of the torso, slightly off
+	# the body centreline) and +Y lifts it higher toward the shoulder so the
+	# carry reads naturally with the now-vertical trigger upper arm.
+	_smg_node.position = Vector3(0.06, 0.11, 0.02)
 	_smg_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_smg_node)
 
@@ -1420,8 +1526,9 @@ func _build_smg() -> void:
 func _build_ak47() -> void:
 	_ak47_node = Node3D.new()
 	_ak47_node.name = "AK47"
-	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
-	_ak47_node.position = Vector3(0.04, 0.07, 0.02)
+	# +X outboard of the body centreline, +Y higher toward the shoulder (matches
+	# the vertical trigger-arm carry).
+	_ak47_node.position = Vector3(0.06, 0.11, 0.02)
 	_ak47_node.scale = Vector3.ONE * 1.35
 	_attach_weapon(_ak47_node)
 
@@ -1504,8 +1611,9 @@ func _build_ak47() -> void:
 func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
-	# +X nudges the whole gun outboard of the hand so the back clears the torso.
-	_grenade_launcher_node.position = Vector3(0.04, 0.06, 0.06)
+	# +X outboard of the body centreline (back clears the torso), +Y higher
+	# toward the shoulder for the vertical trigger-arm carry.
+	_grenade_launcher_node.position = Vector3(0.06, 0.10, 0.06)
 	_grenade_launcher_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_grenade_launcher_node)
 
@@ -2218,6 +2326,19 @@ func _get_world_movement_direction() -> Vector3:
 
 	return (cam_fwd * (-input.y) + cam_right * input.x)
 
+## Effective stamina ceiling — base plus the backpack bonus.
+func _stamina_max() -> float:
+	return STAMINA_MAX + _bonus_stamina_max
+
+## Count down the temporary energy-drink buff and clear it when it lapses.
+func _update_buffs(delta: float) -> void:
+	if _buff_timer <= 0.0:
+		return
+	_buff_timer = max(_buff_timer - delta, 0.0)
+	if _buff_timer <= 0.0:
+		_speed_boost_mult = 1.0
+		_turn_boost_mult = 1.0
+
 func _update_sprint(move_dir: Vector3, delta: float) -> void:
 	var wants_sprint := Input.is_action_pressed("sprint")
 	var is_moving := move_dir.length() > 0.1
@@ -2230,7 +2351,7 @@ func _update_sprint(move_dir: Vector3, delta: float) -> void:
 		_is_sprinting = false
 		_sprint_cooldown = max(_sprint_cooldown - delta, 0.0)
 		if _sprint_cooldown <= 0.0:
-			stamina = min(stamina + STAMINA_RECOVER * delta, STAMINA_MAX)
+			stamina = min(stamina + STAMINA_RECOVER * delta, _stamina_max())
 
 func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	var target_xz := dir * speed
@@ -2269,7 +2390,9 @@ func _rotate_to_face_mouse(delta: float) -> void:
 		target_body_yaw = aim_yaw - signf(aim_offset) * MAX_TORSO_TWIST
 	else:
 		target_body_yaw = desired_body_yaw
-	var turn_speed := ROTATION_SPEED * (AIM_TURN_FACTOR if _is_aiming else 1.0)
+	# Energy drink sharpens the turn rate (_turn_boost_mult) on top of the
+	# aim-mode damping.
+	var turn_speed := ROTATION_SPEED * (AIM_TURN_FACTOR if _is_aiming else 1.0) * _turn_boost_mult
 	rotation.y = lerp_angle(rotation.y, target_body_yaw, turn_speed * delta)
 
 func _update_animation(delta: float) -> void:
@@ -2277,8 +2400,13 @@ func _update_animation(delta: float) -> void:
 	# when sprinting so sprint visibly reads.
 	var horiz_speed := Vector2(velocity.x, velocity.z).length()
 	var speed_ratio := clampf(horiz_speed / SPEED, 0.0, 2.0)
-	# Cycle frequency in radians/sec — ~2 full swings/sec at walking speed.
-	var cycle_rate := 10.0 * speed_ratio
+	# Stride frequency grows SUB-linearly with speed. Stride *length* (the leg
+	# swing amplitude below) also grows with speed, and distance covered per
+	# step = speed / cadence — so letting cadence rise linearly with speed (as it
+	# used to) made a sprint read as frantic little steps. sqrt scaling keeps
+	# walking unchanged (sqrt(1)=1) while pulling the run cadence well down, so
+	# running becomes longer, slower strides that match the movement speed.
+	var cycle_rate := 10.0 * sqrt(speed_ratio)
 	_walk_phase = fposmod(_walk_phase + cycle_rate * delta, TAU)
 
 	var clamped_ratio: float = clampf(speed_ratio, 0.0, 1.5)
@@ -2602,7 +2730,10 @@ func _current_weapon_node() -> Node3D:
 
 func _sync_hud() -> void:
 	if hud:
-		hud.set_stamina(stamina / STAMINA_MAX * 100.0)
+		hud.set_stamina(stamina / _stamina_max() * 100.0)
+		hud.set_armor(armor / ARMOR_MAX * 100.0)
+		if hud.has_method("set_speed_buff"):
+			hud.set_speed_buff(_buff_timer)
 		if _armed:
 			var mag_size: int = _weapon_stats.get("magazine_size", 8)
 			if mag_size < 0:

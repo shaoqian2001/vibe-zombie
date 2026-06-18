@@ -113,6 +113,8 @@ func _generate_library() -> void:
 	_cache["gun_grenade"] = _make_gunshot(0.34, 55.0,  0.55, 14.0, 7.0)
 	_cache["dry_fire"]    = _make_dry_fire()
 	_cache["reload"]      = _make_reload()
+	# Item / equipment pickup — a short bright two-note chime.
+	_cache["item_pickup"] = _make_pickup()
 	# Melee.
 	_cache["swing_bat"]   = _make_swing(0.26, 0.95)
 	_cache["swing_fist"]  = _make_swing(0.17, 0.6)
@@ -224,6 +226,26 @@ func _make_reload() -> AudioStreamWAV:
 			c2 = ((randf() * 2.0 - 1.0) * 0.5 + sin(TAU * 800.0 * td) * 0.5) * e2
 		s[i] = c1 * 0.5 + c2 * 0.6
 	_normalize(s, 0.6)
+	return _to_wav(s)
+
+## Item pickup — two ascending sine "blips" (a quick rising chime) so collecting
+## loot reads as a small positive reward. Each note has a fast attack and a soft
+## exponential tail; the second note starts partway through the first.
+func _make_pickup() -> AudioStreamWAV:
+	var dur := 0.26
+	var n := int(dur * MIX_RATE)
+	var s := PackedFloat32Array()
+	s.resize(n)
+	var t2 := 0.09  # second note onset
+	for i in n:
+		var t := float(i) / MIX_RATE
+		var note1 := sin(TAU * 660.0 * t) * exp(-t * 9.0)
+		var note2 := 0.0
+		if t >= t2:
+			var td := t - t2
+			note2 = sin(TAU * 990.0 * td) * exp(-td * 8.0)
+		s[i] = note1 * 0.6 + note2 * 0.7
+	_normalize(s, 0.7)
 	return _to_wav(s)
 
 ## Melee swing whoosh — low-passed noise under a smooth "hump" envelope, the

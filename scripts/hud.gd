@@ -12,9 +12,16 @@ var _container: Control
 var _dev_label: Label = null
 var _code_label: Label = null
 var _peer_count_label: Label = null
+var _toast_label: Label = null
+var _toast_timer: float = 0.0
+var _buff_label: Label = null
 
-# Current values (0-100)
-var armor: float = 15.0
+const TOAST_HOLD := 2.2   # seconds at full opacity before fading
+const TOAST_FADE := 0.6   # fade-out duration
+
+# Current values (0-100). Armor starts empty — the player owns it and only has
+# armor after picking up body armor.
+var armor: float = 0.0
 var max_armor: float = 100.0
 var health: float = 100.0
 var max_health: float = 100.0
@@ -36,8 +43,9 @@ const BG_COLOR := Color(0.12, 0.12, 0.12, 0.7)
 func _ready() -> void:
 	_build_hud()
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	_update_bars()
+	_update_toast(delta)
 
 func set_stamina(value: float) -> void:
 	stamina = clamp(value, 0.0, max_stamina)
@@ -47,6 +55,76 @@ func set_health(value: float) -> void:
 
 func set_armor(value: float) -> void:
 	armor = clamp(value, 0.0, max_armor)
+
+## Brief centred message when an item is picked up (e.g. "Apple  +25 HP").
+func show_toast(text: String, color: Color = Color(1, 1, 1, 1)) -> void:
+	if _toast_label == null:
+		_build_toast()
+	_toast_label.text = text
+	# Item glow colours are semi-transparent; brighten and force opaque so the
+	# toast text stays crisp (fade is handled via modulate in _update_toast).
+	var c := color
+	c.a = 1.0
+	_toast_label.add_theme_color_override("font_color", c.lightened(0.15))
+	_toast_label.modulate.a = 1.0
+	_toast_label.visible = true
+	_toast_timer = TOAST_HOLD + TOAST_FADE
+
+func _build_toast() -> void:
+	_toast_label = Label.new()
+	_toast_label.name = "ToastLabel"
+	_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast_label.add_theme_font_size_override("font_size", 22)
+	_toast_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	_toast_label.add_theme_constant_override("shadow_offset_x", 2)
+	_toast_label.add_theme_constant_override("shadow_offset_y", 2)
+	_toast_label.anchor_left = 0.0
+	_toast_label.anchor_right = 1.0
+	_toast_label.anchor_top = 0.16
+	_toast_label.anchor_bottom = 0.22
+	_toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_toast_label.visible = false
+	_container.add_child(_toast_label)
+
+func _update_toast(delta: float) -> void:
+	if _toast_label == null or _toast_timer <= 0.0:
+		return
+	_toast_timer -= delta
+	if _toast_timer <= 0.0:
+		_toast_label.visible = false
+	elif _toast_timer < TOAST_FADE:
+		_toast_label.modulate.a = _toast_timer / TOAST_FADE
+
+## Show / hide the temporary speed-buff indicator. `remaining` is the seconds
+## left on the energy-drink buff; <= 0 hides it.
+func set_speed_buff(remaining: float) -> void:
+	if remaining <= 0.0:
+		if _buff_label:
+			_buff_label.visible = false
+		return
+	if _buff_label == null:
+		_build_buff_label()
+	_buff_label.visible = true
+	_buff_label.text = "⚡ SPEED  %.0fs" % ceil(remaining)
+
+func _build_buff_label() -> void:
+	_buff_label = Label.new()
+	_buff_label.name = "BuffLabel"
+	_buff_label.add_theme_font_size_override("font_size", 16)
+	_buff_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25, 1.0))
+	_buff_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	_buff_label.add_theme_constant_override("shadow_offset_x", 1)
+	_buff_label.add_theme_constant_override("shadow_offset_y", 1)
+	# Sits just above the weapon-name label in the bottom-left stack.
+	_buff_label.anchor_left = 0.0
+	_buff_label.anchor_bottom = 1.0
+	_buff_label.anchor_top = 1.0
+	_buff_label.offset_left = MARGIN
+	_buff_label.offset_top = -200.0
+	_buff_label.offset_bottom = -176.0
+	_buff_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_buff_label.visible = false
+	_container.add_child(_buff_label)
 
 func set_ammo(current: int, magazine: int) -> void:
 	if _ammo_label:
