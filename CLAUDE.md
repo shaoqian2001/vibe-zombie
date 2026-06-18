@@ -62,6 +62,8 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 - **Consumables** apply instantly on pickup: apple (small heal), medical kit (full heal), energy drink (timed move + turn speed buff).
 - **Equipment** is a persistent passive bonus (no slot management yet): body armor (feeds the armor bar — damage hits armor before health in `Player._apply_damage`), backpack (enlarges the stamina pool via `_stamina_max()`), tactical shoes (raises base move speed).
 
+Equipment is also **worn on the character model**: `player.gd` builds procedural worn meshes (vest on `_torso_top`, backpack behind it, boots on each foot) once in `_build_rig` (hidden), and `_update_equipment_visuals()` shows them on pickup. Worn state is networked as a bitfield in the `player_xform` payload (`_equip_bits` → `_set_remote_equipment`) so remote players see each other's gear.
+
 Networking mirrors weapons exactly: the host broadcasts the full set as `item_state` (~1 Hz) and clients reconcile; `item_despawn` drops a collected pickup. Pickups feed the HUD's toast (`show_toast`) and speed-buff indicator (`set_speed_buff`).
 
 ### Camera
