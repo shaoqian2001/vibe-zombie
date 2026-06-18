@@ -71,8 +71,15 @@ var _next_enemy_id: int = 0
 # Counter for unique weapon-pickup names.
 var _next_pickup_id: int = 0
 # Host -> client replication cadence (GD-Sync event channel).
-const NET_ENEMY_SYNC_HZ := 20.0
+const NET_ENEMY_SYNC_HZ := 15.0
 const NET_PICKUP_SYNC_HZ := 1.0
+# Interest management: only replicate enemies within this radius of SOME player.
+# Distant zombies are off every client's screen (FOV-culled) and their AI still
+# runs on the host, so skipping them is free bandwidth. Squared for cheap compares.
+const ENEMY_INTEREST_RADIUS := 70.0
+const ENEMY_INTEREST_RADIUS_SQ := ENEMY_INTEREST_RADIUS * ENEMY_INTEREST_RADIUS
+# Hard cap on enemies per state packet so a dense horde can't blow up the packet.
+const ENEMY_SYNC_MAX := 150
 var _net_enemy_timer: float = 0.0
 var _net_pickup_timer: float = 0.0
 
@@ -316,22 +323,44 @@ func _host_net_sync(delta: float) -> void:
 	_net_enemy_timer -= delta
 	if _net_enemy_timer <= 0.0:
 		_net_enemy_timer = 1.0 / NET_ENEMY_SYNC_HZ
-		NetworkManager.broadcast_event("enemy_state", {"e": _build_enemy_state()})
+		# Unreliable: at 15Hz a dropped packet is covered by client interpolation,
+		# and avoiding GD-Sync's reliable retransmit backlog keeps latency flat.
+		NetworkManager.broadcast_event("enemy_state", {"e": _build_enemy_state()}, false)
 	_net_pickup_timer -= delta
 	if _net_pickup_timer <= 0.0:
 		_net_pickup_timer = 1.0 / NET_PICKUP_SYNC_HZ
 		NetworkManager.broadcast_event("pickup_state", {"p": _build_pickup_state()})
 
 func _build_enemy_state() -> Array:
+	# Snapshot player positions once for the interest test (union across all
+	# players — enemy_state is a single broadcast, so it carries everyone's
+	# neighbourhood; each client FOV-culls what it doesn't need locally).
+	var player_positions: Array = []
+	for pid in _player_nodes.keys():
+		var pn = _player_nodes[pid]
+		if is_instance_valid(pn):
+			player_positions.append((pn as Node3D).global_position)
+	var no_players := player_positions.is_empty()
+
 	var out: Array = []
 	for n in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(n):
 			continue
 		var e := n as Node3D
+		var ep := e.global_position
+		var near := no_players
+		if not near:
+			for pp in player_positions:
+				if (pp as Vector3).distance_squared_to(ep) <= ENEMY_INTEREST_RADIUS_SQ:
+					near = true
+					break
+		if not near:
+			continue
 		out.append([
-			int(e.get("network_id")), e.global_position.x, e.global_position.y,
-			e.global_position.z, e.rotation.y, float(e.get("hp")),
+			int(e.get("network_id")), ep.x, ep.y, ep.z, e.rotation.y, float(e.get("hp")),
 		])
+		if out.size() >= ENEMY_SYNC_MAX:
+			break
 	return out
 
 func _build_pickup_state() -> Array:
