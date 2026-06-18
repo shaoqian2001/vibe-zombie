@@ -468,6 +468,7 @@ func _apply_player_xform(payload: Dictionary) -> void:
 			float(payload.get("yaw", 0.0)),
 			bool(payload.get("sprinting", false)),
 			String(payload.get("weapon", "")),
+			int(payload.get("equip", 0)),
 		)
 
 func _apply_enemy_state(list: Array) -> void:

@@ -49,6 +49,7 @@ var _buff_timer: float = 0.0
 var _bonus_stamina_max: float = 0.0
 var _has_backpack: bool = false
 var _has_shoes: bool = false
+var _has_body_armor: bool = false
 
 var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0
@@ -87,6 +88,18 @@ var _smg_node: Node3D = null
 var _ak47_node: Node3D = null
 var _grenade_launcher_node: Node3D = null
 var _bat_node: Node3D = null
+
+# Worn-equipment model nodes — procedural meshes parented to the rig, built once
+# (hidden) in _build_rig and shown when the matching equipment is picked up.
+# Body armor + backpack hang off _torso_top so they ride the chest's aim twist;
+# the boots are children of each foot mesh so they track the walk cycle.
+var _armor_node: Node3D = null
+var _backpack_node: Node3D = null
+var _shoe_l: Node3D = null
+var _shoe_r: Node3D = null
+# Foot mesh references (captured in _build_leg) so the boots can parent to them.
+var _foot_l: Node3D = null
+var _foot_r: Node3D = null
 
 # Recoil: world-unit/sec impulse pushed back along -forward each time we
 # pull the trigger. Decays exponentially so even a strong shotgun kick
@@ -585,6 +598,125 @@ func _build_rig() -> void:
 	# Start in the unarmed pose — both arms hang naturally.
 	_apply_weapon_pose("unarmed")
 
+	# Build worn-equipment meshes (hidden until the matching item is equipped).
+	# Done here in _build_rig — synchronously during _ready, BEFORE main.gd runs
+	# FovCuller.apply_shader_to_subtree on a remote copy — so the worn gear gets
+	# the FOV shadow overlay just like the rest of the body.
+	_build_equipment()
+
+# ------------------------------------------------------------------
+# Worn equipment models. Built once (hidden) and toggled on pickup. Each piece
+# echoes the colours of its world pickup model (see item_pickup.gd) so the loot
+# you grab visibly becomes the gear on your back.
+# ------------------------------------------------------------------
+
+func _build_equipment() -> void:
+	_armor_node = _build_armor_visual()
+	_backpack_node = _build_backpack_visual()
+	_shoe_l = _build_shoe_visual(_foot_l)
+	_shoe_r = _build_shoe_visual(_foot_r)
+	_update_equipment_visuals()
+
+## Helper: add a coloured box mesh to `parent` at `pos`. Returns nothing — the
+## worn pieces are toggled at the container level, not per box.
+func _add_equip_box(parent: Node3D, size: Vector3, color: Color, pos: Vector3, rough: float = 0.7) -> void:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = rough
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mesh.material = mat
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	parent.add_child(mi)
+
+## Body armor — a plated tactical vest wrapping the rigid chest, plus a raised
+## front plate and shoulder pads. Parented to _torso_top so it twists with the
+## chest. Chest box is WAIST_TOP_W × CHEST_HEIGHT × WAIST_DEPTH at y≈CHEST_HEIGHT/2.
+func _build_armor_visual() -> Node3D:
+	if _torso_top == null:
+		return null
+	var root := Node3D.new()
+	root.name = "BodyArmor"
+	root.visible = false
+	_torso_top.add_child(root)
+
+	var main_col := Color(0.22, 0.30, 0.42, 1)
+	var trim_col := Color(0.16, 0.22, 0.32, 1)
+	var plate_col := Color(0.30, 0.38, 0.50, 1)
+	var chest_mid := CHEST_HEIGHT * 0.5
+	# Vest body — slightly larger than the chest so it reads as a layer over it.
+	_add_equip_box(root, Vector3(WAIST_TOP_W + 0.04, CHEST_HEIGHT + 0.03, WAIST_DEPTH + 0.05),
+		main_col, Vector3(0, chest_mid, 0.0), 0.5)
+	# Raised front armour plate.
+	_add_equip_box(root, Vector3(0.34, 0.20, 0.05), plate_col,
+		Vector3(0, chest_mid + 0.02, WAIST_DEPTH * 0.5 + 0.03), 0.45)
+	# Shoulder pads sitting over each shoulder cap.
+	_add_equip_box(root, Vector3(0.16, 0.07, 0.22), trim_col, Vector3(0.23, SHOULDER_Y + 0.035, 0.0), 0.6)
+	_add_equip_box(root, Vector3(0.16, 0.07, 0.22), trim_col, Vector3(-0.23, SHOULDER_Y + 0.035, 0.0), 0.6)
+	return root
+
+## Backpack — main compartment behind the chest, lid, side pockets and two front
+## shoulder straps. Parented to _torso_top so it rides the chest.
+func _build_backpack_visual() -> Node3D:
+	if _torso_top == null:
+		return null
+	var root := Node3D.new()
+	root.name = "Backpack"
+	root.visible = false
+	_torso_top.add_child(root)
+
+	var main_col := Color(0.40, 0.28, 0.16, 1)
+	var lid_col := Color(0.34, 0.24, 0.14, 1)
+	var pouch_col := Color(0.30, 0.20, 0.12, 1)
+	var strap_col := Color(0.20, 0.15, 0.10, 1)
+	var chest_mid := CHEST_HEIGHT * 0.5
+	var back_z := -(WAIST_DEPTH * 0.5 + 0.08)  # just behind the chest's rear face
+	# Main compartment.
+	_add_equip_box(root, Vector3(0.30, 0.34, 0.16), main_col, Vector3(0, chest_mid, back_z), 0.8)
+	# Top lid.
+	_add_equip_box(root, Vector3(0.28, 0.10, 0.15), lid_col, Vector3(0, chest_mid + 0.18, back_z + 0.005), 0.8)
+	# Side pockets.
+	_add_equip_box(root, Vector3(0.06, 0.16, 0.12), pouch_col, Vector3(0.15, chest_mid - 0.02, back_z), 0.8)
+	_add_equip_box(root, Vector3(0.06, 0.16, 0.12), pouch_col, Vector3(-0.15, chest_mid - 0.02, back_z), 0.8)
+	# Shoulder straps down the front of the chest.
+	var strap_z := WAIST_DEPTH * 0.5 + 0.01
+	_add_equip_box(root, Vector3(0.05, 0.30, 0.03), strap_col, Vector3(0.12, chest_mid + 0.02, strap_z), 0.7)
+	_add_equip_box(root, Vector3(0.05, 0.30, 0.03), strap_col, Vector3(-0.12, chest_mid + 0.02, strap_z), 0.7)
+	return root
+
+## Tactical boots — a slightly larger upper + sole wrapping a foot mesh. Parented
+## to the foot so they track the walk cycle.
+func _build_shoe_visual(foot: Node3D) -> Node3D:
+	if foot == null:
+		return null
+	var root := Node3D.new()
+	root.name = "Shoe"
+	root.visible = false
+	foot.add_child(root)
+	var upper_col := Color(0.20, 0.24, 0.20, 1)
+	var sole_col := Color(0.08, 0.08, 0.10, 1)
+	# Foot mesh is 0.16 × FOOT_HEIGHT × 0.26, centred on the foot node. The sole's
+	# bottom is aligned with the foot's bottom (y = -FOOT_HEIGHT/2) so the planted
+	# boot rests on the floor rather than sinking through it.
+	_add_equip_box(root, Vector3(0.18, FOOT_HEIGHT + 0.02, 0.28), upper_col, Vector3(0, 0.01, 0.0), 0.6)
+	_add_equip_box(root, Vector3(0.19, 0.04, 0.30), sole_col, Vector3(0, -FOOT_HEIGHT * 0.5 + 0.02, 0.01), 0.5)
+	return root
+
+## Show / hide each worn piece from the equipment flags. Shared by local pickup
+## and remote sync so both paths render identical gear.
+func _update_equipment_visuals() -> void:
+	if _armor_node:
+		_armor_node.visible = _has_body_armor
+	if _backpack_node:
+		_backpack_node.visible = _has_backpack
+	if _shoe_l:
+		_shoe_l.visible = _has_shoes
+	if _shoe_r:
+		_shoe_r.visible = _has_shoes
+
 ## Pose every waist slice for this frame. Each pivot is rotated to a
 ## smoothstep fraction of the total twist/pitch, so the stack starts at
 ## 0° at the pelvis seam and ends at the full angle just under the
@@ -670,6 +802,11 @@ func _build_leg(is_left: bool, pants_mat: StandardMaterial3D, boot_mat: Standard
 	foot.position = Vector3(0, -SHIN_LEN * 0.5 - FOOT_HEIGHT * 0.5, 0.06)
 	foot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	shin.add_child(foot)
+	# Stash the foot so worn boots (tactical shoes) can parent onto it later.
+	if is_left:
+		_foot_l = foot
+	else:
+		_foot_r = foot
 
 	return hip
 
@@ -966,17 +1103,21 @@ func _physics_process(delta: float) -> void:
 				# The equipped weapon (empty string = unarmed) so remote copies
 				# render the right gun in this player's hands.
 				"weapon": _current_weapon,
+				# Worn-equipment bitfield so remote copies render the player's
+				# armor / backpack / boots (see _equip_bits / _set_remote_equipment).
+				"equip": _equip_bits(),
 			})
 
 ## Records the latest transform + equipped weapon pushed by the owning peer
 ## (called by main.gd on remote copies). We DON'T snap the position here — the
 ## per-frame _interpolate_remote() glides toward it so motion stays smooth
 ## between the ~30Hz packets instead of stuttering on each arrival.
-func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "") -> void:
+func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "", equip_bits: int = 0) -> void:
 	_remote_target_pos = pos
 	_remote_target_yaw = yaw
 	_is_sprinting = sprinting
 	_set_remote_weapon(weapon)
+	_set_remote_equipment(equip_bits)
 	# Estimate horizontal velocity from the position stream so the animation
 	# rig on remote copies can drive the walk cycle at the right cadence.
 	var now := Time.get_ticks_msec() / 1000.0
@@ -1021,6 +1162,32 @@ func _set_remote_weapon(weapon_name: String) -> void:
 	_weapon_stats = WeaponData.get_weapon(weapon_name) if weapon_name != "" else {}
 	# _apply_weapon_pose falls back to the unarmed pose for an empty/unknown name.
 	_apply_weapon_pose(weapon_name)
+
+## Pack the worn-equipment flags into a small bitfield for the player_xform
+## broadcast (1 = body armor, 2 = backpack, 4 = boots).
+func _equip_bits() -> int:
+	var bits := 0
+	if _has_body_armor:
+		bits |= 1
+	if _has_backpack:
+		bits |= 2
+	if _has_shoes:
+		bits |= 4
+	return bits
+
+## Mirror the owner's worn equipment onto a remote copy from the synced bitfield.
+## Equipment meshes are built in _build_rig (synchronously, before any xform
+## arrives), so they always exist here; we just toggle their visibility.
+func _set_remote_equipment(bits: int) -> void:
+	var armored := (bits & 1) != 0
+	var backpacked := (bits & 2) != 0
+	var booted := (bits & 4) != 0
+	if armored == _has_body_armor and backpacked == _has_backpack and booted == _has_shoes:
+		return
+	_has_body_armor = armored
+	_has_backpack = backpacked
+	_has_shoes = booted
+	_update_equipment_visuals()
 
 # ------------------------------------------------------------------
 # Audio. The local (input-owning) player hears their own actions as crisp
@@ -1227,11 +1394,14 @@ func _apply_equipment(data: Dictionary) -> String:
 	var item_name: String = data.get("display_name", "Equipment")
 	if data.has("armor"):
 		armor = min(armor + float(data["armor"]), ARMOR_MAX)
+		_has_body_armor = true
+		_update_equipment_visuals()
 		return "%s equipped  +%d armor" % [item_name, int(data["armor"])]
 	if data.has("stamina_bonus"):
 		# Backpack applies once; grant the extra pool and top the player off.
 		if not _has_backpack:
 			_has_backpack = true
+			_update_equipment_visuals()
 			var bonus: float = data["stamina_bonus"]
 			_bonus_stamina_max += bonus
 			stamina = min(stamina + bonus, _stamina_max())
@@ -1241,6 +1411,7 @@ func _apply_equipment(data: Dictionary) -> String:
 		# Shoes apply once so speed doesn't compound on repeat pickups.
 		if not _has_shoes:
 			_has_shoes = true
+			_update_equipment_visuals()
 			_equip_speed_mult *= float(data["speed_mult"])
 			return "%s equipped  +%d%% speed" % [item_name, int(round((data["speed_mult"] - 1.0) * 100.0))]
 		return "%s (already equipped)" % item_name
