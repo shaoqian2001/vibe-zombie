@@ -343,25 +343,41 @@ func _do_scene_change() -> void:
 # Generic event channel (the GD-Sync equivalent of @rpc)
 # ------------------------------------------------------------------
 
-func broadcast_event(event_name: String, payload: Dictionary) -> void:
+func broadcast_event(event_name: String, payload: Dictionary, reliable: bool = true) -> void:
 	## Host -> all / any -> all. Delivered to every peer in the lobby, including
 	## the local one (so senders see their own event, matching GD-Sync semantics).
+	##
+	## `reliable` defaults to true (guaranteed, ordered, retransmitted). Pass
+	## false for high-frequency state (transforms, sound) — GD-Sync's reliable
+	## calls "reattempt until successful", so flooding them at 20-30Hz builds a
+	## retransmit backlog that shows up as lag. Unreliable drops the odd packet
+	## instead, which the receiver's interpolation hides.
 	if not _addon_available or not is_networked:
 		# Single-player or pre-room: still surface locally so listeners are uniform.
 		net_event.emit(event_name, payload)
 		return
-	var method := _first_method(["call_func_all", "call_func"])
-	if method != "":
-		# GD-Sync's call_func/call_func_all are variadic and forward args via
-		# callable.callv() on the receiver, so spread (event_name, payload) as
-		# two args — passing the array as one would deliver a single Array.
-		_gdsync.callv(method, [_on_event_received, event_name, payload])
-	# call_func_all invokes the callable locally; plain call_func does not.
-	if method != "call_func_all":
+	var includes_self := false
+	if reliable:
+		if _gdsync.has_method("call_func_all"):
+			_gdsync.callv("call_func_all", [_on_event_received, event_name, payload])
+			includes_self = true
+		elif _gdsync.has_method("call_func"):
+			_gdsync.callv("call_func", [_on_event_received, event_name, payload])
+	else:
+		# Unreliable variants only target *other* clients, so we re-invoke locally.
+		if _gdsync.has_method("call_func_unreliable"):
+			_gdsync.callv("call_func_unreliable", [_on_event_received, event_name, payload])
+		elif _gdsync.has_method("call_func_all"):
+			_gdsync.callv("call_func_all", [_on_event_received, event_name, payload])
+			includes_self = true
+		elif _gdsync.has_method("call_func"):
+			_gdsync.callv("call_func", [_on_event_received, event_name, payload])
+	if not includes_self:
 		_on_event_received(event_name, payload)
 
-func send_event_to(peer_id: int, event_name: String, payload: Dictionary) -> void:
-	## Targeted delivery to a single peer (e.g. client -> host).
+func send_event_to(peer_id: int, event_name: String, payload: Dictionary, reliable: bool = true) -> void:
+	## Targeted delivery to a single peer (e.g. client -> host). See broadcast_event
+	## for the meaning of `reliable`.
 	if not _addon_available or not is_networked:
 		if peer_id == local_peer_id:
 			net_event.emit(event_name, payload)
@@ -369,7 +385,9 @@ func send_event_to(peer_id: int, event_name: String, payload: Dictionary) -> voi
 	if peer_id == local_peer_id:
 		_on_event_received(event_name, payload)
 		return
-	if _gdsync.has_method("call_func_on"):
+	if not reliable and _gdsync.has_method("call_func_on_unreliable"):
+		_gdsync.callv("call_func_on_unreliable", [peer_id, _on_event_received, event_name, payload])
+	elif _gdsync.has_method("call_func_on"):
 		_gdsync.callv("call_func_on", [peer_id, _on_event_received, event_name, payload])
 
 func host_peer_id() -> int:
