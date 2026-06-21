@@ -16,8 +16,16 @@ var _toast_label: Label = null
 var _toast_timer: float = 0.0
 var _buff_label: Label = null
 
+# Quick-item bar (mid-bottom). Built once; set_quick_bar() just updates contents.
+var _qb_slots: Array = []          # per-slot dict: {panel_style, name, count}
+var _use_prompt_label: Label = null
+
 const TOAST_HOLD := 2.2   # seconds at full opacity before fading
 const TOAST_FADE := 0.6   # fade-out duration
+
+const QB_SLOT := 60.0     # quick-bar slot size (square)
+const QB_GAP := 6.0
+const QB_COUNT := 7
 
 # Current values (0-100). Armor starts empty — the player owns it and only has
 # armor after picking up body armor.
@@ -244,6 +252,138 @@ func _build_hud() -> void:
 	_armor_fill = fills[0]
 	_health_fill = fills[1]
 	_stamina_fill = fills[2]
+
+	_build_quick_bar()
+
+# ------------------------------------------------------------------
+# Quick-item bar (mid-bottom). Seven slots mapped to number keys 1..7, with a
+# "Press E to use" prompt above when a usable item is held. Built once here;
+# set_quick_bar()/set_use_prompt() only mutate label text + slot colours.
+# ------------------------------------------------------------------
+
+func _build_quick_bar() -> void:
+	# Full-width strip pinned just above the bottom edge; a CenterContainer keeps
+	# the bar centred horizontally at any resolution.
+	var strip := Control.new()
+	strip.name = "QuickBarStrip"
+	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	strip.anchor_left = 0.0
+	strip.anchor_right = 1.0
+	strip.anchor_top = 1.0
+	strip.anchor_bottom = 1.0
+	strip.offset_top = -(QB_SLOT + 40.0)
+	strip.offset_bottom = -10.0
+	_container.add_child(strip)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	strip.add_child(center)
+
+	var vbox := VBoxContainer.new()
+	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_theme_constant_override("separation", 4)
+	vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.add_child(vbox)
+
+	_use_prompt_label = Label.new()
+	_use_prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_use_prompt_label.add_theme_font_size_override("font_size", 16)
+	_use_prompt_label.add_theme_color_override("font_color", Color(1.0, 0.95, 0.6))
+	_use_prompt_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	_use_prompt_label.add_theme_constant_override("shadow_offset_x", 1)
+	_use_prompt_label.add_theme_constant_override("shadow_offset_y", 1)
+	_use_prompt_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_use_prompt_label.visible = false
+	vbox.add_child(_use_prompt_label)
+
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", int(QB_GAP))
+	hbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vbox.add_child(hbox)
+
+	for i in range(QB_COUNT):
+		var slot := Panel.new()
+		slot.custom_minimum_size = Vector2(QB_SLOT, QB_SLOT)
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(0.10, 0.10, 0.12, 0.55)
+		style.set_corner_radius_all(5)
+		style.set_border_width_all(2)
+		style.border_color = Color(0.40, 0.40, 0.45, 0.8)
+		slot.add_theme_stylebox_override("panel", style)
+		hbox.add_child(slot)
+
+		# Key number (top-left).
+		var key := Label.new()
+		key.text = str(i + 1)
+		key.add_theme_font_size_override("font_size", 11)
+		key.add_theme_color_override("font_color", Color(0.85, 0.85, 0.9))
+		key.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+		key.position = Vector2(5, 2)
+		key.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		slot.add_child(key)
+
+		# Item name (centred, wraps).
+		var name_label := Label.new()
+		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		name_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+		name_label.add_theme_font_size_override("font_size", 9)
+		name_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+		name_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+		name_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+		name_label.offset_top = 12.0
+		name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		slot.add_child(name_label)
+
+		# Stack count (bottom-right).
+		var count_label := Label.new()
+		count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		count_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+		count_label.add_theme_font_size_override("font_size", 13)
+		count_label.add_theme_color_override("font_color", Color(1.0, 1.0, 0.7))
+		count_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+		count_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+		count_label.offset_right = -4.0
+		count_label.offset_bottom = -2.0
+		count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		slot.add_child(count_label)
+
+		_qb_slots.append({"style": style, "name": name_label, "count": count_label})
+
+## Update the quick bar from the player's payload. `slots` is QB_COUNT entries,
+## each null (empty) or {name, count, color, kind}; `selected` highlights one.
+func set_quick_bar(slots: Array, selected: int) -> void:
+	for i in range(_qb_slots.size()):
+		var ui: Dictionary = _qb_slots[i]
+		var style: StyleBoxFlat = ui["style"]
+		var data = slots[i] if i < slots.size() else null
+		if data == null:
+			ui["name"].text = ""
+			ui["count"].text = ""
+			style.bg_color = Color(0.10, 0.10, 0.12, 0.45)
+		else:
+			ui["name"].text = String(data.get("name", "")).to_upper()
+			var c := int(data.get("count", 0))
+			ui["count"].text = ("x%d" % c) if c > 1 else ""
+			var col: Color = data.get("color", Color(0.3, 0.3, 0.35))
+			col.a = 0.5
+			style.bg_color = col
+		# Highlight the selected slot with a bright thicker border.
+		if i == selected:
+			style.border_color = Color(1.0, 0.95, 0.5, 1.0)
+			style.set_border_width_all(3)
+		else:
+			style.border_color = Color(0.40, 0.40, 0.45, 0.8)
+			style.set_border_width_all(2)
+
+## Show / hide the "Press E to use ..." prompt above the quick bar.
+func set_use_prompt(text: String) -> void:
+	if _use_prompt_label == null:
+		return
+	_use_prompt_label.text = text
+	_use_prompt_label.visible = text != ""
 
 func show_game_code(code: String, peer_count: int = 0) -> void:
 	if code.is_empty():

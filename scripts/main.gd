@@ -498,6 +498,7 @@ func _apply_player_xform(payload: Dictionary) -> void:
 			bool(payload.get("sprinting", false)),
 			String(payload.get("weapon", "")),
 			int(payload.get("equip", 0)),
+			String(payload.get("held", "")),
 		)
 
 func _apply_enemy_state(list: Array) -> void:
@@ -696,6 +697,8 @@ func _open_inventory() -> void:
 	_inventory = CanvasLayer.new()
 	_inventory.set_script(inv_script)
 	_inventory.name = "Inventory"
+	# Give the screen the local player so it can list the real stored items.
+	_inventory.set("player_ref", player)
 	add_child(_inventory)
 
 func _close_inventory() -> void:

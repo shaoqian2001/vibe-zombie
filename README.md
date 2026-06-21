@@ -33,6 +33,11 @@ Pickups glow and float on the ground; walk over one to collect it.
 | Rotate camera | Q / E |
 | Sprint | Shift |
 | Interact (doors) | F |
+| Select quick-bar slot | 1 – 7 |
+| Use held item | E |
+| Inventory | I |
+
+Weapons and consumables share one **quick-item bar** (mid-bottom of the screen, 7 slots). Press a number key to hold that slot's item; holding a consumable shows a *"Press E to use"* prompt. Picked-up weapons and consumables are stored in your inventory and auto-placed on the bar when a slot is free; equipment is equipped instantly.
 
 ### HUD
 

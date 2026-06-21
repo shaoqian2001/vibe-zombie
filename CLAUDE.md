@@ -59,12 +59,16 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 
 `scripts/item_data.gd` (`ItemData`) is the consumable/equipment counterpart to `WeaponData` — a lookup table keyed by item id, each entry tagged `"consumable"` or `"equipment"`. `scripts/item_pickup.gd` (`ItemPickup`) mirrors `weapon_pickup.gd`: a floating, glowing, FOV-cullable `Area3D` with a procedural per-item model that calls `Player.pickup_item()` on contact. Items spawn mostly *inside* building footprints (`main._spawn_items`, weighted by `ItemData.random_id`).
 
-- **Consumables** apply instantly on pickup: apple (small heal), medical kit (full heal), energy drink (timed move + turn speed buff).
-- **Equipment** is a persistent passive bonus (no slot management yet): body armor (feeds the armor bar — damage hits armor before health in `Player._apply_damage`), backpack (enlarges the stamina pool via `_stamina_max()`), tactical shoes (raises base move speed).
+- **Consumables** are *stowed* on pickup (into `_inventory` + a free quick-bar slot), then **held and used** later: apple (small heal), medical kit (full heal), energy drink (timed move + turn speed buff).
+- **Equipment** equips instantly on pickup (never stored) as a persistent passive bonus: body armor (feeds the armor bar — damage hits armor before health in `Player._apply_damage`), backpack (enlarges the stamina pool via `_stamina_max()`), tactical shoes (raises base move speed).
 
 Equipment is also **worn on the character model**: `player.gd` builds procedural worn meshes (vest on `_torso_top`, backpack behind it, boots on each foot) once in `_build_rig` (hidden), and `_update_equipment_visuals()` shows them on pickup. Worn state is networked as a bitfield in the `player_xform` payload (`_equip_bits` → `_set_remote_equipment`) so remote players see each other's gear.
 
-Networking mirrors weapons exactly: the host broadcasts the full set as `item_state` (~1 Hz) and clients reconcile; `item_despawn` drops a collected pickup. Pickups feed the HUD's toast (`show_toast`) and speed-buff indicator (`set_speed_buff`).
+### Quick Item Bar (unified hotbar)
+
+Weapons AND consumables are unified "items" in a single 7-slot hotbar, selected with number keys **1–7** (`weapon_1`..`weapon_7`). `player.gd` owns the model: `_inventory` (id → count; weapons are count 1, consumables stack) and `_quick` (7 slot ids). Pickups route through `pickup_weapon` / `pickup_item` → `_assign_quick_slot`. Selecting a slot (`_select_quick_slot`) either **draws a weapon** (`_hold_weapon`, the existing armed/aim/fire path) or **holds a consumable** (`_hold_consumable`, shows an in-hand model + a "Press E to use" prompt). **E** (`use_item`) uses the held consumable (`_use_held_item`); since E also rotates the camera, `camera_controller.gd` yields the key when `Player.wants_use_key()` is true. The bar + prompt render at mid-bottom via `HUD.set_quick_bar` / `set_use_prompt` (pushed every frame from `_sync_hud`); the held consumable is networked via the `held` field in `player_xform`. The inventory screen (`I`) lists the real stored items via `Player.get_inventory_items()`.
+
+Item pickups: the host broadcasts the full set as `item_state` (~1 Hz) and clients reconcile; `item_despawn` drops a collected pickup. Pickups feed the HUD's toast (`show_toast`) and speed-buff indicator (`set_speed_buff`).
 
 ### Camera
 

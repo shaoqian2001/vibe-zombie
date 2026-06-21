@@ -7,6 +7,9 @@ extends CanvasLayer
 
 signal inventory_closed
 
+# Set by main.gd before add_child so _build_ui can list the player's real items.
+var player_ref: Node = null
+
 # Base design values (for 720p). Scaled by _ui_scale().
 const BASE_SLOT_SIZE := 56.0
 const BASE_SLOT_GAP := 6.0
@@ -138,8 +141,26 @@ func _build_ui() -> void:
 	grid.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right_vbox.add_child(grid)
 
+	# Pull the player's real stored items (weapons + consumables); equipment is
+	# worn, not stored, so it doesn't appear here.
+	var items: Array = []
+	if player_ref != null and player_ref.has_method("get_inventory_items"):
+		items = player_ref.get_inventory_items()
+
 	for i in range(GRID_COLS * GRID_ROWS):
 		var slot := _create_slot(SLOT_BG, slot_size, s)
+		if i < items.size():
+			var it: Dictionary = items[i]
+			var item_label := Label.new()
+			var cnt := int(it.get("count", 0))
+			var nm := String(it.get("name", "")).capitalize()
+			item_label.text = ("%s\nx%d" % [nm, cnt]) if cnt > 1 else nm
+			item_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			item_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			item_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+			item_label.add_theme_font_size_override("font_size", int(BASE_LABEL_FONT * s))
+			item_label.add_theme_color_override("font_color", Color(0.93, 0.93, 0.93))
+			slot.add_child(item_label)
 		grid.add_child(slot)
 
 	# Hint label
