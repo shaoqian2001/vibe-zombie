@@ -54,13 +54,21 @@ func _process(delta: float) -> void:
 	if Input.is_action_pressed("rotate_left"):
 		yaw_deg += ROTATE_SPEED * delta
 		_update_offset()
-	if Input.is_action_pressed("rotate_right"):
+	# E rotates right — unless the followed player is holding a usable item, in
+	# which case E is claimed as "use item" (see Player.wants_use_key) so the
+	# camera yields the key.
+	if Input.is_action_pressed("rotate_right") and not _use_key_claimed():
 		yaw_deg -= ROTATE_SPEED * delta
 		_update_offset()
 
 	var desired_pos := target.global_position + _offset
 	global_position = global_position.lerp(desired_pos, follow_speed * delta)
 	look_at(target.global_position + look_offset, Vector3.UP)
+
+## True when the followed player is holding a usable item, so E should be
+## consumed as "use" rather than rotating the camera.
+func _use_key_claimed() -> bool:
+	return target != null and target.has_method("wants_use_key") and target.wants_use_key()
 
 func _update_offset() -> void:
 	var pitch := deg_to_rad(pitch_deg)

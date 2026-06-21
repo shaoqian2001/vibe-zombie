@@ -55,9 +55,20 @@ var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0
 var _is_sprinting: bool = false
 
-# Weapon inventory
-var _weapons: Array[String] = []
-var _weapon_index: int = -1
+# Unified inventory + quick bar. Weapons AND consumables are both "items":
+#   • _inventory: item_id -> count. Weapons are always count 1; consumables
+#     stack. Equipment is NOT stored here — it equips instantly on pickup.
+#   • _quick: QUICK_SLOTS entries (item ids, or "" for empty), surfaced as the
+#     on-screen hotbar and selected with the number keys 1..7.
+#   • _quick_index: the currently selected/held slot (-1 = none / fists).
+#   • _held_consumable: the consumable currently held in hand ("" while holding a
+#     weapon or unarmed). Mutually exclusive with _current_weapon.
+const QUICK_SLOTS := 7
+var _inventory: Dictionary = {}
+var _quick: Array = []
+var _quick_index: int = -1
+var _held_consumable: String = ""
+
 var _weapon_ammo: Dictionary = {}
 var _current_weapon: String = ""
 var _weapon_stats: Dictionary = {}
@@ -100,6 +111,11 @@ var _shoe_r: Node3D = null
 # Foot mesh references (captured in _build_leg) so the boots can parent to them.
 var _foot_l: Node3D = null
 var _foot_r: Node3D = null
+
+# Held consumable model — a small in-hand model (apple / medkit / energy drink)
+# shown while a consumable is selected from the quick bar. Parented to the active
+# hand grip like the weapons, and rebuilt for whichever consumable is held.
+var _held_item_node: Node3D = null
 
 # Recoil: world-unit/sec impulse pushed back along -forward each time we
 # pull the trigger. Decays exponentially so even a strong shotgun kick
@@ -368,6 +384,13 @@ const WEAPON_POSES := {
 		"left":  { "mode": "ik" },
 		"kick_pitch": 120.0, "kick_elbow": 30.0, "kick_duration": 0.42, "chest_recoil": 0.0,
 	},
+	"consumable": {
+		# Holding a consumable up in front of the chest in the main hand (the item
+		# mesh parents to that hand's grip). Off-hand hangs and pendulums. No kick.
+		"right": { "shoulder_pitch": -52.0, "shoulder_yaw": -6.0, "shoulder_roll": -10.0, "elbow_bend": -72.0, "mode": "braced" },
+		"left":  { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": -14.0, "mode": "free" },
+		"kick_pitch": 0.0, "kick_elbow": 0.0, "kick_duration": 0.0, "chest_recoil": 0.0,
+	},
 }
 
 # Network state — true if this peer owns this player (or in single-player).
@@ -396,6 +419,9 @@ var _remote_target_pos: Vector3 = Vector3.INF
 var _remote_target_yaw: float = 0.0
 
 func _ready() -> void:
+	# Quick bar starts empty (7 slots).
+	_quick.resize(QUICK_SLOTS)
+	_quick.fill("")
 	# Under GD-Sync the player node has no Godot multiplayer authority —
 	# ownership is just a script-side flag. main.gd's spawner sets
 	# `is_local_player` on the input-owning copy; remote copies are
@@ -892,7 +918,8 @@ func _build_arm_chain(
 
 ## Set both arms to a weapon-specific rest pose and refresh the WeaponGrip
 ## so the muzzle keeps pointing along the player's +Z. Called from
-## _build_rig (initial unarmed pose) and from _equip_weapon. Falls back to
+## _build_rig (initial unarmed pose) and from _hold_weapon / _hold_consumable.
+## Falls back to
 ## the unarmed pose if the weapon name has no entry. For arms in "ik" mode
 ## the IK solver overwrites the rest each frame in _update_animation.
 func _apply_weapon_pose(weapon_name: String) -> void:
@@ -1008,7 +1035,7 @@ func set_dominant_hand(is_right: bool) -> void:
 	var new_grip: Node3D = _weapon_grip
 	if new_grip != null:
 		for w in [_pistol_node, _shotgun_node, _smg_node, _ak47_node,
-				  _grenade_launcher_node, _bat_node]:
+				  _grenade_launcher_node, _bat_node, _held_item_node]:
 			if w != null and w.get_parent() != null and w.get_parent() != new_grip:
 				w.reparent(new_grip, false)
 	# Re-pose both arms (and recompute the grip basis) for the new side.
@@ -1039,6 +1066,13 @@ func refresh_authority() -> void:
 	_ak47_node.visible = false
 	_grenade_launcher_node.visible = false
 	_bat_node.visible = false
+	# Held-consumable container — parented to the active hand grip, empty/hidden
+	# until a consumable is selected from the quick bar.
+	_held_item_node = Node3D.new()
+	_held_item_node.name = "HeldItem"
+	_held_item_node.position = Vector3(0.0, 0.03, 0.05)
+	_held_item_node.visible = false
+	_attach_weapon(_held_item_node)
 	# Only the local (input-owning) player needs an aim line.
 	if _owns_input:
 		_build_aim_line()
@@ -1105,6 +1139,9 @@ func _physics_process(delta: float) -> void:
 				# The equipped weapon (empty string = unarmed) so remote copies
 				# render the right gun in this player's hands.
 				"weapon": _current_weapon,
+				# The held consumable (empty unless a consumable is selected) so
+				# remote copies show it in this player's hand.
+				"held": _held_consumable,
 				# Worn-equipment bitfield so remote copies render the player's
 				# armor / backpack / boots (see _equip_bits / _set_remote_equipment).
 				"equip": _equip_bits(),
@@ -1114,11 +1151,12 @@ func _physics_process(delta: float) -> void:
 ## (called by main.gd on remote copies). We DON'T snap the position here — the
 ## per-frame _interpolate_remote() glides toward it so motion stays smooth
 ## between the ~30Hz packets instead of stuttering on each arrival.
-func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "", equip_bits: int = 0) -> void:
+func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "", equip_bits: int = 0, held: String = "") -> void:
 	_remote_target_pos = pos
 	_remote_target_yaw = yaw
 	_is_sprinting = sprinting
 	_set_remote_weapon(weapon)
+	_set_remote_held(held)
 	_set_remote_equipment(equip_bits)
 	# Estimate horizontal velocity from the position stream so the animation
 	# rig on remote copies can drive the walk cycle at the right cadence.
@@ -1155,15 +1193,25 @@ func _set_remote_weapon(weapon_name: String) -> void:
 		return
 	_current_weapon = weapon_name
 	_armed = weapon_name != ""
-	_pistol_node.visible = (weapon_name == "pistol")
-	_shotgun_node.visible = (weapon_name == "shotgun")
-	_smg_node.visible = (weapon_name == "smg")
-	_ak47_node.visible = (weapon_name == "ak47")
-	_grenade_launcher_node.visible = (weapon_name == "grenade_launcher")
-	_bat_node.visible = (weapon_name == "bat")
+	_set_weapon_models_visible(weapon_name)
 	_weapon_stats = WeaponData.get_weapon(weapon_name) if weapon_name != "" else {}
 	# _apply_weapon_pose falls back to the unarmed pose for an empty/unknown name.
 	_apply_weapon_pose(weapon_name)
+
+## Mirror the held consumable onto a remote copy: shows the in-hand item model and
+## sets the holding pose. Called after _set_remote_weapon (which has already
+## cleared the weapon + set the unarmed pose when the player is holding an item).
+func _set_remote_held(held: String) -> void:
+	if _held_item_node == null:
+		return
+	if held == _held_consumable:
+		return
+	_held_consumable = held
+	if held == "":
+		_held_item_node.visible = false
+	else:
+		_build_held_consumable_model(held)
+		_apply_weapon_pose("consumable")
 
 ## Pack the worn-equipment flags into a small bitfield for the player_xform
 ## broadcast (1 = body armor, 2 = backpack, 4 = boots).
@@ -1303,23 +1351,28 @@ func _input(event: InputEvent) -> void:
 	# Only the owning peer (or single-player) consumes input.
 	if not _owns_input:
 		return
-	if event.is_action_pressed("weapon_1"):
-		_switch_weapon(0)
-	elif event.is_action_pressed("weapon_2"):
-		_switch_weapon(1)
-	elif event.is_action_pressed("weapon_3"):
-		_switch_weapon(2)
-	elif event.is_action_pressed("weapon_4"):
-		_switch_weapon(3)
-	elif event.is_action_pressed("weapon_5"):
-		_switch_weapon(4)
-	elif event.is_action_pressed("shoot"):
+	# Quick-bar selection — number keys 1..7 select (and hold) that slot's item.
+	for i in range(QUICK_SLOTS):
+		if event.is_action_pressed("weapon_%d" % (i + 1)):
+			_select_quick_slot(i)
+			return
+	# Use the held consumable (E). When a usable item is held, E is "use";
+	# otherwise it falls through to the camera's rotate-right (see wants_use_key).
+	if event.is_action_pressed("use_item") and _held_consumable != "":
+		_use_held_item()
+		return
+	if event.is_action_pressed("shoot"):
 		if _armed:
 			_try_shoot()
-		else:
-			_try_punch()
+		elif _held_consumable == "":
+			_try_punch()  # bare-hand attack only when not holding an item
 	elif event.is_action_pressed("reload"):
 		_try_reload()
+
+## True when E should be consumed as "use item" (a usable consumable is held), so
+## the camera shouldn't also rotate-right on the same key. Read by camera_controller.
+func wants_use_key() -> bool:
+	return _owns_input and _held_consumable != ""
 
 # ------------------------------------------------------------------
 # Weapon inventory
@@ -1329,25 +1382,33 @@ func pickup_weapon(weapon_name: String) -> void:
 	var stats := WeaponData.get_weapon(weapon_name)
 	if stats.is_empty():
 		return
-
 	var mag: int = stats.get("magazine_size", 8)
 
-	if weapon_name in _weapons:
+	if _inventory.has(weapon_name):
+		# Already own it — just top the magazine back up.
 		_weapon_ammo[weapon_name] = mag
 		if _current_weapon == weapon_name:
 			ammo = mag
 			_is_reloading = false
+		_refresh_quick_bar()
 		return
 
-	_weapons.append(weapon_name)
+	# New weapon: store it, give it a quick-bar slot, and draw it (keeps the
+	# previous auto-equip-on-pickup feel).
+	_inventory[weapon_name] = 1
 	_weapon_ammo[weapon_name] = mag
-
-	var new_idx := _weapons.size() - 1
-	_equip_weapon(new_idx)
+	var slot := _assign_quick_slot(weapon_name)
+	if slot >= 0:
+		_select_quick_slot(slot)
+	_emit_player_sound("item_pickup", randf_range(0.97, 1.03), -6.0)
+	if hud and hud.has_method("show_toast"):
+		hud.show_toast("%s (picked up)" % weapon_name.replace("_", " ").capitalize(), Color(0.6, 0.72, 0.95, 1))
+	_refresh_quick_bar()
 
 # ------------------------------------------------------------------
-# Items & equipment (consumables apply instantly; equipment is a persistent
-# passive bonus). Walked into via ItemPickup.body_entered → pickup_item().
+# Items & equipment pickup. Equipment is equipped (and worn) instantly;
+# consumables are stowed into the inventory + quick bar and used later via the
+# hotbar + E. Walked into via ItemPickup.body_entered → pickup_item().
 # ------------------------------------------------------------------
 
 func pickup_item(item_id: String) -> void:
@@ -1356,13 +1417,23 @@ func pickup_item(item_id: String) -> void:
 		return
 
 	var msg := ""
-	match data.get("category", ""):
-		"consumable":
-			msg = _apply_consumable(data)
-		"equipment":
-			msg = _apply_equipment(data)
-		_:
-			return
+	var category: String = data.get("category", "")
+	if category == "equipment":
+		# Equipment is applied (and worn) instantly — it never enters the bag/bar.
+		msg = _apply_equipment(data)
+	elif category == "consumable":
+		# Stow the consumable: into the inventory first, then onto the quick bar
+		# if it isn't already there and a slot is free. It is NOT used on pickup —
+		# the player selects it from the bar (number key) and presses E to use it.
+		_inventory[item_id] = int(_inventory.get(item_id, 0)) + 1
+		if not _quick_has(item_id):
+			_assign_quick_slot(item_id)
+		var cnt := int(_inventory[item_id])
+		var nm: String = data.get("display_name", item_id)
+		msg = ("%s  ×%d" % [nm, cnt]) if cnt > 1 else ("%s (stowed)" % nm)
+		_refresh_quick_bar()
+	else:
+		return
 
 	# Push the affected bars to the HUD right away (don't wait for _sync_hud).
 	if hud:
@@ -1421,41 +1492,242 @@ func _apply_equipment(data: Dictionary) -> String:
 		return "%s (already equipped)" % item_name
 	return ""
 
-func _switch_weapon(slot: int) -> void:
-	if slot < 0 or slot >= _weapons.size():
-		return
-	if slot == _weapon_index:
-		return
-	_equip_weapon(slot)
+# ------------------------------------------------------------------
+# Quick bar — unified weapon/consumable hotbar (number keys 1..7).
+# ------------------------------------------------------------------
 
-func _equip_weapon(idx: int) -> void:
-	if idx < 0 or idx >= _weapons.size():
-		return
+## Put an item into the first free quick-bar slot. Returns the slot index, or -1
+## if the bar is full (the item still lives in the inventory).
+func _assign_quick_slot(item_id: String) -> int:
+	for i in range(QUICK_SLOTS):
+		if _quick[i] == "":
+			_quick[i] = item_id
+			return i
+	return -1
 
-	# Save ammo of the old weapon
+func _quick_has(item_id: String) -> bool:
+	return item_id in _quick
+
+## Public snapshot of stored (non-equipment) items for the inventory screen.
+## Returns an array of { id, name, count, kind } in quick-bar order first, then
+## any inventory items that didn't get a bar slot.
+func get_inventory_items() -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	for id in _quick:
+		if id != "" and _inventory.has(id) and not seen.has(id):
+			seen[id] = true
+			out.append(_inventory_entry(id))
+	for id in _inventory:
+		if not seen.has(id):
+			seen[id] = true
+			out.append(_inventory_entry(id))
+	return out
+
+func _inventory_entry(id: String) -> Dictionary:
+	var kind := _item_kind(id)
+	var nm := id.replace("_", " ") if kind == "weapon" else String(ItemData.get_item(id).get("display_name", id))
+	return {"id": id, "name": nm, "count": int(_inventory.get(id, 0)), "kind": kind}
+
+## Classify an item id: "weapon", "consumable", "equipment", or "".
+func _item_kind(item_id: String) -> String:
+	if not WeaponData.get_weapon(item_id).is_empty():
+		return "weapon"
+	var d := ItemData.get_item(item_id)
+	return d.get("category", "") if not d.is_empty() else ""
+
+## Select a quick-bar slot: hold its item — draw a weapon, or hold a consumable
+## (which then prompts "Press E to use"). Empty slots are ignored.
+func _select_quick_slot(slot: int) -> void:
+	if slot < 0 or slot >= QUICK_SLOTS:
+		return
+	var id: String = _quick[slot]
+	if id == "":
+		return
+	if slot == _quick_index:
+		return  # already holding this slot — re-pressing the key is a no-op
+	_quick_index = slot
+	match _item_kind(id):
+		"weapon":
+			_hold_weapon(id)
+		"consumable":
+			_hold_consumable(id)
+	_refresh_quick_bar()
+
+## Show exactly one weapon model (or none when id is ""), hiding the rest. Null-safe.
+func _set_weapon_models_visible(id: String) -> void:
+	if _pistol_node: _pistol_node.visible = (id == "pistol")
+	if _shotgun_node: _shotgun_node.visible = (id == "shotgun")
+	if _smg_node: _smg_node.visible = (id == "smg")
+	if _ak47_node: _ak47_node.visible = (id == "ak47")
+	if _grenade_launcher_node: _grenade_launcher_node.visible = (id == "grenade_launcher")
+	if _bat_node: _bat_node.visible = (id == "bat")
+
+## Draw and hold a weapon (the armed/aim/fire path operates on _current_weapon).
+func _hold_weapon(id: String) -> void:
+	# Stop holding any consumable.
+	_held_consumable = ""
+	if _held_item_node:
+		_held_item_node.visible = false
+	# Save ammo of the previously-held weapon.
 	if _armed and _current_weapon != "":
 		_weapon_ammo[_current_weapon] = ammo
-
-	_weapon_index = idx
-	_current_weapon = _weapons[idx]
-	_weapon_stats = WeaponData.get_weapon(_current_weapon)
-	ammo = _weapon_ammo.get(_current_weapon, _weapon_stats.get("magazine_size", 8))
+	_current_weapon = id
+	_weapon_stats = WeaponData.get_weapon(id)
+	ammo = _weapon_ammo.get(id, _weapon_stats.get("magazine_size", 8))
 	_armed = true
 	_is_reloading = false
 	_shoot_timer = 0.0
+	_set_weapon_models_visible(id)
+	# Re-pose the arms so the body mimics holding this weapon.
+	_apply_weapon_pose(id)
 
-	_pistol_node.visible = (_current_weapon == "pistol")
-	_shotgun_node.visible = (_current_weapon == "shotgun")
-	_smg_node.visible = (_current_weapon == "smg")
-	_ak47_node.visible = (_current_weapon == "ak47")
-	_grenade_launcher_node.visible = (_current_weapon == "grenade_launcher")
-	_bat_node.visible = (_current_weapon == "bat")
+## Hold a consumable in hand (no firing). Shows its in-hand model and lets the
+## HUD prompt the player to press E.
+func _hold_consumable(id: String) -> void:
+	if _armed and _current_weapon != "":
+		_weapon_ammo[_current_weapon] = ammo
+	_armed = false
+	_current_weapon = ""
+	_weapon_stats = {}
+	_is_reloading = false
+	_set_weapon_models_visible("")
+	_held_consumable = id
+	_build_held_consumable_model(id)
+	_apply_weapon_pose("consumable")
 
-	# Re-pose the arms so the body actually mimics holding this weapon —
-	# pistol shooters extend the firing hand and let the off-hand hang,
-	# rifle/shotgun shooters bring the support hand across, the bat sits
-	# cocked back over the shoulder, and so on.
-	_apply_weapon_pose(_current_weapon)
+## Use the held consumable (E): apply its effect and consume one. When the stack
+## empties, clear its quick slot and drop back to bare hands.
+func _use_held_item() -> void:
+	var id := _held_consumable
+	if id == "" or int(_inventory.get(id, 0)) <= 0:
+		return
+	var data := ItemData.get_item(id)
+	var msg := _apply_consumable(data)
+
+	_inventory[id] = int(_inventory[id]) - 1
+	if int(_inventory[id]) <= 0:
+		_inventory.erase(id)
+		var slot: int = _quick.find(id)
+		if slot >= 0:
+			_quick[slot] = ""
+		_held_consumable = ""
+		if _held_item_node:
+			_held_item_node.visible = false
+		_quick_index = -1
+		_apply_weapon_pose("unarmed")  # back to fists
+
+	# Immediate HUD feedback (bars + toast).
+	if hud:
+		hud.set_health(health / HEALTH_MAX * 100.0)
+		hud.set_armor(armor / ARMOR_MAX * 100.0)
+		hud.set_stamina(stamina / _stamina_max() * 100.0)
+		if msg != "" and hud.has_method("show_toast"):
+			hud.show_toast(msg, data.get("glow_color", Color(1, 1, 1, 1)))
+	_emit_player_sound("item_pickup", randf_range(1.05, 1.15), -6.0)
+	_refresh_quick_bar()
+
+# ------------------------------------------------------------------
+# In-hand consumable models (small versions of the world pickups).
+# ------------------------------------------------------------------
+
+func _build_held_consumable_model(id: String) -> void:
+	if _held_item_node == null:
+		return
+	for c in _held_item_node.get_children():
+		c.queue_free()
+	_held_item_node.visible = true
+	match id:
+		"apple": _build_held_apple()
+		"medkit": _build_held_medkit()
+		"energy_drink": _build_held_energy_drink()
+		_: _held_item_node.visible = false
+
+func _held_mat(color: Color, rough: float = 0.6) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.roughness = rough
+	return m
+
+func _held_add(mesh: Mesh, pos: Vector3) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.position = pos
+	_held_item_node.add_child(mi)
+
+func _build_held_apple() -> void:
+	var body := SphereMesh.new()
+	body.radius = 0.06
+	body.height = 0.12
+	body.material = _held_mat(Color(0.85, 0.18, 0.16), 0.4)
+	_held_add(body, Vector3.ZERO)
+	var stem := CylinderMesh.new()
+	stem.top_radius = 0.008
+	stem.bottom_radius = 0.008
+	stem.height = 0.04
+	stem.material = _held_mat(Color(0.32, 0.22, 0.12))
+	_held_add(stem, Vector3(0, 0.07, 0))
+
+func _build_held_medkit() -> void:
+	var box := BoxMesh.new()
+	box.size = Vector3(0.16, 0.11, 0.11)
+	box.material = _held_mat(Color(0.92, 0.92, 0.92), 0.5)
+	_held_add(box, Vector3.ZERO)
+	var barh := BoxMesh.new()
+	barh.size = Vector3(0.09, 0.025, 0.02)
+	barh.material = _held_mat(Color(0.85, 0.15, 0.12))
+	_held_add(barh, Vector3(0, 0, 0.06))
+	var barv := BoxMesh.new()
+	barv.size = Vector3(0.025, 0.08, 0.02)
+	barv.material = _held_mat(Color(0.85, 0.15, 0.12))
+	_held_add(barv, Vector3(0, 0, 0.06))
+
+func _build_held_energy_drink() -> void:
+	var can := CylinderMesh.new()
+	can.top_radius = 0.04
+	can.bottom_radius = 0.04
+	can.height = 0.16
+	can.material = _held_mat(Color(0.18, 0.18, 0.22))
+	_held_add(can, Vector3.ZERO)
+	var band := CylinderMesh.new()
+	band.top_radius = 0.042
+	band.bottom_radius = 0.042
+	band.height = 0.06
+	band.material = _held_mat(Color(0.95, 0.80, 0.15))
+	_held_add(band, Vector3.ZERO)
+
+## Build the quick-bar payload and push it (plus the use prompt) to the HUD.
+func _refresh_quick_bar() -> void:
+	if hud == null or not hud.has_method("set_quick_bar"):
+		return
+	var slots: Array = []
+	for i in range(QUICK_SLOTS):
+		var id: String = _quick[i]
+		if id == "":
+			slots.append(null)
+			continue
+		if _item_kind(id) == "weapon":
+			slots.append({
+				"name": id.replace("_", " "),
+				"count": 0,
+				"color": Color(0.45, 0.55, 0.80),
+				"kind": "weapon",
+			})
+		else:
+			var d := ItemData.get_item(id)
+			slots.append({
+				"name": d.get("display_name", id),
+				"count": int(_inventory.get(id, 0)),
+				"color": d.get("glow_color", Color(0.5, 0.5, 0.5)),
+				"kind": "consumable",
+			})
+	hud.set_quick_bar(slots, _quick_index)
+	if hud.has_method("set_use_prompt"):
+		if _held_consumable != "":
+			var d := ItemData.get_item(_held_consumable)
+			hud.set_use_prompt("Press E to use %s" % d.get("display_name", _held_consumable))
+		else:
+			hud.set_use_prompt("")
 
 ## Forward direction used for shooting, recoil, and melee. Tracks the
 ## mouse aim — the player aims with the upper body / cursor, so bullets
@@ -2917,12 +3189,20 @@ func _sync_hud() -> void:
 				hud.set_ammo(ammo, mag_size)
 			var display_name := _current_weapon.replace("_", " ").to_upper()
 			hud.set_weapon_name(display_name)
+		elif _held_consumable != "":
+			# Holding a consumable — show its name, no ammo.
+			hud.set_ammo(0, 0)
+			var item_name: String = ItemData.get_item(_held_consumable).get("display_name", _held_consumable)
+			hud.set_weapon_name(item_name.to_upper())
 		else:
 			# Bare hands are a real attack now, so label them as a weapon and
 			# show the melee dash for ammo (same as the bat).
 			hud.set_ammo(-1, -1)
 			hud.set_weapon_name("FISTS")
 		hud.set_reloading(_is_reloading and _armed)
+		# Keep the on-screen quick bar + use-prompt in sync (cheap; the HUD only
+		# updates label text/colours on prebuilt slots).
+		_refresh_quick_bar()
 
 # ------------------------------------------------------------------
 # VFX
