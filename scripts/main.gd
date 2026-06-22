@@ -419,20 +419,6 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 				if who >= 0:
 					NetworkManager.send_event_to(who, "enemy_state", {"e": _build_enemy_state()})
 					NetworkManager.send_event_to(who, "pickup_state", {"p": _build_pickup_state()})
-		"player_sound":
-			# A peer fired a weapon / footstep / etc. Play it positionally on
-			# their remote copy. Skip if it's our own broadcast bouncing back.
-			var spid := int(payload.get("peer_id", -1))
-			if spid == _local_peer_id:
-				pass
-			else:
-				var sn = _player_nodes.get(spid)
-				if sn and sn.has_method("play_remote_sound"):
-					sn.play_remote_sound(
-						String(payload.get("sound", "")),
-						float(payload.get("pitch", 1.0)),
-						float(payload.get("vol_db", 0.0)),
-					)
 		"enemy_sound":
 			# Host broadcasts when a zombie lunges/attacks; play on the local
 			# copy of that enemy. The host already played it locally before
@@ -445,6 +431,27 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 						float(payload.get("pitch", 1.0)),
 						float(payload.get("vol_db", 0.0)),
 					)
+		"debug_god_mode":
+			# Global god-mode toggle: every peer applies it to its own local player.
+			var gm := bool(payload.get("enabled", false))
+			if player:
+				player.god_mode = gm
+			if _debug_panel and _debug_panel.has_method("set_god_mode"):
+				_debug_panel.set_god_mode(gm)
+		"debug_density":
+			# Relayed from a client; host owns the mission system / spawns.
+			if _is_host and _mission_system:
+				_mission_system.zombie_density_multiplier = float(payload.get("mult", 1.0))
+		"debug_spawn_horde":
+			if _is_host and _mission_system:
+				_mission_system.spawn_horde_at(
+					Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.0)), float(payload.get("z", 0.0))),
+					int(payload.get("count", 10)))
+		"debug_spawn_weapon":
+			if _is_host:
+				_host_spawn_weapon(
+					String(payload.get("weapon", "pistol")),
+					Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.0)), float(payload.get("z", 0.0))))
 
 func _apply_player_xform(payload: Dictionary) -> void:
 	var pid := int(payload.get("peer_id", -1))
@@ -1012,22 +1019,41 @@ func _setup_debug_panel() -> void:
 	_debug_panel.dominant_hand_changed.connect(_on_debug_dominant_hand_changed)
 
 func _on_debug_density_changed(multiplier: float) -> void:
-	if _mission_system:
-		_mission_system.zombie_density_multiplier = multiplier
+	# Zombie density only affects host-driven spawns. A client routes the request
+	# to the host; the host applies it directly.
+	if (not _is_mp) or _is_host:
+		if _mission_system:
+			_mission_system.zombie_density_multiplier = multiplier
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_density", {"mult": multiplier})
 
 func _on_debug_god_mode_changed(enabled: bool) -> void:
-	player.god_mode = enabled
+	# God mode is a global debug setting: in MP it applies to every player so the
+	# whole party is invincible together. Broadcast it; the dispatcher applies it
+	# locally on each peer (including this one).
+	if _is_mp:
+		NetworkManager.broadcast_event("debug_god_mode", {"enabled": enabled})
+	else:
+		player.god_mode = enabled
 
 func _on_debug_dominant_hand_changed(is_right: bool) -> void:
+	# Cosmetic, per-player preference — stays local.
 	if player and player.has_method("set_dominant_hand"):
 		player.set_dominant_hand(is_right)
 
 func _on_debug_spawn_horde(count: int) -> void:
-	if _mission_system:
-		_mission_system.spawn_horde_at(player.global_position + Vector3(10, 0, 10), count)
+	var center: Vector3 = player.global_position + Vector3(10, 0, 10)
+	if (not _is_mp) or _is_host:
+		if _mission_system:
+			_mission_system.spawn_horde_at(center, count)
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_spawn_horde",
+			{"count": count, "x": center.x, "y": center.y, "z": center.z})
 
 ## Debug: drop a weapon pickup just in front of the player so it can be grabbed
-## and tested. Reuses the same networked pickup spawn path as world generation.
+## and tested. The host is authoritative over pickups, so a client routes the
+## request to the host; the host instantiates it and the periodic pickup_state
+## broadcast replicates it to everyone (and anyone can then collect it).
 func _on_debug_spawn_weapon(weapon_name: String) -> void:
 	if player == null:
 		return
@@ -1039,12 +1065,18 @@ func _on_debug_spawn_weapon(weapon_name: String) -> void:
 		fwd = Vector3.FORWARD
 	var pos := player.global_position + fwd.normalized() * 2.5
 	pos.y = 0.0
+	if (not _is_mp) or _is_host:
+		_host_spawn_weapon(weapon_name, pos)
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_spawn_weapon",
+			{"weapon": weapon_name, "x": pos.x, "y": pos.y, "z": pos.z})
 
+## Host-side weapon spawn used by both the host's own debug panel and relayed
+## client requests. Allocates an id and instantiates the pickup; pickup_state
+## replication carries it to clients.
+func _host_spawn_weapon(weapon_name: String, pos: Vector3) -> void:
 	var pickup_id := _next_pickup_id
 	_next_pickup_id += 1
-	# Under GD-Sync there's no per-spawn RPC — the host instantiates the
-	# pickup locally and the next periodic pickup_state broadcast covers
-	# joining clients (see _build_pickup_state + _apply_pickup_state).
 	_create_pickup(pickup_id, weapon_name, pos)
 
 # ------------------------------------------------------------------
