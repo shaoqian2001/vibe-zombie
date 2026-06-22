@@ -1909,7 +1909,10 @@ func _fire_single() -> void:
 	var result := _cast_ray(ray_origin, ray_end)
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-		if hit_body.has_method("take_damage"):
+		# Only zombies take weapon damage. Other players are CharacterBody3D too,
+		# but their take_damage(amount) takes a single argument — calling it with
+		# (damage, impulse) crashes — and co-op has no friendly fire anyway.
+		if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
 			hit_body.take_damage(damage, impulse)
 			_spawn_hit_sparks(result.position)
 
@@ -1958,7 +1961,9 @@ func _fire_pellet() -> void:
 
 		if result and result.collider is CharacterBody3D:
 			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-			if hit_body.has_method("take_damage"):
+			# Enemies only — see the note in the single-shot path; a pellet that
+			# lands on a teammate must not call their 1-arg take_damage.
+			if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
 				hit_body.take_damage(damage_per_pellet, dir * knockback_per_pellet)
 				spark_points[hit_body] = result.position
 
