@@ -1075,11 +1075,15 @@ func _handle_auto_fire() -> void:
 	if Input.is_action_pressed("shoot"):
 		_try_shoot()
 
-func take_damage(amount: float) -> void:
+func take_damage(amount: float, _knockback: Vector3 = Vector3.ZERO) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
 	# authoritative for that player. The host's enemies call this on their local
 	# copy of a remote player; forward the hit to that player's owner over the
 	# GD-Sync channel instead of mutating a copy we don't own.
+	#
+	# The optional `_knockback` argument is ignored (players have no knockback
+	# physics) but accepted so a stray AOE/explosion call that catches a player
+	# can never crash with an argument-count mismatch.
 	if NetworkManager.is_networked and not _owns_input:
 		NetworkManager.send_event_to(peer_id, "player_damage", {"amount": amount})
 		return
