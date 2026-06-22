@@ -8,6 +8,7 @@ signal density_changed(multiplier: float)
 signal god_mode_changed(enabled: bool)
 signal spawn_horde_requested(count: int)
 signal spawn_weapon_requested(weapon_name: String)
+signal spawn_item_requested(item_id: String)
 signal dominant_hand_changed(is_right: bool)
 
 # Weapons offered as one-click spawn buttons (internal name -> button label).
@@ -18,6 +19,16 @@ const SPAWNABLE_WEAPONS := [
 	["ak47", "AK-47"],
 	["grenade_launcher", "Grenade Launcher"],
 	["bat", "Baseball Bat"],
+]
+
+# Items / equipment offered as one-click spawn buttons (internal id -> label).
+const SPAWNABLE_ITEMS := [
+	["apple", "Apple"],
+	["medkit", "Medical Kit"],
+	["energy_drink", "Energy Drink"],
+	["body_armor", "Body Armor"],
+	["backpack", "Backpack"],
+	["tactical_shoes", "Tactical Shoes"],
 ]
 
 var _panel: PanelContainer
@@ -198,6 +209,38 @@ func _build_panel() -> void:
 		btn.pressed.connect(_on_spawn_weapon.bind(weapon_name))
 		weapon_grid.add_child(btn)
 
+	# Separator
+	var sep4 := HSeparator.new()
+	vbox.add_child(sep4)
+
+	# Item spawner — one button per item / equipment. Drops it next to the
+	# player so it can be grabbed and tested immediately.
+	var item_label := Label.new()
+	item_label.text = "Drop item:"
+	item_label.add_theme_font_size_override("font_size", 13)
+	item_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+	vbox.add_child(item_label)
+
+	var item_grid := GridContainer.new()
+	item_grid.columns = 2
+	item_grid.add_theme_constant_override("h_separation", 6)
+	item_grid.add_theme_constant_override("v_separation", 6)
+	vbox.add_child(item_grid)
+
+	var item_style := StyleBoxFlat.new()
+	item_style.bg_color = Color(0.25, 0.45, 0.3, 0.9)
+	item_style.set_corner_radius_all(4)
+	item_style.set_content_margin_all(5)
+	for entry in SPAWNABLE_ITEMS:
+		var item_id: String = entry[0]
+		var ibtn := Button.new()
+		ibtn.text = entry[1]
+		ibtn.add_theme_font_size_override("font_size", 12)
+		ibtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		ibtn.add_theme_stylebox_override("normal", item_style)
+		ibtn.pressed.connect(_on_spawn_item.bind(item_id))
+		item_grid.add_child(ibtn)
+
 	# Hint
 	var hint := Label.new()
 	hint.text = "Press F3 to toggle this panel"
@@ -231,3 +274,6 @@ func _on_hand_toggled(pressed: bool) -> void:
 
 func _on_spawn_weapon(weapon_name: String) -> void:
 	spawn_weapon_requested.emit(weapon_name)
+
+func _on_spawn_item(item_id: String) -> void:
+	spawn_item_requested.emit(item_id)
