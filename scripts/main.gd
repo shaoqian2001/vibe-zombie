@@ -92,6 +92,17 @@ const ENEMY_INTEREST_RADIUS_SQ := ENEMY_INTEREST_RADIUS * ENEMY_INTEREST_RADIUS
 const ENEMY_SYNC_MAX := 150
 var _net_enemy_timer: float = 0.0
 var _net_pickup_timer: float = 0.0
+# Mission state is host-authoritative; the host pushes objective text + marker
+# positions so clients can show the same HUD objective, map markers and world
+# beacons even though the mission system itself only runs on the host.
+const NET_MISSION_SYNC_HZ := 3.0
+var _net_mission_timer: float = 0.0
+# Client mirror of the host's mission view (empty/ignored on the host).
+var _mp_mission_objective: String = ""
+var _mp_mission_markers: Array = []          # [{position: Vector3, color: Color, label: String}]
+var _mp_mission_beacons: Array = []          # client-side 3D beacon roots
+var _mp_mission_sig: String = ""             # marker-set signature to gate beacon rebuilds
+# Item replication cadence (base branch's world-item system; mirrors pickups).
 var _net_item_timer: float = 0.0
 
 # UI
@@ -322,7 +333,11 @@ func _process(delta: float) -> void:
 			_host_net_sync(delta)
 	if _mission_system:
 		_mission_system.process(delta)
-		_update_objective_label()
+	# Objective text runs on every peer: the host reads its live mission system,
+	# clients read the host-synced mission state. Clients also spin their beacons.
+	_update_objective_label()
+	if _is_mp and not _is_host:
+		_animate_mission_beacons(delta)
 
 # ------------------------------------------------------------------
 # GD-Sync replication (host broadcast + event dispatch)
@@ -342,10 +357,110 @@ func _host_net_sync(delta: float) -> void:
 	if _net_pickup_timer <= 0.0:
 		_net_pickup_timer = 1.0 / NET_PICKUP_SYNC_HZ
 		NetworkManager.broadcast_event("pickup_state", {"p": _build_pickup_state()})
+	# Mission view (objective text + map/world marker positions) so clients can
+	# see and follow the mission even though the mission system is host-only.
+	_net_mission_timer -= delta
+	if _net_mission_timer <= 0.0:
+		_net_mission_timer = 1.0 / NET_MISSION_SYNC_HZ
+		if _mission_system:
+			NetworkManager.broadcast_event("mission_sync", {
+				"obj": _mission_system.get_objective_text(),
+				"m": _serialize_mission_markers(_mission_system.get_map_markers()),
+			}, false)
+	# World items — base branch's item-replication system (mirrors pickups).
 	_net_item_timer -= delta
 	if _net_item_timer <= 0.0:
 		_net_item_timer = 1.0 / NET_PICKUP_SYNC_HZ
 		NetworkManager.broadcast_event("item_state", {"i": _build_item_state()})
+
+func _serialize_mission_markers(markers: Array) -> Array:
+	var out: Array = []
+	for m in markers:
+		var p: Vector3 = m.position
+		var c: Color = m.color
+		out.append([p.x, p.y, p.z, c.r, c.g, c.b, String(m.get("label", ""))])
+	return out
+
+## Map-marker provider used by the MapView. The host returns its live mission
+## markers; a client returns the host-synced ones — so the map indicator shows
+## on every peer through a single code path.
+func get_map_markers() -> Array:
+	if _mission_system and _mission_system.has_method("get_map_markers"):
+		return _mission_system.get_map_markers()
+	return _mp_mission_markers
+
+## Client: rebuild the cached marker list from a synced packet, and refresh the
+## 3D world beacons only when the marker set actually changes.
+func _apply_mission_markers(list: Array) -> void:
+	var markers: Array = []
+	var sig := ""
+	for entry in list:
+		if typeof(entry) != TYPE_ARRAY or (entry as Array).size() < 7:
+			continue
+		var pos := Vector3(float(entry[0]), float(entry[1]), float(entry[2]))
+		var col := Color(float(entry[3]), float(entry[4]), float(entry[5]))
+		var label := String(entry[6])
+		markers.append({"position": pos, "color": col, "label": label})
+		sig += "%d,%d,%s|" % [int(pos.x), int(pos.z), label]
+	_mp_mission_markers = markers
+	if sig != _mp_mission_sig:
+		_mp_mission_sig = sig
+		_rebuild_client_mission_beacons()
+
+func _rebuild_client_mission_beacons() -> void:
+	for b in _mp_mission_beacons:
+		if is_instance_valid(b):
+			b.queue_free()
+	_mp_mission_beacons.clear()
+	for m in _mp_mission_markers:
+		var pos: Vector3 = m.position
+		_mp_mission_beacons.append(_make_mission_beacon(pos + Vector3(0, 3, 0), m.color))
+
+func _animate_mission_beacons(delta: float) -> void:
+	for b in _mp_mission_beacons:
+		if is_instance_valid(b):
+			b.rotation.y += delta * 1.5
+			b.position.y += sin(Time.get_ticks_msec() * 0.003) * delta * 0.3
+
+## A floating beacon (downward prism + light beam) matching the host's mission
+## markers, so clients get the same in-world objective indicator.
+func _make_mission_beacon(pos: Vector3, color: Color) -> Node3D:
+	var root := Node3D.new()
+	root.position = pos
+	add_child(root)
+	root.add_to_group(&"fov_cullable")
+	root.set_meta(&"fov_cull_radius", 1.5)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(color.r, color.g, color.b, 0.9)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var mesh := PrismMesh.new()
+	mesh.size = Vector3(1.8, 2.5, 1.8)
+	mesh.material = mat
+	var prism := MeshInstance3D.new()
+	prism.mesh = mesh
+	prism.rotation_degrees.x = 180
+	root.add_child(prism)
+
+	var beam_mat := StandardMaterial3D.new()
+	beam_mat.albedo_color = Color(color.r, color.g, color.b, 0.3)
+	beam_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beam_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var bh: float = pos.y
+	var beam_mesh := CylinderMesh.new()
+	beam_mesh.top_radius = 0.15
+	beam_mesh.bottom_radius = 0.15
+	beam_mesh.height = bh
+	beam_mesh.material = beam_mat
+	var beam := MeshInstance3D.new()
+	beam.mesh = beam_mesh
+	beam.position.y = -bh * 0.5
+	root.add_child(beam)
+
+	FovCuller.apply_shader_to_subtree(root)
+	return root
 
 func _build_enemy_state() -> Array:
 	# Snapshot player positions once for the interest test (union across all
@@ -453,20 +568,6 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 					NetworkManager.send_event_to(who, "enemy_state", {"e": _build_enemy_state()})
 					NetworkManager.send_event_to(who, "pickup_state", {"p": _build_pickup_state()})
 					NetworkManager.send_event_to(who, "item_state", {"i": _build_item_state()})
-		"player_sound":
-			# A peer fired a weapon / footstep / etc. Play it positionally on
-			# their remote copy. Skip if it's our own broadcast bouncing back.
-			var spid := int(payload.get("peer_id", -1))
-			if spid == _local_peer_id:
-				pass
-			else:
-				var sn = _player_nodes.get(spid)
-				if sn and sn.has_method("play_remote_sound"):
-					sn.play_remote_sound(
-						String(payload.get("sound", "")),
-						float(payload.get("pitch", 1.0)),
-						float(payload.get("vol_db", 0.0)),
-					)
 		"enemy_sound":
 			# Host broadcasts when a zombie lunges/attacks; play on the local
 			# copy of that enemy. The host already played it locally before
@@ -479,6 +580,39 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 						float(payload.get("pitch", 1.0)),
 						float(payload.get("vol_db", 0.0)),
 					)
+		"debug_god_mode":
+			# Global god-mode toggle: every peer applies it to its own local player.
+			var gm := bool(payload.get("enabled", false))
+			if player:
+				player.god_mode = gm
+			if _debug_panel and _debug_panel.has_method("set_god_mode"):
+				_debug_panel.set_god_mode(gm)
+		"debug_density":
+			# Relayed from a client; host owns the mission system / spawns.
+			if _is_host and _mission_system:
+				_mission_system.zombie_density_multiplier = float(payload.get("mult", 1.0))
+		"debug_spawn_horde":
+			if _is_host and _mission_system:
+				_mission_system.spawn_horde_at(
+					Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.0)), float(payload.get("z", 0.0))),
+					int(payload.get("count", 10)))
+		"debug_spawn_weapon":
+			if _is_host:
+				_host_spawn_weapon(
+					String(payload.get("weapon", "pistol")),
+					Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.0)), float(payload.get("z", 0.0))))
+		"mission_sync":
+			# Host-pushed mission view: objective text + marker positions.
+			if not _is_host:
+				_mp_mission_objective = String(payload.get("obj", ""))
+				_apply_mission_markers(payload.get("m", []))
+		"mission_outcome":
+			# Shared win state — a teammate reached the rescue point.
+			if String(payload.get("state", "")) == "won" and _game_state == GameState.PLAYING:
+				_game_state = GameState.WON
+				_show_overlay("RESCUED!", Color(0.1, 0.8, 0.2))
+				if _objective_label:
+					_objective_label.text = "You survived!"
 
 func _apply_player_xform(payload: Dictionary) -> void:
 	var pid := int(payload.get("peer_id", -1))
@@ -725,7 +859,10 @@ func _open_map() -> void:
 	_map_view.set_script(MapView)
 	_map_view.name = "MapView"
 	add_child(_map_view)
-	_map_view.configure(world, player, _mission_system)
+	# Pass `self` as the marker provider so the map shows mission markers on every
+	# peer: main.get_map_markers() returns the host's live markers or, on a
+	# client, the host-synced ones.
+	_map_view.configure(world, player, self)
 
 func _close_map() -> void:
 	_map_open = false
@@ -1104,6 +1241,10 @@ func _on_player_rescued() -> void:
 	_show_overlay("RESCUED!", Color(0.1, 0.8, 0.2))
 	if _objective_label:
 		_objective_label.text = "You survived!"
+	# Rescue is a shared win — tell every client so they see it too. (The mission
+	# system runs on the host, so only the host fires this signal.)
+	if _is_mp:
+		NetworkManager.broadcast_event("mission_outcome", {"state": "won"})
 
 func _on_player_died() -> void:
 	_game_state = GameState.LOST
@@ -1112,14 +1253,14 @@ func _on_player_died() -> void:
 		_objective_label.text = ""
 
 func _update_objective_label() -> void:
-	if _objective_label == null or _mission_system == null:
+	if _objective_label == null:
 		return
-	_objective_label.text = _mission_system.get_objective_text()
-
-	# Check rescue point proximity
-	if _mission_system.is_rescue_active():
-		if _mission_system.check_rescue(player.global_position):
-			pass  # handled by area trigger in mission_system
+	if _mission_system:
+		# Host (or single-player): read the live mission system.
+		_objective_label.text = _mission_system.get_objective_text()
+	elif _is_mp:
+		# Client: the mission system is host-only, so show the synced text.
+		_objective_label.text = _mp_mission_objective
 
 # ------------------------------------------------------------------
 # Debug panel (DEV_MODE only, toggled with F3)
@@ -1140,22 +1281,41 @@ func _setup_debug_panel() -> void:
 	_debug_panel.dominant_hand_changed.connect(_on_debug_dominant_hand_changed)
 
 func _on_debug_density_changed(multiplier: float) -> void:
-	if _mission_system:
-		_mission_system.zombie_density_multiplier = multiplier
+	# Zombie density only affects host-driven spawns. A client routes the request
+	# to the host; the host applies it directly.
+	if (not _is_mp) or _is_host:
+		if _mission_system:
+			_mission_system.zombie_density_multiplier = multiplier
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_density", {"mult": multiplier})
 
 func _on_debug_god_mode_changed(enabled: bool) -> void:
-	player.god_mode = enabled
+	# God mode is a global debug setting: in MP it applies to every player so the
+	# whole party is invincible together. Broadcast it; the dispatcher applies it
+	# locally on each peer (including this one).
+	if _is_mp:
+		NetworkManager.broadcast_event("debug_god_mode", {"enabled": enabled})
+	else:
+		player.god_mode = enabled
 
 func _on_debug_dominant_hand_changed(is_right: bool) -> void:
+	# Cosmetic, per-player preference — stays local.
 	if player and player.has_method("set_dominant_hand"):
 		player.set_dominant_hand(is_right)
 
 func _on_debug_spawn_horde(count: int) -> void:
-	if _mission_system:
-		_mission_system.spawn_horde_at(player.global_position + Vector3(10, 0, 10), count)
+	var center: Vector3 = player.global_position + Vector3(10, 0, 10)
+	if (not _is_mp) or _is_host:
+		if _mission_system:
+			_mission_system.spawn_horde_at(center, count)
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_spawn_horde",
+			{"count": count, "x": center.x, "y": center.y, "z": center.z})
 
 ## Debug: drop a weapon pickup just in front of the player so it can be grabbed
-## and tested. Reuses the same networked pickup spawn path as world generation.
+## and tested. The host is authoritative over pickups, so a client routes the
+## request to the host; the host instantiates it and the periodic pickup_state
+## broadcast replicates it to everyone (and anyone can then collect it).
 func _on_debug_spawn_weapon(weapon_name: String) -> void:
 	if player == null:
 		return
@@ -1167,12 +1327,18 @@ func _on_debug_spawn_weapon(weapon_name: String) -> void:
 		fwd = Vector3.FORWARD
 	var pos := player.global_position + fwd.normalized() * 2.5
 	pos.y = 0.0
+	if (not _is_mp) or _is_host:
+		_host_spawn_weapon(weapon_name, pos)
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_spawn_weapon",
+			{"weapon": weapon_name, "x": pos.x, "y": pos.y, "z": pos.z})
 
+## Host-side weapon spawn used by both the host's own debug panel and relayed
+## client requests. Allocates an id and instantiates the pickup; pickup_state
+## replication carries it to clients.
+func _host_spawn_weapon(weapon_name: String, pos: Vector3) -> void:
 	var pickup_id := _next_pickup_id
 	_next_pickup_id += 1
-	# Under GD-Sync there's no per-spawn RPC — the host instantiates the
-	# pickup locally and the next periodic pickup_state broadcast covers
-	# joining clients (see _build_pickup_state + _apply_pickup_state).
 	_create_pickup(pickup_id, weapon_name, pos)
 
 ## Debug: drop an item / equipment pickup just in front of the player. Mirrors

@@ -39,6 +39,9 @@ var _current_zone_area: Area3D = null
 var _current_zone_visual: MeshInstance3D = null
 var _current_marker: MeshInstance3D = null
 var _horde_enemies: Array = []
+# Players currently inside the active hold zone (instance_id -> true). In MP any
+# player can hold the zone, so we track the set rather than a single bool.
+var _hold_bodies: Dictionary = {}
 
 # Rescue point
 var _rescue_pos: Vector3 = Vector3.ZERO
@@ -279,6 +282,7 @@ func _get_horde_size(progression: int) -> int:
 func _setup_current_mission(mission: Dictionary) -> void:
 	_hold_timer = 0.0
 	_hold_in_zone = false
+	_hold_bodies.clear()
 	_elimination_count = 0
 	_horde_timer = 0.0
 	_cleanup_mission_objects()
@@ -298,7 +302,7 @@ func _setup_delivery(mission: Dictionary) -> void:
 	# Pickup area
 	_current_zone_area = _create_trigger_area(pickup_pos, 2.5)
 	_current_zone_area.body_entered.connect(func(body: Node3D) -> void:
-		if body == _player and not mission.picked_up:
+		if body.is_in_group("player") and not mission.picked_up:
 			mission.picked_up = true
 			_on_delivery_picked_up(mission)
 	)
@@ -316,7 +320,7 @@ func _on_delivery_picked_up(mission: Dictionary) -> void:
 	var delivery_pos: Vector3 = mission.delivery_pos
 	_current_zone_area = _create_trigger_area(delivery_pos, 2.5)
 	_current_zone_area.body_entered.connect(func(body: Node3D) -> void:
-		if body == _player and mission.picked_up:
+		if body.is_in_group("player") and mission.picked_up:
 			_complete_current_mission()
 	)
 
@@ -334,12 +338,14 @@ func _setup_hold_zone(mission: Dictionary) -> void:
 	# Zone detection area
 	_current_zone_area = _create_trigger_area(pos, HOLD_ZONE_RADIUS)
 	_current_zone_area.body_entered.connect(func(body: Node3D) -> void:
-		if body == _player:
+		if body.is_in_group("player"):
+			_hold_bodies[body.get_instance_id()] = true
 			_hold_in_zone = true
 	)
 	_current_zone_area.body_exited.connect(func(body: Node3D) -> void:
-		if body == _player:
-			_hold_in_zone = false
+		if body.is_in_group("player"):
+			_hold_bodies.erase(body.get_instance_id())
+			_hold_in_zone = not _hold_bodies.is_empty()
 	)
 
 	# Marker above zone
@@ -404,7 +410,7 @@ func _reveal_rescue() -> void:
 	# Create rescue trigger area
 	_rescue_area = _create_trigger_area(_rescue_pos, 3.0)
 	_rescue_area.body_entered.connect(func(body: Node3D) -> void:
-		if body == _player and _rescue_visible:
+		if body.is_in_group("player") and _rescue_visible:
 			_rescue_visible = false
 			player_rescued.emit()
 	)
