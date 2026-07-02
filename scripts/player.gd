@@ -31,13 +31,44 @@ var god_mode: bool = false
 
 signal died
 
+# Armor — picked up via body armor (ItemData). Absorbs incoming damage before
+# health and drives the HUD armor bar (which was previously cosmetic). Starts
+# empty; the player has no armor until they find some.
+const ARMOR_MAX := 100.0
+var armor: float = 0.0
+
+# Item-driven modifiers (see pickup_item).
+#   • _equip_speed_mult  — persistent multiplier from tactical shoes (applies once).
+#   • _speed_boost_mult / _turn_boost_mult — temporary energy-drink buff, active
+#     while _buff_timer > 0; reset to 1.0 when it expires.
+#   • _bonus_stamina_max — extra stamina pool granted by the backpack.
+var _equip_speed_mult: float = 1.0
+var _speed_boost_mult: float = 1.0
+var _turn_boost_mult: float = 1.0
+var _buff_timer: float = 0.0
+var _bonus_stamina_max: float = 0.0
+var _has_backpack: bool = false
+var _has_shoes: bool = false
+var _has_body_armor: bool = false
+
 var stamina: float = STAMINA_MAX
 var _sprint_cooldown: float = 0.0
 var _is_sprinting: bool = false
 
-# Weapon inventory
-var _weapons: Array[String] = []
-var _weapon_index: int = -1
+# Unified inventory + quick bar. Weapons AND consumables are both "items":
+#   • _inventory: item_id -> count. Weapons are always count 1; consumables
+#     stack. Equipment is NOT stored here — it equips instantly on pickup.
+#   • _quick: QUICK_SLOTS entries (item ids, or "" for empty), surfaced as the
+#     on-screen hotbar and selected with the number keys 1..7.
+#   • _quick_index: the currently selected/held slot (-1 = none / fists).
+#   • _held_consumable: the consumable currently held in hand ("" while holding a
+#     weapon or unarmed). Mutually exclusive with _current_weapon.
+const QUICK_SLOTS := 7
+var _inventory: Dictionary = {}
+var _quick: Array = []
+var _quick_index: int = -1
+var _held_consumable: String = ""
+
 var _weapon_ammo: Dictionary = {}
 var _current_weapon: String = ""
 var _weapon_stats: Dictionary = {}
@@ -68,6 +99,23 @@ var _smg_node: Node3D = null
 var _ak47_node: Node3D = null
 var _grenade_launcher_node: Node3D = null
 var _bat_node: Node3D = null
+
+# Worn-equipment model nodes — procedural meshes parented to the rig, built once
+# (hidden) in _build_rig and shown when the matching equipment is picked up.
+# Body armor + backpack hang off _torso_top so they ride the chest's aim twist;
+# the boots are children of each foot mesh so they track the walk cycle.
+var _armor_node: Node3D = null
+var _backpack_node: Node3D = null
+var _shoe_l: Node3D = null
+var _shoe_r: Node3D = null
+# Foot mesh references (captured in _build_leg) so the boots can parent to them.
+var _foot_l: Node3D = null
+var _foot_r: Node3D = null
+
+# Held consumable model — a small in-hand model (apple / medkit / energy drink)
+# shown while a consumable is selected from the quick bar. Parented to the active
+# hand grip like the weapons, and rebuilt for whichever consumable is held.
+var _held_item_node: Node3D = null
 
 # Recoil: world-unit/sec impulse pushed back along -forward each time we
 # pull the trigger. Decays exponentially so even a strong shotgun kick
@@ -285,15 +333,16 @@ const WEAPON_POSES := {
 		"kick_pitch": 14.0, "kick_elbow": -6.0, "kick_duration": 0.18, "chest_recoil": 3.0,
 	},
 	"smg": {
-		# Compact SMG tucked against the chest — the RIGHT (trigger) hand grips
-		# the receiver in front of the chest, slightly inboard of the right
-		# shoulder (negative shoulder_roll pulls it toward the centreline so the
-		# weapon sits in the hands rather than jammed up on the shoulder). The
-		# LEFT support hand IKs forward onto the rail, well ahead of the grip.
-		# Shared stance for all the two-handed guns; only the kick/recoil differs.
-		# elbow_bend kept fairly open so the trigger forearm hangs to the grip
-		# naturally instead of folding up tight against the chest.
-		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
+		# Compact SMG carried at the chest. The RIGHT (trigger) arm's UPPER arm
+		# hangs almost straight down at the side — shoulder_roll is kept small
+		# (only a slight inboard tilt) so the elbow stays under the shoulder
+		# instead of being pulled across the chest, which is how a real shooter's
+		# firing arm hangs. The forearm folds up (elbow_bend) to bring the grip
+		# in front of the body, and the gun mesh sits a touch higher and outboard
+		# of centre (see _build_smg position). The LEFT support hand IKs forward
+		# onto the rail, well ahead of the grip. Shared stance for all the
+		# two-handed guns; only the kick/recoil differs.
+		"right": { "shoulder_pitch": -12.0, "shoulder_yaw": -10.0, "shoulder_roll": -5.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 8.0, "kick_elbow": -3.0, "kick_duration": 0.10, "chest_recoil": 2.5,
 	},
@@ -301,21 +350,21 @@ const WEAPON_POSES := {
 		# Long rifle held at the chest (see "smg" for the stance), the support
 		# hand reaching forward onto the forend. Stiffer kick than the SMG, but
 		# without the shotgun's big shoulder rock.
-		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -13.0, "shoulder_yaw": -11.0, "shoulder_roll": -5.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 11.0, "kick_elbow": -4.0, "kick_duration": 0.12, "chest_recoil": 4.0,
 	},
 	"shotgun": {
 		# Long shotgun held at the chest (see "smg" for the stance), with a
 		# heavy kick and chest rock.
-		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -18.0, "elbow_bend": -86.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -15.0, "shoulder_yaw": -12.0, "shoulder_roll": -5.0, "elbow_bend": -86.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 22.0, "kick_elbow": -9.0, "kick_duration": 0.28, "chest_recoil": 8.0,
 	},
 	"grenade_launcher": {
 		# Heavy launcher held at the chest (see "smg" for the stance), with
 		# the heaviest kick and chest rock.
-		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -18.0, "elbow_bend": -83.0, "mode": "braced" },
+		"right": { "shoulder_pitch": -18.0, "shoulder_yaw": -14.0, "shoulder_roll": -5.0, "elbow_bend": -83.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 26.0, "kick_elbow": -10.0, "kick_duration": 0.32, "chest_recoil": 9.0,
 	},
@@ -334,6 +383,13 @@ const WEAPON_POSES := {
 		"right": { "shoulder_pitch": -55.0, "shoulder_yaw": -30.0, "shoulder_roll": -12.0, "elbow_bend": -75.0, "mode": "braced" },
 		"left":  { "mode": "ik" },
 		"kick_pitch": 120.0, "kick_elbow": 30.0, "kick_duration": 0.42, "chest_recoil": 0.0,
+	},
+	"consumable": {
+		# Holding a consumable up in front of the chest in the main hand (the item
+		# mesh parents to that hand's grip). Off-hand hangs and pendulums. No kick.
+		"right": { "shoulder_pitch": -52.0, "shoulder_yaw": -6.0, "shoulder_roll": -10.0, "elbow_bend": -72.0, "mode": "braced" },
+		"left":  { "shoulder_pitch": -8.0, "shoulder_yaw": 0.0, "elbow_bend": -14.0, "mode": "free" },
+		"kick_pitch": 0.0, "kick_elbow": 0.0, "kick_duration": 0.0, "chest_recoil": 0.0,
 	},
 }
 
@@ -363,6 +419,9 @@ var _remote_target_pos: Vector3 = Vector3.INF
 var _remote_target_yaw: float = 0.0
 
 func _ready() -> void:
+	# Quick bar starts empty (7 slots).
+	_quick.resize(QUICK_SLOTS)
+	_quick.fill("")
 	# Under GD-Sync the player node has no Godot multiplayer authority —
 	# ownership is just a script-side flag. main.gd's spawner sets
 	# `is_local_player` on the input-owning copy; remote copies are
@@ -565,6 +624,125 @@ func _build_rig() -> void:
 	# Start in the unarmed pose — both arms hang naturally.
 	_apply_weapon_pose("unarmed")
 
+	# Build worn-equipment meshes (hidden until the matching item is equipped).
+	# Done here in _build_rig — synchronously during _ready, BEFORE main.gd runs
+	# FovCuller.apply_shader_to_subtree on a remote copy — so the worn gear gets
+	# the FOV shadow overlay just like the rest of the body.
+	_build_equipment()
+
+# ------------------------------------------------------------------
+# Worn equipment models. Built once (hidden) and toggled on pickup. Each piece
+# echoes the colours of its world pickup model (see item_pickup.gd) so the loot
+# you grab visibly becomes the gear on your back.
+# ------------------------------------------------------------------
+
+func _build_equipment() -> void:
+	_armor_node = _build_armor_visual()
+	_backpack_node = _build_backpack_visual()
+	_shoe_l = _build_shoe_visual(_foot_l)
+	_shoe_r = _build_shoe_visual(_foot_r)
+	_update_equipment_visuals()
+
+## Helper: add a coloured box mesh to `parent` at `pos`. Returns nothing — the
+## worn pieces are toggled at the container level, not per box.
+func _add_equip_box(parent: Node3D, size: Vector3, color: Color, pos: Vector3, rough: float = 0.7) -> void:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness = rough
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mesh.material = mat
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	parent.add_child(mi)
+
+## Body armor — a plated tactical vest wrapping the rigid chest, plus a raised
+## front plate and shoulder pads. Parented to _torso_top so it twists with the
+## chest. Chest box is WAIST_TOP_W × CHEST_HEIGHT × WAIST_DEPTH at y≈CHEST_HEIGHT/2.
+func _build_armor_visual() -> Node3D:
+	if _torso_top == null:
+		return null
+	var root := Node3D.new()
+	root.name = "BodyArmor"
+	root.visible = false
+	_torso_top.add_child(root)
+
+	var main_col := Color(0.22, 0.30, 0.42, 1)
+	var trim_col := Color(0.16, 0.22, 0.32, 1)
+	var plate_col := Color(0.30, 0.38, 0.50, 1)
+	var chest_mid := CHEST_HEIGHT * 0.5
+	# Vest body — slightly larger than the chest so it reads as a layer over it.
+	_add_equip_box(root, Vector3(WAIST_TOP_W + 0.04, CHEST_HEIGHT + 0.03, WAIST_DEPTH + 0.05),
+		main_col, Vector3(0, chest_mid, 0.0), 0.5)
+	# Raised front armour plate.
+	_add_equip_box(root, Vector3(0.34, 0.20, 0.05), plate_col,
+		Vector3(0, chest_mid + 0.02, WAIST_DEPTH * 0.5 + 0.03), 0.45)
+	# Shoulder pads sitting over each shoulder cap.
+	_add_equip_box(root, Vector3(0.16, 0.07, 0.22), trim_col, Vector3(0.23, SHOULDER_Y + 0.035, 0.0), 0.6)
+	_add_equip_box(root, Vector3(0.16, 0.07, 0.22), trim_col, Vector3(-0.23, SHOULDER_Y + 0.035, 0.0), 0.6)
+	return root
+
+## Backpack — main compartment behind the chest, lid, side pockets and two front
+## shoulder straps. Parented to _torso_top so it rides the chest.
+func _build_backpack_visual() -> Node3D:
+	if _torso_top == null:
+		return null
+	var root := Node3D.new()
+	root.name = "Backpack"
+	root.visible = false
+	_torso_top.add_child(root)
+
+	var main_col := Color(0.40, 0.28, 0.16, 1)
+	var lid_col := Color(0.34, 0.24, 0.14, 1)
+	var pouch_col := Color(0.30, 0.20, 0.12, 1)
+	var strap_col := Color(0.20, 0.15, 0.10, 1)
+	var chest_mid := CHEST_HEIGHT * 0.5
+	var back_z := -(WAIST_DEPTH * 0.5 + 0.08)  # just behind the chest's rear face
+	# Main compartment.
+	_add_equip_box(root, Vector3(0.30, 0.34, 0.16), main_col, Vector3(0, chest_mid, back_z), 0.8)
+	# Top lid.
+	_add_equip_box(root, Vector3(0.28, 0.10, 0.15), lid_col, Vector3(0, chest_mid + 0.18, back_z + 0.005), 0.8)
+	# Side pockets.
+	_add_equip_box(root, Vector3(0.06, 0.16, 0.12), pouch_col, Vector3(0.15, chest_mid - 0.02, back_z), 0.8)
+	_add_equip_box(root, Vector3(0.06, 0.16, 0.12), pouch_col, Vector3(-0.15, chest_mid - 0.02, back_z), 0.8)
+	# Shoulder straps down the front of the chest.
+	var strap_z := WAIST_DEPTH * 0.5 + 0.01
+	_add_equip_box(root, Vector3(0.05, 0.30, 0.03), strap_col, Vector3(0.12, chest_mid + 0.02, strap_z), 0.7)
+	_add_equip_box(root, Vector3(0.05, 0.30, 0.03), strap_col, Vector3(-0.12, chest_mid + 0.02, strap_z), 0.7)
+	return root
+
+## Tactical boots — a slightly larger upper + sole wrapping a foot mesh. Parented
+## to the foot so they track the walk cycle.
+func _build_shoe_visual(foot: Node3D) -> Node3D:
+	if foot == null:
+		return null
+	var root := Node3D.new()
+	root.name = "Shoe"
+	root.visible = false
+	foot.add_child(root)
+	var upper_col := Color(0.20, 0.24, 0.20, 1)
+	var sole_col := Color(0.08, 0.08, 0.10, 1)
+	# Foot mesh is 0.16 × FOOT_HEIGHT × 0.26, centred on the foot node. The sole's
+	# bottom is aligned with the foot's bottom (y = -FOOT_HEIGHT/2) so the planted
+	# boot rests on the floor rather than sinking through it.
+	_add_equip_box(root, Vector3(0.18, FOOT_HEIGHT + 0.02, 0.28), upper_col, Vector3(0, 0.01, 0.0), 0.6)
+	_add_equip_box(root, Vector3(0.19, 0.04, 0.30), sole_col, Vector3(0, -FOOT_HEIGHT * 0.5 + 0.02, 0.01), 0.5)
+	return root
+
+## Show / hide each worn piece from the equipment flags. Shared by local pickup
+## and remote sync so both paths render identical gear.
+func _update_equipment_visuals() -> void:
+	if _armor_node:
+		_armor_node.visible = _has_body_armor
+	if _backpack_node:
+		_backpack_node.visible = _has_backpack
+	if _shoe_l:
+		_shoe_l.visible = _has_shoes
+	if _shoe_r:
+		_shoe_r.visible = _has_shoes
+
 ## Pose every waist slice for this frame. Each pivot is rotated to a
 ## smoothstep fraction of the total twist/pitch, so the stack starts at
 ## 0° at the pelvis seam and ends at the full angle just under the
@@ -650,6 +828,11 @@ func _build_leg(is_left: bool, pants_mat: StandardMaterial3D, boot_mat: Standard
 	foot.position = Vector3(0, -SHIN_LEN * 0.5 - FOOT_HEIGHT * 0.5, 0.06)
 	foot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	shin.add_child(foot)
+	# Stash the foot so worn boots (tactical shoes) can parent onto it later.
+	if is_left:
+		_foot_l = foot
+	else:
+		_foot_r = foot
 
 	return hip
 
@@ -735,7 +918,8 @@ func _build_arm_chain(
 
 ## Set both arms to a weapon-specific rest pose and refresh the WeaponGrip
 ## so the muzzle keeps pointing along the player's +Z. Called from
-## _build_rig (initial unarmed pose) and from _equip_weapon. Falls back to
+## _build_rig (initial unarmed pose) and from _hold_weapon / _hold_consumable.
+## Falls back to
 ## the unarmed pose if the weapon name has no entry. For arms in "ik" mode
 ## the IK solver overwrites the rest each frame in _update_animation.
 func _apply_weapon_pose(weapon_name: String) -> void:
@@ -851,7 +1035,7 @@ func set_dominant_hand(is_right: bool) -> void:
 	var new_grip: Node3D = _weapon_grip
 	if new_grip != null:
 		for w in [_pistol_node, _shotgun_node, _smg_node, _ak47_node,
-				  _grenade_launcher_node, _bat_node]:
+				  _grenade_launcher_node, _bat_node, _held_item_node]:
 			if w != null and w.get_parent() != null and w.get_parent() != new_grip:
 				w.reparent(new_grip, false)
 	# Re-pose both arms (and recompute the grip basis) for the new side.
@@ -882,6 +1066,13 @@ func refresh_authority() -> void:
 	_ak47_node.visible = false
 	_grenade_launcher_node.visible = false
 	_bat_node.visible = false
+	# Held-consumable container — parented to the active hand grip, empty/hidden
+	# until a consumable is selected from the quick bar.
+	_held_item_node = Node3D.new()
+	_held_item_node.name = "HeldItem"
+	_held_item_node.position = Vector3(0.0, 0.03, 0.05)
+	_held_item_node.visible = false
+	_attach_weapon(_held_item_node)
 	# Only the local (input-owning) player needs an aim line.
 	if _owns_input:
 		_build_aim_line()
@@ -906,10 +1097,14 @@ func _physics_process(delta: float) -> void:
 		and _weapon_stats.get("hit_mode", "") != "melee"
 	)
 
+	_update_buffs(delta)
+
 	_apply_gravity(delta)
 	var move_dir := _get_world_movement_direction()
 	_update_sprint(move_dir, delta)
 	var current_speed := SPRINT_SPEED if _is_sprinting else SPEED
+	# Tactical shoes (persistent) and the energy-drink buff (temporary) stack.
+	current_speed *= _equip_speed_mult * _speed_boost_mult
 	if _is_aiming:
 		current_speed *= AIM_MOVE_FACTOR
 	_apply_movement(move_dir, current_speed, delta)
@@ -935,6 +1130,8 @@ func _physics_process(delta: float) -> void:
 		_net_sync_timer -= delta
 		if _net_sync_timer <= 0.0:
 			_net_sync_timer = NET_SYNC_INTERVAL
+			# Unreliable: a dropped transform is covered by remote interpolation;
+			# reliable retransmits at 30Hz would queue up into visible lag.
 			NetworkManager.broadcast_event("player_xform", {
 				"peer_id": peer_id,
 				"x": global_position.x, "y": global_position.y, "z": global_position.z,
@@ -942,17 +1139,25 @@ func _physics_process(delta: float) -> void:
 				# The equipped weapon (empty string = unarmed) so remote copies
 				# render the right gun in this player's hands.
 				"weapon": _current_weapon,
+				# The held consumable (empty unless a consumable is selected) so
+				# remote copies show it in this player's hand.
+				"held": _held_consumable,
+				# Worn-equipment bitfield so remote copies render the player's
+				# armor / backpack / boots (see _equip_bits / _set_remote_equipment).
+				"equip": _equip_bits(),
 			})
 
 ## Records the latest transform + equipped weapon pushed by the owning peer
 ## (called by main.gd on remote copies). We DON'T snap the position here — the
 ## per-frame _interpolate_remote() glides toward it so motion stays smooth
 ## between the ~30Hz packets instead of stuttering on each arrival.
-func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "") -> void:
+func apply_remote_transform(pos: Vector3, yaw: float, sprinting: bool, weapon: String = "", equip_bits: int = 0, held: String = "") -> void:
 	_remote_target_pos = pos
 	_remote_target_yaw = yaw
 	_is_sprinting = sprinting
 	_set_remote_weapon(weapon)
+	_set_remote_held(held)
+	_set_remote_equipment(equip_bits)
 	# Estimate horizontal velocity from the position stream so the animation
 	# rig on remote copies can drive the walk cycle at the right cadence.
 	var now := Time.get_ticks_msec() / 1000.0
@@ -988,15 +1193,51 @@ func _set_remote_weapon(weapon_name: String) -> void:
 		return
 	_current_weapon = weapon_name
 	_armed = weapon_name != ""
-	_pistol_node.visible = (weapon_name == "pistol")
-	_shotgun_node.visible = (weapon_name == "shotgun")
-	_smg_node.visible = (weapon_name == "smg")
-	_ak47_node.visible = (weapon_name == "ak47")
-	_grenade_launcher_node.visible = (weapon_name == "grenade_launcher")
-	_bat_node.visible = (weapon_name == "bat")
+	_set_weapon_models_visible(weapon_name)
 	_weapon_stats = WeaponData.get_weapon(weapon_name) if weapon_name != "" else {}
 	# _apply_weapon_pose falls back to the unarmed pose for an empty/unknown name.
 	_apply_weapon_pose(weapon_name)
+
+## Mirror the held consumable onto a remote copy: shows the in-hand item model and
+## sets the holding pose. Called after _set_remote_weapon (which has already
+## cleared the weapon + set the unarmed pose when the player is holding an item).
+func _set_remote_held(held: String) -> void:
+	if _held_item_node == null:
+		return
+	if held == _held_consumable:
+		return
+	_held_consumable = held
+	if held == "":
+		_held_item_node.visible = false
+	else:
+		_build_held_consumable_model(held)
+		_apply_weapon_pose("consumable")
+
+## Pack the worn-equipment flags into a small bitfield for the player_xform
+## broadcast (1 = body armor, 2 = backpack, 4 = boots).
+func _equip_bits() -> int:
+	var bits := 0
+	if _has_body_armor:
+		bits |= 1
+	if _has_backpack:
+		bits |= 2
+	if _has_shoes:
+		bits |= 4
+	return bits
+
+## Mirror the owner's worn equipment onto a remote copy from the synced bitfield.
+## Equipment meshes are built in _build_rig (synchronously, before any xform
+## arrives), so they always exist here; we just toggle their visibility.
+func _set_remote_equipment(bits: int) -> void:
+	var armored := (bits & 1) != 0
+	var backpacked := (bits & 2) != 0
+	var booted := (bits & 4) != 0
+	if armored == _has_body_armor and backpacked == _has_backpack and booted == _has_shoes:
+		return
+	_has_body_armor = armored
+	_has_backpack = backpacked
+	_has_shoes = booted
+	_update_equipment_visuals()
 
 # ------------------------------------------------------------------
 # Audio. The local (input-owning) player hears their own actions as crisp
@@ -1010,9 +1251,11 @@ func _emit_player_sound(sound: String, pitch: float = 1.0, volume_db: float = 0.
 	SoundManager.play_2d(sound, pitch, volume_db)
 	if NetworkManager.is_networked:
 		# main.gd routes "player_sound" to this player's remote copy on each peer.
+		# Unreliable — a missed gunshot/footstep is cosmetic and not worth a
+		# retransmit that would compete with the transform stream.
 		NetworkManager.broadcast_event("player_sound", {
 			"peer_id": peer_id, "sound": sound, "pitch": pitch, "vol": volume_db,
-		})
+		}, false)
 
 ## Plays a networked sound on a remote copy of this player (called by main.gd
 ## when a "player_sound" event arrives for a non-local peer).
@@ -1071,11 +1314,15 @@ func _handle_auto_fire() -> void:
 	if Input.is_action_pressed("shoot"):
 		_try_shoot()
 
-func take_damage(amount: float) -> void:
+func take_damage(amount: float, _knockback: Vector3 = Vector3.ZERO) -> void:
 	# In MP, damage is applied on the player's owning peer so health/HUD stay
 	# authoritative for that player. The host's enemies call this on their local
 	# copy of a remote player; forward the hit to that player's owner over the
 	# GD-Sync channel instead of mutating a copy we don't own.
+	#
+	# The optional `_knockback` argument is ignored (players have no knockback
+	# physics) but accepted so a stray AOE/explosion call that catches a player
+	# can never crash with an argument-count mismatch.
 	if NetworkManager.is_networked and not _owns_input:
 		NetworkManager.send_event_to(peer_id, "player_damage", {"amount": amount})
 		return
@@ -1088,9 +1335,17 @@ func apply_remote_damage(amount: float) -> void:
 func _apply_damage(amount: float) -> void:
 	if is_dead or god_mode:
 		return
-	health = max(health - amount, 0.0)
-	if hud:
-		hud.set_health(health / HEALTH_MAX * 100.0)
+	# Armor soaks the hit first, then any remainder carries through to health.
+	if armor > 0.0:
+		var absorbed: float = min(armor, amount)
+		armor -= absorbed
+		amount -= absorbed
+		if hud:
+			hud.set_armor(armor / ARMOR_MAX * 100.0)
+	if amount > 0.0:
+		health = max(health - amount, 0.0)
+		if hud:
+			hud.set_health(health / HEALTH_MAX * 100.0)
 	if health <= 0.0:
 		is_dead = true
 		velocity = Vector3.ZERO
@@ -1100,23 +1355,28 @@ func _input(event: InputEvent) -> void:
 	# Only the owning peer (or single-player) consumes input.
 	if not _owns_input:
 		return
-	if event.is_action_pressed("weapon_1"):
-		_switch_weapon(0)
-	elif event.is_action_pressed("weapon_2"):
-		_switch_weapon(1)
-	elif event.is_action_pressed("weapon_3"):
-		_switch_weapon(2)
-	elif event.is_action_pressed("weapon_4"):
-		_switch_weapon(3)
-	elif event.is_action_pressed("weapon_5"):
-		_switch_weapon(4)
-	elif event.is_action_pressed("shoot"):
+	# Quick-bar selection — number keys 1..7 select (and hold) that slot's item.
+	for i in range(QUICK_SLOTS):
+		if event.is_action_pressed("weapon_%d" % (i + 1)):
+			_select_quick_slot(i)
+			return
+	# Use the held consumable (E). When a usable item is held, E is "use";
+	# otherwise it falls through to the camera's rotate-right (see wants_use_key).
+	if event.is_action_pressed("use_item") and _held_consumable != "":
+		_use_held_item()
+		return
+	if event.is_action_pressed("shoot"):
 		if _armed:
 			_try_shoot()
-		else:
-			_try_punch()
+		elif _held_consumable == "":
+			_try_punch()  # bare-hand attack only when not holding an item
 	elif event.is_action_pressed("reload"):
 		_try_reload()
+
+## True when E should be consumed as "use item" (a usable consumable is held), so
+## the camera shouldn't also rotate-right on the same key. Read by camera_controller.
+func wants_use_key() -> bool:
+	return _owns_input and _held_consumable != ""
 
 # ------------------------------------------------------------------
 # Weapon inventory
@@ -1126,57 +1386,352 @@ func pickup_weapon(weapon_name: String) -> void:
 	var stats := WeaponData.get_weapon(weapon_name)
 	if stats.is_empty():
 		return
-
 	var mag: int = stats.get("magazine_size", 8)
 
-	if weapon_name in _weapons:
+	if _inventory.has(weapon_name):
+		# Already own it — just top the magazine back up.
 		_weapon_ammo[weapon_name] = mag
 		if _current_weapon == weapon_name:
 			ammo = mag
 			_is_reloading = false
+		_refresh_quick_bar()
 		return
 
-	_weapons.append(weapon_name)
+	# New weapon: store it, give it a quick-bar slot, and draw it (keeps the
+	# previous auto-equip-on-pickup feel).
+	_inventory[weapon_name] = 1
 	_weapon_ammo[weapon_name] = mag
+	var slot := _assign_quick_slot(weapon_name)
+	if slot >= 0:
+		_select_quick_slot(slot)
+	_emit_player_sound("item_pickup", randf_range(0.97, 1.03), -6.0)
+	if hud and hud.has_method("show_toast"):
+		hud.show_toast("%s (picked up)" % weapon_name.replace("_", " ").capitalize(), Color(0.6, 0.72, 0.95, 1))
+	_refresh_quick_bar()
 
-	var new_idx := _weapons.size() - 1
-	_equip_weapon(new_idx)
+# ------------------------------------------------------------------
+# Items & equipment pickup. Equipment is equipped (and worn) instantly;
+# consumables are stowed into the inventory + quick bar and used later via the
+# hotbar + E. Walked into via ItemPickup.body_entered → pickup_item().
+# ------------------------------------------------------------------
 
-func _switch_weapon(slot: int) -> void:
-	if slot < 0 or slot >= _weapons.size():
+func pickup_item(item_id: String) -> void:
+	var data := ItemData.get_item(item_id)
+	if data.is_empty():
 		return
-	if slot == _weapon_index:
-		return
-	_equip_weapon(slot)
 
-func _equip_weapon(idx: int) -> void:
-	if idx < 0 or idx >= _weapons.size():
+	var msg := ""
+	var category: String = data.get("category", "")
+	if category == "equipment":
+		# Equipment is applied (and worn) instantly — it never enters the bag/bar.
+		msg = _apply_equipment(data)
+	elif category == "consumable":
+		# Stow the consumable: into the inventory first, then onto the quick bar
+		# if it isn't already there and a slot is free. It is NOT used on pickup —
+		# the player selects it from the bar (number key) and presses E to use it.
+		_inventory[item_id] = int(_inventory.get(item_id, 0)) + 1
+		if not _quick_has(item_id):
+			_assign_quick_slot(item_id)
+		var cnt := int(_inventory[item_id])
+		var nm: String = data.get("display_name", item_id)
+		msg = ("%s  ×%d" % [nm, cnt]) if cnt > 1 else ("%s (stowed)" % nm)
+		_refresh_quick_bar()
+	else:
 		return
 
-	# Save ammo of the old weapon
+	# Push the affected bars to the HUD right away (don't wait for _sync_hud).
+	if hud:
+		hud.set_health(health / HEALTH_MAX * 100.0)
+		hud.set_armor(armor / ARMOR_MAX * 100.0)
+		hud.set_stamina(stamina / _stamina_max() * 100.0)
+		if msg != "" and hud.has_method("show_toast"):
+			hud.show_toast(msg, data.get("glow_color", Color(1, 1, 1, 1)))
+
+	# Pleasant pickup chime — 2D for the local player, positional on remote copies.
+	_emit_player_sound("item_pickup", randf_range(0.97, 1.03), -5.0)
+
+## Apply a consumable's instant effect. Returns the HUD toast text.
+func _apply_consumable(data: Dictionary) -> String:
+	var item_name: String = data.get("display_name", "Item")
+	if data.get("heal_full", false):
+		health = HEALTH_MAX
+		return "%s — fully healed" % item_name
+	if data.has("heal"):
+		var amount: float = data["heal"]
+		var before := health
+		health = min(health + amount, HEALTH_MAX)
+		return "%s  +%d HP" % [item_name, int(round(health - before))]
+	if data.has("speed_boost"):
+		_speed_boost_mult = data.get("speed_boost", 1.0)
+		_turn_boost_mult = data.get("turn_boost", 1.0)
+		_buff_timer = data.get("boost_duration", 10.0)
+		return "%s — speed boost!" % item_name
+	return ""
+
+## Apply a piece of equipment as a persistent bonus. Returns the HUD toast text.
+func _apply_equipment(data: Dictionary) -> String:
+	var item_name: String = data.get("display_name", "Equipment")
+	if data.has("armor"):
+		armor = min(armor + float(data["armor"]), ARMOR_MAX)
+		_has_body_armor = true
+		_update_equipment_visuals()
+		return "%s equipped  +%d armor" % [item_name, int(data["armor"])]
+	if data.has("stamina_bonus"):
+		# Backpack applies once; grant the extra pool and top the player off.
+		if not _has_backpack:
+			_has_backpack = true
+			_update_equipment_visuals()
+			var bonus: float = data["stamina_bonus"]
+			_bonus_stamina_max += bonus
+			stamina = min(stamina + bonus, _stamina_max())
+			return "%s equipped  +%d stamina" % [item_name, int(bonus)]
+		return "%s (already equipped)" % item_name
+	if data.has("speed_mult"):
+		# Shoes apply once so speed doesn't compound on repeat pickups.
+		if not _has_shoes:
+			_has_shoes = true
+			_update_equipment_visuals()
+			_equip_speed_mult *= float(data["speed_mult"])
+			return "%s equipped  +%d%% speed" % [item_name, int(round((data["speed_mult"] - 1.0) * 100.0))]
+		return "%s (already equipped)" % item_name
+	return ""
+
+# ------------------------------------------------------------------
+# Quick bar — unified weapon/consumable hotbar (number keys 1..7).
+# ------------------------------------------------------------------
+
+## Put an item into the first free quick-bar slot. Returns the slot index, or -1
+## if the bar is full (the item still lives in the inventory).
+func _assign_quick_slot(item_id: String) -> int:
+	for i in range(QUICK_SLOTS):
+		if _quick[i] == "":
+			_quick[i] = item_id
+			return i
+	return -1
+
+func _quick_has(item_id: String) -> bool:
+	return item_id in _quick
+
+## Public snapshot of stored (non-equipment) items for the inventory screen.
+## Returns an array of { id, name, count, kind } in quick-bar order first, then
+## any inventory items that didn't get a bar slot.
+func get_inventory_items() -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	for id in _quick:
+		if id != "" and _inventory.has(id) and not seen.has(id):
+			seen[id] = true
+			out.append(_inventory_entry(id))
+	for id in _inventory:
+		if not seen.has(id):
+			seen[id] = true
+			out.append(_inventory_entry(id))
+	return out
+
+func _inventory_entry(id: String) -> Dictionary:
+	var kind := _item_kind(id)
+	var nm := id.replace("_", " ") if kind == "weapon" else String(ItemData.get_item(id).get("display_name", id))
+	return {"id": id, "name": nm, "count": int(_inventory.get(id, 0)), "kind": kind}
+
+## Classify an item id: "weapon", "consumable", "equipment", or "".
+func _item_kind(item_id: String) -> String:
+	if not WeaponData.get_weapon(item_id).is_empty():
+		return "weapon"
+	var d := ItemData.get_item(item_id)
+	return d.get("category", "") if not d.is_empty() else ""
+
+## Select a quick-bar slot: hold its item — draw a weapon, or hold a consumable
+## (which then prompts "Press E to use"). Empty slots are ignored.
+func _select_quick_slot(slot: int) -> void:
+	if slot < 0 or slot >= QUICK_SLOTS:
+		return
+	var id: String = _quick[slot]
+	if id == "":
+		return
+	if slot == _quick_index:
+		return  # already holding this slot — re-pressing the key is a no-op
+	_quick_index = slot
+	match _item_kind(id):
+		"weapon":
+			_hold_weapon(id)
+		"consumable":
+			_hold_consumable(id)
+	_refresh_quick_bar()
+
+## Show exactly one weapon model (or none when id is ""), hiding the rest. Null-safe.
+func _set_weapon_models_visible(id: String) -> void:
+	if _pistol_node: _pistol_node.visible = (id == "pistol")
+	if _shotgun_node: _shotgun_node.visible = (id == "shotgun")
+	if _smg_node: _smg_node.visible = (id == "smg")
+	if _ak47_node: _ak47_node.visible = (id == "ak47")
+	if _grenade_launcher_node: _grenade_launcher_node.visible = (id == "grenade_launcher")
+	if _bat_node: _bat_node.visible = (id == "bat")
+
+## Draw and hold a weapon (the armed/aim/fire path operates on _current_weapon).
+func _hold_weapon(id: String) -> void:
+	# Stop holding any consumable.
+	_held_consumable = ""
+	if _held_item_node:
+		_held_item_node.visible = false
+	# Save ammo of the previously-held weapon.
 	if _armed and _current_weapon != "":
 		_weapon_ammo[_current_weapon] = ammo
-
-	_weapon_index = idx
-	_current_weapon = _weapons[idx]
-	_weapon_stats = WeaponData.get_weapon(_current_weapon)
-	ammo = _weapon_ammo.get(_current_weapon, _weapon_stats.get("magazine_size", 8))
+	_current_weapon = id
+	_weapon_stats = WeaponData.get_weapon(id)
+	ammo = _weapon_ammo.get(id, _weapon_stats.get("magazine_size", 8))
 	_armed = true
 	_is_reloading = false
 	_shoot_timer = 0.0
+	_set_weapon_models_visible(id)
+	# Re-pose the arms so the body mimics holding this weapon.
+	_apply_weapon_pose(id)
 
-	_pistol_node.visible = (_current_weapon == "pistol")
-	_shotgun_node.visible = (_current_weapon == "shotgun")
-	_smg_node.visible = (_current_weapon == "smg")
-	_ak47_node.visible = (_current_weapon == "ak47")
-	_grenade_launcher_node.visible = (_current_weapon == "grenade_launcher")
-	_bat_node.visible = (_current_weapon == "bat")
+## Hold a consumable in hand (no firing). Shows its in-hand model and lets the
+## HUD prompt the player to press E.
+func _hold_consumable(id: String) -> void:
+	if _armed and _current_weapon != "":
+		_weapon_ammo[_current_weapon] = ammo
+	_armed = false
+	_current_weapon = ""
+	_weapon_stats = {}
+	_is_reloading = false
+	_set_weapon_models_visible("")
+	_held_consumable = id
+	_build_held_consumable_model(id)
+	_apply_weapon_pose("consumable")
 
-	# Re-pose the arms so the body actually mimics holding this weapon —
-	# pistol shooters extend the firing hand and let the off-hand hang,
-	# rifle/shotgun shooters bring the support hand across, the bat sits
-	# cocked back over the shoulder, and so on.
-	_apply_weapon_pose(_current_weapon)
+## Use the held consumable (E): apply its effect and consume one. When the stack
+## empties, clear its quick slot and drop back to bare hands.
+func _use_held_item() -> void:
+	var id := _held_consumable
+	if id == "" or int(_inventory.get(id, 0)) <= 0:
+		return
+	var data := ItemData.get_item(id)
+	var msg := _apply_consumable(data)
+
+	_inventory[id] = int(_inventory[id]) - 1
+	if int(_inventory[id]) <= 0:
+		_inventory.erase(id)
+		var slot: int = _quick.find(id)
+		if slot >= 0:
+			_quick[slot] = ""
+		_held_consumable = ""
+		if _held_item_node:
+			_held_item_node.visible = false
+		_quick_index = -1
+		_apply_weapon_pose("unarmed")  # back to fists
+
+	# Immediate HUD feedback (bars + toast).
+	if hud:
+		hud.set_health(health / HEALTH_MAX * 100.0)
+		hud.set_armor(armor / ARMOR_MAX * 100.0)
+		hud.set_stamina(stamina / _stamina_max() * 100.0)
+		if msg != "" and hud.has_method("show_toast"):
+			hud.show_toast(msg, data.get("glow_color", Color(1, 1, 1, 1)))
+	_emit_player_sound("item_pickup", randf_range(1.05, 1.15), -6.0)
+	_refresh_quick_bar()
+
+# ------------------------------------------------------------------
+# In-hand consumable models (small versions of the world pickups).
+# ------------------------------------------------------------------
+
+func _build_held_consumable_model(id: String) -> void:
+	if _held_item_node == null:
+		return
+	for c in _held_item_node.get_children():
+		c.queue_free()
+	_held_item_node.visible = true
+	match id:
+		"apple": _build_held_apple()
+		"medkit": _build_held_medkit()
+		"energy_drink": _build_held_energy_drink()
+		_: _held_item_node.visible = false
+
+func _held_mat(color: Color, rough: float = 0.6) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.roughness = rough
+	return m
+
+func _held_add(mesh: Mesh, pos: Vector3) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.position = pos
+	_held_item_node.add_child(mi)
+
+func _build_held_apple() -> void:
+	var body := SphereMesh.new()
+	body.radius = 0.06
+	body.height = 0.12
+	body.material = _held_mat(Color(0.85, 0.18, 0.16), 0.4)
+	_held_add(body, Vector3.ZERO)
+	var stem := CylinderMesh.new()
+	stem.top_radius = 0.008
+	stem.bottom_radius = 0.008
+	stem.height = 0.04
+	stem.material = _held_mat(Color(0.32, 0.22, 0.12))
+	_held_add(stem, Vector3(0, 0.07, 0))
+
+func _build_held_medkit() -> void:
+	var box := BoxMesh.new()
+	box.size = Vector3(0.16, 0.11, 0.11)
+	box.material = _held_mat(Color(0.92, 0.92, 0.92), 0.5)
+	_held_add(box, Vector3.ZERO)
+	var barh := BoxMesh.new()
+	barh.size = Vector3(0.09, 0.025, 0.02)
+	barh.material = _held_mat(Color(0.85, 0.15, 0.12))
+	_held_add(barh, Vector3(0, 0, 0.06))
+	var barv := BoxMesh.new()
+	barv.size = Vector3(0.025, 0.08, 0.02)
+	barv.material = _held_mat(Color(0.85, 0.15, 0.12))
+	_held_add(barv, Vector3(0, 0, 0.06))
+
+func _build_held_energy_drink() -> void:
+	var can := CylinderMesh.new()
+	can.top_radius = 0.04
+	can.bottom_radius = 0.04
+	can.height = 0.16
+	can.material = _held_mat(Color(0.18, 0.18, 0.22))
+	_held_add(can, Vector3.ZERO)
+	var band := CylinderMesh.new()
+	band.top_radius = 0.042
+	band.bottom_radius = 0.042
+	band.height = 0.06
+	band.material = _held_mat(Color(0.95, 0.80, 0.15))
+	_held_add(band, Vector3.ZERO)
+
+## Build the quick-bar payload and push it (plus the use prompt) to the HUD.
+func _refresh_quick_bar() -> void:
+	if hud == null or not hud.has_method("set_quick_bar"):
+		return
+	var slots: Array = []
+	for i in range(QUICK_SLOTS):
+		var id: String = _quick[i]
+		if id == "":
+			slots.append(null)
+			continue
+		if _item_kind(id) == "weapon":
+			slots.append({
+				"name": id.replace("_", " "),
+				"count": 0,
+				"color": Color(0.45, 0.55, 0.80),
+				"kind": "weapon",
+			})
+		else:
+			var d := ItemData.get_item(id)
+			slots.append({
+				"name": d.get("display_name", id),
+				"count": int(_inventory.get(id, 0)),
+				"color": d.get("glow_color", Color(0.5, 0.5, 0.5)),
+				"kind": "consumable",
+			})
+	hud.set_quick_bar(slots, _quick_index)
+	if hud.has_method("set_use_prompt"):
+		if _held_consumable != "":
+			var d := ItemData.get_item(_held_consumable)
+			hud.set_use_prompt("Press E to use %s" % d.get("display_name", _held_consumable))
+		else:
+			hud.set_use_prompt("")
 
 ## Forward direction used for shooting, recoil, and melee. Tracks the
 ## mouse aim — the player aims with the upper body / cursor, so bullets
@@ -1281,9 +1836,9 @@ func _build_pistol() -> void:
 func _build_shotgun() -> void:
 	_shotgun_node = Node3D.new()
 	_shotgun_node.name = "Shotgun"
-	# +X nudges the whole gun outboard of the hand so the stock/back clears the
-	# torso instead of sinking into it (the arm posture is unchanged).
-	_shotgun_node.position = Vector3(0.04, 0.0, 0.02)
+	# +X outboard of the body centreline so the stock/back clears the torso, and
+	# +Y lifts it higher toward the shoulder for the vertical trigger-arm carry.
+	_shotgun_node.position = Vector3(0.06, 0.05, 0.02)
 	_shotgun_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_shotgun_node)
 
@@ -1364,8 +1919,10 @@ func _build_shotgun() -> void:
 func _build_smg() -> void:
 	_smg_node = Node3D.new()
 	_smg_node.name = "SMG"
-	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
-	_smg_node.position = Vector3(0.04, 0.07, 0.02)
+	# +X nudges the gun outboard of the hand (clear of the torso, slightly off
+	# the body centreline) and +Y lifts it higher toward the shoulder so the
+	# carry reads naturally with the now-vertical trigger upper arm.
+	_smg_node.position = Vector3(0.06, 0.11, 0.02)
 	_smg_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_smg_node)
 
@@ -1420,8 +1977,9 @@ func _build_smg() -> void:
 func _build_ak47() -> void:
 	_ak47_node = Node3D.new()
 	_ak47_node.name = "AK47"
-	# +X nudges the whole gun outboard of the hand so the stock clears the torso.
-	_ak47_node.position = Vector3(0.04, 0.07, 0.02)
+	# +X outboard of the body centreline, +Y higher toward the shoulder (matches
+	# the vertical trigger-arm carry).
+	_ak47_node.position = Vector3(0.06, 0.11, 0.02)
 	_ak47_node.scale = Vector3.ONE * 1.35
 	_attach_weapon(_ak47_node)
 
@@ -1504,8 +2062,9 @@ func _build_ak47() -> void:
 func _build_grenade_launcher() -> void:
 	_grenade_launcher_node = Node3D.new()
 	_grenade_launcher_node.name = "GrenadeLauncher"
-	# +X nudges the whole gun outboard of the hand so the back clears the torso.
-	_grenade_launcher_node.position = Vector3(0.04, 0.06, 0.06)
+	# +X outboard of the body centreline (back clears the torso), +Y higher
+	# toward the shoulder for the vertical trigger-arm carry.
+	_grenade_launcher_node.position = Vector3(0.06, 0.10, 0.06)
 	_grenade_launcher_node.scale = Vector3.ONE * 1.4
 	_attach_weapon(_grenade_launcher_node)
 
@@ -1905,7 +2464,10 @@ func _fire_single() -> void:
 	var result := _cast_ray(ray_origin, ray_end)
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-		if hit_body.has_method("take_damage"):
+		# Only zombies take weapon damage. Other players are CharacterBody3D too,
+		# but their take_damage(amount) takes a single argument — calling it with
+		# (damage, impulse) crashes — and co-op has no friendly fire anyway.
+		if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
 			hit_body.take_damage(damage, impulse)
 			_spawn_hit_sparks(result.position)
 
@@ -1954,7 +2516,9 @@ func _fire_pellet() -> void:
 
 		if result and result.collider is CharacterBody3D:
 			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-			if hit_body.has_method("take_damage"):
+			# Enemies only — see the note in the single-shot path; a pellet that
+			# lands on a teammate must not call their 1-arg take_damage.
+			if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
 				hit_body.take_damage(damage_per_pellet, dir * knockback_per_pellet)
 				spark_points[hit_body] = result.position
 
@@ -2218,6 +2782,19 @@ func _get_world_movement_direction() -> Vector3:
 
 	return (cam_fwd * (-input.y) + cam_right * input.x)
 
+## Effective stamina ceiling — base plus the backpack bonus.
+func _stamina_max() -> float:
+	return STAMINA_MAX + _bonus_stamina_max
+
+## Count down the temporary energy-drink buff and clear it when it lapses.
+func _update_buffs(delta: float) -> void:
+	if _buff_timer <= 0.0:
+		return
+	_buff_timer = max(_buff_timer - delta, 0.0)
+	if _buff_timer <= 0.0:
+		_speed_boost_mult = 1.0
+		_turn_boost_mult = 1.0
+
 func _update_sprint(move_dir: Vector3, delta: float) -> void:
 	var wants_sprint := Input.is_action_pressed("sprint")
 	var is_moving := move_dir.length() > 0.1
@@ -2230,7 +2807,7 @@ func _update_sprint(move_dir: Vector3, delta: float) -> void:
 		_is_sprinting = false
 		_sprint_cooldown = max(_sprint_cooldown - delta, 0.0)
 		if _sprint_cooldown <= 0.0:
-			stamina = min(stamina + STAMINA_RECOVER * delta, STAMINA_MAX)
+			stamina = min(stamina + STAMINA_RECOVER * delta, _stamina_max())
 
 func _apply_movement(dir: Vector3, speed: float, delta: float) -> void:
 	var target_xz := dir * speed
@@ -2269,7 +2846,9 @@ func _rotate_to_face_mouse(delta: float) -> void:
 		target_body_yaw = aim_yaw - signf(aim_offset) * MAX_TORSO_TWIST
 	else:
 		target_body_yaw = desired_body_yaw
-	var turn_speed := ROTATION_SPEED * (AIM_TURN_FACTOR if _is_aiming else 1.0)
+	# Energy drink sharpens the turn rate (_turn_boost_mult) on top of the
+	# aim-mode damping.
+	var turn_speed := ROTATION_SPEED * (AIM_TURN_FACTOR if _is_aiming else 1.0) * _turn_boost_mult
 	rotation.y = lerp_angle(rotation.y, target_body_yaw, turn_speed * delta)
 
 func _update_animation(delta: float) -> void:
@@ -2277,8 +2856,13 @@ func _update_animation(delta: float) -> void:
 	# when sprinting so sprint visibly reads.
 	var horiz_speed := Vector2(velocity.x, velocity.z).length()
 	var speed_ratio := clampf(horiz_speed / SPEED, 0.0, 2.0)
-	# Cycle frequency in radians/sec — ~2 full swings/sec at walking speed.
-	var cycle_rate := 10.0 * speed_ratio
+	# Stride frequency grows SUB-linearly with speed. Stride *length* (the leg
+	# swing amplitude below) also grows with speed, and distance covered per
+	# step = speed / cadence — so letting cadence rise linearly with speed (as it
+	# used to) made a sprint read as frantic little steps. sqrt scaling keeps
+	# walking unchanged (sqrt(1)=1) while pulling the run cadence well down, so
+	# running becomes longer, slower strides that match the movement speed.
+	var cycle_rate := 10.0 * sqrt(speed_ratio)
 	_walk_phase = fposmod(_walk_phase + cycle_rate * delta, TAU)
 
 	var clamped_ratio: float = clampf(speed_ratio, 0.0, 1.5)
@@ -2602,7 +3186,10 @@ func _current_weapon_node() -> Node3D:
 
 func _sync_hud() -> void:
 	if hud:
-		hud.set_stamina(stamina / STAMINA_MAX * 100.0)
+		hud.set_stamina(stamina / _stamina_max() * 100.0)
+		hud.set_armor(armor / ARMOR_MAX * 100.0)
+		if hud.has_method("set_speed_buff"):
+			hud.set_speed_buff(_buff_timer)
 		if _armed:
 			var mag_size: int = _weapon_stats.get("magazine_size", 8)
 			if mag_size < 0:
@@ -2611,12 +3198,20 @@ func _sync_hud() -> void:
 				hud.set_ammo(ammo, mag_size)
 			var display_name := _current_weapon.replace("_", " ").to_upper()
 			hud.set_weapon_name(display_name)
+		elif _held_consumable != "":
+			# Holding a consumable — show its name, no ammo.
+			hud.set_ammo(0, 0)
+			var item_name: String = ItemData.get_item(_held_consumable).get("display_name", _held_consumable)
+			hud.set_weapon_name(item_name.to_upper())
 		else:
 			# Bare hands are a real attack now, so label them as a weapon and
 			# show the melee dash for ammo (same as the bat).
 			hud.set_ammo(-1, -1)
 			hud.set_weapon_name("FISTS")
 		hud.set_reloading(_is_reloading and _armed)
+		# Keep the on-screen quick bar + use-prompt in sync (cheap; the HUD only
+		# updates label text/colours on prebuilt slots).
+		_refresh_quick_bar()
 
 # ------------------------------------------------------------------
 # VFX

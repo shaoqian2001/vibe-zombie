@@ -13,6 +13,7 @@ extends Node3D
 
 const BuildingInterior = preload("res://scripts/building_interior.gd")
 const WeaponPickup = preload("res://scripts/weapon_pickup.gd")
+const ItemPickup = preload("res://scripts/item_pickup.gd")
 const MapView = preload("res://scripts/map_view.gd")
 const FovOverlay = preload("res://scripts/fov_overlay.gd")
 const FovCuller = preload("res://scripts/fov_culler.gd")
@@ -54,6 +55,13 @@ const WEAPON_PICKUP_MIN_DIST := 20.0
 # Same idea for pickups — keeps the static-collision count tractable.
 const MAX_INITIAL_PICKUPS := 80
 
+# Item / equipment pickup spawning. Items spawn MOSTLY inside buildings (loot to
+# find while exploring) with a smaller share dropped out on the streets.
+const ITEMS_PER_BLOCK := 2.0
+const ITEM_MIN_DIST := 6.0
+const ITEM_INDOOR_CHANCE := 0.8  # fraction placed inside building footprints
+const MAX_INITIAL_ITEMS := 90
+
 const PlayerScene = preload("res://scenes/Player.tscn")
 
 @onready var player: CharacterBody3D = $Player
@@ -70,11 +78,32 @@ var _player_nodes: Dictionary = {}
 var _next_enemy_id: int = 0
 # Counter for unique weapon-pickup names.
 var _next_pickup_id: int = 0
+# Counter for unique item-pickup names.
+var _next_item_id: int = 0
 # Host -> client replication cadence (GD-Sync event channel).
-const NET_ENEMY_SYNC_HZ := 20.0
+const NET_ENEMY_SYNC_HZ := 15.0
 const NET_PICKUP_SYNC_HZ := 1.0
+# Interest management: only replicate enemies within this radius of SOME player.
+# Distant zombies are off every client's screen (FOV-culled) and their AI still
+# runs on the host, so skipping them is free bandwidth. Squared for cheap compares.
+const ENEMY_INTEREST_RADIUS := 70.0
+const ENEMY_INTEREST_RADIUS_SQ := ENEMY_INTEREST_RADIUS * ENEMY_INTEREST_RADIUS
+# Hard cap on enemies per state packet so a dense horde can't blow up the packet.
+const ENEMY_SYNC_MAX := 150
 var _net_enemy_timer: float = 0.0
 var _net_pickup_timer: float = 0.0
+# Mission state is host-authoritative; the host pushes objective text + marker
+# positions so clients can show the same HUD objective, map markers and world
+# beacons even though the mission system itself only runs on the host.
+const NET_MISSION_SYNC_HZ := 3.0
+var _net_mission_timer: float = 0.0
+# Client mirror of the host's mission view (empty/ignored on the host).
+var _mp_mission_objective: String = ""
+var _mp_mission_markers: Array = []          # [{position: Vector3, color: Color, label: String}]
+var _mp_mission_beacons: Array = []          # client-side 3D beacon roots
+var _mp_mission_sig: String = ""             # marker-set signature to gate beacon rebuilds
+# Item replication cadence (base branch's world-item system; mirrors pickups).
+var _net_item_timer: float = 0.0
 
 # UI
 var _prompt_label: Label = null
@@ -227,6 +256,7 @@ func _ready() -> void:
 		_setup_mission_system(rng)
 		_spawn_enemies(rng)
 		_spawn_weapon_pickups(rng)
+		_spawn_items(rng)
 
 	_connect_entrance_areas()
 
@@ -303,7 +333,11 @@ func _process(delta: float) -> void:
 			_host_net_sync(delta)
 	if _mission_system:
 		_mission_system.process(delta)
-		_update_objective_label()
+	# Objective text runs on every peer: the host reads its live mission system,
+	# clients read the host-synced mission state. Clients also spin their beacons.
+	_update_objective_label()
+	if _is_mp and not _is_host:
+		_animate_mission_beacons(delta)
 
 # ------------------------------------------------------------------
 # GD-Sync replication (host broadcast + event dispatch)
@@ -316,22 +350,148 @@ func _host_net_sync(delta: float) -> void:
 	_net_enemy_timer -= delta
 	if _net_enemy_timer <= 0.0:
 		_net_enemy_timer = 1.0 / NET_ENEMY_SYNC_HZ
-		NetworkManager.broadcast_event("enemy_state", {"e": _build_enemy_state()})
+		# Unreliable: at 15Hz a dropped packet is covered by client interpolation,
+		# and avoiding GD-Sync's reliable retransmit backlog keeps latency flat.
+		NetworkManager.broadcast_event("enemy_state", {"e": _build_enemy_state()}, false)
 	_net_pickup_timer -= delta
 	if _net_pickup_timer <= 0.0:
 		_net_pickup_timer = 1.0 / NET_PICKUP_SYNC_HZ
 		NetworkManager.broadcast_event("pickup_state", {"p": _build_pickup_state()})
+	# Mission view (objective text + map/world marker positions) so clients can
+	# see and follow the mission even though the mission system is host-only.
+	_net_mission_timer -= delta
+	if _net_mission_timer <= 0.0:
+		_net_mission_timer = 1.0 / NET_MISSION_SYNC_HZ
+		if _mission_system:
+			NetworkManager.broadcast_event("mission_sync", {
+				"obj": _mission_system.get_objective_text(),
+				"m": _serialize_mission_markers(_mission_system.get_map_markers()),
+			}, false)
+	# World items — base branch's item-replication system (mirrors pickups).
+	_net_item_timer -= delta
+	if _net_item_timer <= 0.0:
+		_net_item_timer = 1.0 / NET_PICKUP_SYNC_HZ
+		NetworkManager.broadcast_event("item_state", {"i": _build_item_state()})
+
+func _serialize_mission_markers(markers: Array) -> Array:
+	var out: Array = []
+	for m in markers:
+		var p: Vector3 = m.position
+		var c: Color = m.color
+		out.append([p.x, p.y, p.z, c.r, c.g, c.b, String(m.get("label", ""))])
+	return out
+
+## Map-marker provider used by the MapView. The host returns its live mission
+## markers; a client returns the host-synced ones — so the map indicator shows
+## on every peer through a single code path.
+func get_map_markers() -> Array:
+	if _mission_system and _mission_system.has_method("get_map_markers"):
+		return _mission_system.get_map_markers()
+	return _mp_mission_markers
+
+## Client: rebuild the cached marker list from a synced packet, and refresh the
+## 3D world beacons only when the marker set actually changes.
+func _apply_mission_markers(list: Array) -> void:
+	var markers: Array = []
+	var sig := ""
+	for entry in list:
+		if typeof(entry) != TYPE_ARRAY or (entry as Array).size() < 7:
+			continue
+		var pos := Vector3(float(entry[0]), float(entry[1]), float(entry[2]))
+		var col := Color(float(entry[3]), float(entry[4]), float(entry[5]))
+		var label := String(entry[6])
+		markers.append({"position": pos, "color": col, "label": label})
+		sig += "%d,%d,%s|" % [int(pos.x), int(pos.z), label]
+	_mp_mission_markers = markers
+	if sig != _mp_mission_sig:
+		_mp_mission_sig = sig
+		_rebuild_client_mission_beacons()
+
+func _rebuild_client_mission_beacons() -> void:
+	for b in _mp_mission_beacons:
+		if is_instance_valid(b):
+			b.queue_free()
+	_mp_mission_beacons.clear()
+	for m in _mp_mission_markers:
+		var pos: Vector3 = m.position
+		_mp_mission_beacons.append(_make_mission_beacon(pos + Vector3(0, 3, 0), m.color))
+
+func _animate_mission_beacons(delta: float) -> void:
+	for b in _mp_mission_beacons:
+		if is_instance_valid(b):
+			b.rotation.y += delta * 1.5
+			b.position.y += sin(Time.get_ticks_msec() * 0.003) * delta * 0.3
+
+## A floating beacon (downward prism + light beam) matching the host's mission
+## markers, so clients get the same in-world objective indicator.
+func _make_mission_beacon(pos: Vector3, color: Color) -> Node3D:
+	var root := Node3D.new()
+	root.position = pos
+	add_child(root)
+	root.add_to_group(&"fov_cullable")
+	root.set_meta(&"fov_cull_radius", 1.5)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(color.r, color.g, color.b, 0.9)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var mesh := PrismMesh.new()
+	mesh.size = Vector3(1.8, 2.5, 1.8)
+	mesh.material = mat
+	var prism := MeshInstance3D.new()
+	prism.mesh = mesh
+	prism.rotation_degrees.x = 180
+	root.add_child(prism)
+
+	var beam_mat := StandardMaterial3D.new()
+	beam_mat.albedo_color = Color(color.r, color.g, color.b, 0.3)
+	beam_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	beam_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	beam_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var bh: float = pos.y
+	var beam_mesh := CylinderMesh.new()
+	beam_mesh.top_radius = 0.15
+	beam_mesh.bottom_radius = 0.15
+	beam_mesh.height = bh
+	beam_mesh.material = beam_mat
+	var beam := MeshInstance3D.new()
+	beam.mesh = beam_mesh
+	beam.position.y = -bh * 0.5
+	root.add_child(beam)
+
+	FovCuller.apply_shader_to_subtree(root)
+	return root
 
 func _build_enemy_state() -> Array:
+	# Snapshot player positions once for the interest test (union across all
+	# players — enemy_state is a single broadcast, so it carries everyone's
+	# neighbourhood; each client FOV-culls what it doesn't need locally).
+	var player_positions: Array = []
+	for pid in _player_nodes.keys():
+		var pn = _player_nodes[pid]
+		if is_instance_valid(pn):
+			player_positions.append((pn as Node3D).global_position)
+	var no_players := player_positions.is_empty()
+
 	var out: Array = []
 	for n in get_tree().get_nodes_in_group("enemy"):
 		if not is_instance_valid(n):
 			continue
 		var e := n as Node3D
+		var ep := e.global_position
+		var near := no_players
+		if not near:
+			for pp in player_positions:
+				if (pp as Vector3).distance_squared_to(ep) <= ENEMY_INTEREST_RADIUS_SQ:
+					near = true
+					break
+		if not near:
+			continue
 		out.append([
-			int(e.get("network_id")), e.global_position.x, e.global_position.y,
-			e.global_position.z, e.rotation.y, float(e.get("hp")),
+			int(e.get("network_id")), ep.x, ep.y, ep.z, e.rotation.y, float(e.get("hp")),
 		])
+		if out.size() >= ENEMY_SYNC_MAX:
+			break
 	return out
 
 func _build_pickup_state() -> Array:
@@ -341,6 +501,15 @@ func _build_pickup_state() -> Array:
 			continue
 		var pos: Vector3 = (child as Node3D).global_position
 		out.append([int(child.get("network_id")), String(child.get("weapon_type")), pos.x, pos.y, pos.z])
+	return out
+
+func _build_item_state() -> Array:
+	var out: Array = []
+	for child in get_children():
+		if not (child is Area3D) or not String(child.name).begins_with("ItemPickup_"):
+			continue
+		var pos: Vector3 = (child as Node3D).global_position
+		out.append([int(child.get("network_id")), String(child.get("item_id")), pos.x, pos.y, pos.z])
 	return out
 
 func _on_net_event(event_name: String, payload: Dictionary) -> void:
@@ -374,6 +543,14 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 			var pn := get_node_or_null("WeaponPickup_%d" % pid)
 			if pn:
 				pn.queue_free()
+		"item_state":
+			if not _is_host:
+				_apply_item_state(payload.get("i", []))
+		"item_despawn":
+			var iid := int(payload.get("id", -1))
+			var inode := get_node_or_null("ItemPickup_%d" % iid)
+			if inode:
+				inode.queue_free()
 		"enemy_damage":
 			# Client -> host damage request.
 			if _is_host:
@@ -390,20 +567,7 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 				if who >= 0:
 					NetworkManager.send_event_to(who, "enemy_state", {"e": _build_enemy_state()})
 					NetworkManager.send_event_to(who, "pickup_state", {"p": _build_pickup_state()})
-		"player_sound":
-			# A peer fired a weapon / footstep / etc. Play it positionally on
-			# their remote copy. Skip if it's our own broadcast bouncing back.
-			var spid := int(payload.get("peer_id", -1))
-			if spid == _local_peer_id:
-				pass
-			else:
-				var sn = _player_nodes.get(spid)
-				if sn and sn.has_method("play_remote_sound"):
-					sn.play_remote_sound(
-						String(payload.get("sound", "")),
-						float(payload.get("pitch", 1.0)),
-						float(payload.get("vol_db", 0.0)),
-					)
+					NetworkManager.send_event_to(who, "item_state", {"i": _build_item_state()})
 		"enemy_sound":
 			# Host broadcasts when a zombie lunges/attacks; play on the local
 			# copy of that enemy. The host already played it locally before
@@ -416,6 +580,39 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 						float(payload.get("pitch", 1.0)),
 						float(payload.get("vol_db", 0.0)),
 					)
+		"debug_god_mode":
+			# Global god-mode toggle: every peer applies it to its own local player.
+			var gm := bool(payload.get("enabled", false))
+			if player:
+				player.god_mode = gm
+			if _debug_panel and _debug_panel.has_method("set_god_mode"):
+				_debug_panel.set_god_mode(gm)
+		"debug_density":
+			# Relayed from a client; host owns the mission system / spawns.
+			if _is_host and _mission_system:
+				_mission_system.zombie_density_multiplier = float(payload.get("mult", 1.0))
+		"debug_spawn_horde":
+			if _is_host and _mission_system:
+				_mission_system.spawn_horde_at(
+					Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.0)), float(payload.get("z", 0.0))),
+					int(payload.get("count", 10)))
+		"debug_spawn_weapon":
+			if _is_host:
+				_host_spawn_weapon(
+					String(payload.get("weapon", "pistol")),
+					Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.0)), float(payload.get("z", 0.0))))
+		"mission_sync":
+			# Host-pushed mission view: objective text + marker positions.
+			if not _is_host:
+				_mp_mission_objective = String(payload.get("obj", ""))
+				_apply_mission_markers(payload.get("m", []))
+		"mission_outcome":
+			# Shared win state — a teammate reached the rescue point.
+			if String(payload.get("state", "")) == "won" and _game_state == GameState.PLAYING:
+				_game_state = GameState.WON
+				_show_overlay("RESCUED!", Color(0.1, 0.8, 0.2))
+				if _objective_label:
+					_objective_label.text = "You survived!"
 
 func _apply_player_xform(payload: Dictionary) -> void:
 	var pid := int(payload.get("peer_id", -1))
@@ -434,6 +631,8 @@ func _apply_player_xform(payload: Dictionary) -> void:
 			float(payload.get("yaw", 0.0)),
 			bool(payload.get("sprinting", false)),
 			String(payload.get("weapon", "")),
+			int(payload.get("equip", 0)),
+			String(payload.get("held", "")),
 		)
 
 func _apply_enemy_state(list: Array) -> void:
@@ -471,6 +670,21 @@ func _apply_pickup_state(list: Array) -> void:
 			_create_pickup(id, String(entry[1]), Vector3(float(entry[2]), float(entry[3]), float(entry[4])))
 	for child in get_children():
 		if not (child is Area3D) or not String(child.name).begins_with("WeaponPickup_"):
+			continue
+		if not seen.has(int(child.get("network_id"))):
+			child.queue_free()
+
+func _apply_item_state(list: Array) -> void:
+	var seen: Dictionary = {}
+	for entry in list:
+		if typeof(entry) != TYPE_ARRAY or (entry as Array).size() < 5:
+			continue
+		var id := int(entry[0])
+		seen[id] = true
+		if get_node_or_null("ItemPickup_%d" % id) == null:
+			_create_item_pickup(id, String(entry[1]), Vector3(float(entry[2]), float(entry[3]), float(entry[4])))
+	for child in get_children():
+		if not (child is Area3D) or not String(child.name).begins_with("ItemPickup_"):
 			continue
 		if not seen.has(int(child.get("network_id"))):
 			child.queue_free()
@@ -617,6 +831,8 @@ func _open_inventory() -> void:
 	_inventory = CanvasLayer.new()
 	_inventory.set_script(inv_script)
 	_inventory.name = "Inventory"
+	# Give the screen the local player so it can list the real stored items.
+	_inventory.set("player_ref", player)
 	add_child(_inventory)
 
 func _close_inventory() -> void:
@@ -643,7 +859,10 @@ func _open_map() -> void:
 	_map_view.set_script(MapView)
 	_map_view.name = "MapView"
 	add_child(_map_view)
-	_map_view.configure(world, player, _mission_system)
+	# Pass `self` as the marker provider so the map shows mission markers on every
+	# peer: main.get_map_markers() returns the host's live markers or, on a
+	# client, the host-synced ones.
+	_map_view.configure(world, player, self)
 
 func _close_map() -> void:
 	_map_open = false
@@ -834,6 +1053,80 @@ func _create_pickup(pickup_id: int, weapon_type: String, pos: Vector3) -> void:
 	if pickup_id >= _next_pickup_id:
 		_next_pickup_id = pickup_id + 1
 
+# ------------------------------------------------------------------
+# Item / equipment pickup spawning (host only). Items spawn mostly inside
+# building footprints — loot to discover while exploring rooms — with the
+# remainder scattered on the streets. The weighted item id comes from
+# ItemData.random_id so common consumables outnumber equipment.
+# ------------------------------------------------------------------
+
+func _spawn_items(rng: RandomNumberGenerator) -> void:
+	var nb: int = world.num_blocks
+	var item_count := mini(int(ITEMS_PER_BLOCK * nb * nb), MAX_INITIAL_ITEMS)
+	var placed_positions: Array[Vector3] = []
+	var has_buildings: bool = not world.buildings.is_empty()
+
+	for _i in range(item_count):
+		var pos := Vector3.ZERO
+		var valid := false
+
+		for _attempt in range(20):
+			if has_buildings and rng.randf() < ITEM_INDOOR_CHANCE:
+				# Inside a random building's footprint (pulled in from the walls).
+				var binfo = world.buildings[rng.randi() % world.buildings.size()]
+				var bpos: Vector3 = binfo.node.position
+				var hw: float = binfo.width * 0.5 - 1.5
+				var hd: float = binfo.depth * 0.5 - 1.5
+				if hw < 0.5 or hd < 0.5:
+					continue
+				pos = Vector3(bpos.x + rng.randf_range(-hw, hw), 0.0, bpos.z + rng.randf_range(-hd, hd))
+			else:
+				# Out on the streets — reuse the walkable sampler and skip any
+				# spot that lands inside a building footprint.
+				pos = _random_walkable_pos(rng)
+				pos.y = 0.0
+				if _pos_inside_building(pos):
+					continue
+
+			if pos.distance_to(player.global_position) < 8.0:
+				continue
+
+			var too_close := false
+			for prev in placed_positions:
+				if pos.distance_to(prev) < ITEM_MIN_DIST:
+					too_close = true
+					break
+			if too_close:
+				continue
+
+			valid = true
+			break
+
+		if not valid:
+			continue
+
+		placed_positions.append(pos)
+		var item_id := ItemData.random_id(rng)
+		var item_pickup_id := _next_item_id
+		_next_item_id += 1
+		_create_item_pickup(item_pickup_id, item_id, pos)
+
+## Instantiates an item pickup locally. Host spawns them; clients create their
+## copies from the host's `item_state` broadcast (mirrors _create_pickup).
+func _create_item_pickup(item_pickup_id: int, item_id: String, pos: Vector3) -> void:
+	var node_name := "ItemPickup_%d" % item_pickup_id
+	if has_node(node_name):
+		return
+	var pickup := Area3D.new()
+	pickup.set_script(ItemPickup)
+	pickup.name = node_name
+	pickup.set("network_id", item_pickup_id)
+	pickup.item_id = item_id
+	pickup.global_position = pos
+	add_child(pickup)
+	if item_pickup_id >= _next_item_id:
+		_next_item_id = item_pickup_id + 1
+
 func _pos_inside_building(pos: Vector3) -> bool:
 	for binfo in world.buildings:
 		var bpos: Vector3 = binfo.node.position
@@ -948,6 +1241,10 @@ func _on_player_rescued() -> void:
 	_show_overlay("RESCUED!", Color(0.1, 0.8, 0.2))
 	if _objective_label:
 		_objective_label.text = "You survived!"
+	# Rescue is a shared win — tell every client so they see it too. (The mission
+	# system runs on the host, so only the host fires this signal.)
+	if _is_mp:
+		NetworkManager.broadcast_event("mission_outcome", {"state": "won"})
 
 func _on_player_died() -> void:
 	_game_state = GameState.LOST
@@ -956,14 +1253,14 @@ func _on_player_died() -> void:
 		_objective_label.text = ""
 
 func _update_objective_label() -> void:
-	if _objective_label == null or _mission_system == null:
+	if _objective_label == null:
 		return
-	_objective_label.text = _mission_system.get_objective_text()
-
-	# Check rescue point proximity
-	if _mission_system.is_rescue_active():
-		if _mission_system.check_rescue(player.global_position):
-			pass  # handled by area trigger in mission_system
+	if _mission_system:
+		# Host (or single-player): read the live mission system.
+		_objective_label.text = _mission_system.get_objective_text()
+	elif _is_mp:
+		# Client: the mission system is host-only, so show the synced text.
+		_objective_label.text = _mp_mission_objective
 
 # ------------------------------------------------------------------
 # Debug panel (DEV_MODE only, toggled with F3)
@@ -980,25 +1277,45 @@ func _setup_debug_panel() -> void:
 	_debug_panel.god_mode_changed.connect(_on_debug_god_mode_changed)
 	_debug_panel.spawn_horde_requested.connect(_on_debug_spawn_horde)
 	_debug_panel.spawn_weapon_requested.connect(_on_debug_spawn_weapon)
+	_debug_panel.spawn_item_requested.connect(_on_debug_spawn_item)
 	_debug_panel.dominant_hand_changed.connect(_on_debug_dominant_hand_changed)
 
 func _on_debug_density_changed(multiplier: float) -> void:
-	if _mission_system:
-		_mission_system.zombie_density_multiplier = multiplier
+	# Zombie density only affects host-driven spawns. A client routes the request
+	# to the host; the host applies it directly.
+	if (not _is_mp) or _is_host:
+		if _mission_system:
+			_mission_system.zombie_density_multiplier = multiplier
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_density", {"mult": multiplier})
 
 func _on_debug_god_mode_changed(enabled: bool) -> void:
-	player.god_mode = enabled
+	# God mode is a global debug setting: in MP it applies to every player so the
+	# whole party is invincible together. Broadcast it; the dispatcher applies it
+	# locally on each peer (including this one).
+	if _is_mp:
+		NetworkManager.broadcast_event("debug_god_mode", {"enabled": enabled})
+	else:
+		player.god_mode = enabled
 
 func _on_debug_dominant_hand_changed(is_right: bool) -> void:
+	# Cosmetic, per-player preference — stays local.
 	if player and player.has_method("set_dominant_hand"):
 		player.set_dominant_hand(is_right)
 
 func _on_debug_spawn_horde(count: int) -> void:
-	if _mission_system:
-		_mission_system.spawn_horde_at(player.global_position + Vector3(10, 0, 10), count)
+	var center: Vector3 = player.global_position + Vector3(10, 0, 10)
+	if (not _is_mp) or _is_host:
+		if _mission_system:
+			_mission_system.spawn_horde_at(center, count)
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_spawn_horde",
+			{"count": count, "x": center.x, "y": center.y, "z": center.z})
 
 ## Debug: drop a weapon pickup just in front of the player so it can be grabbed
-## and tested. Reuses the same networked pickup spawn path as world generation.
+## and tested. The host is authoritative over pickups, so a client routes the
+## request to the host; the host instantiates it and the periodic pickup_state
+## broadcast replicates it to everyone (and anyone can then collect it).
 func _on_debug_spawn_weapon(weapon_name: String) -> void:
 	if player == null:
 		return
@@ -1010,13 +1327,35 @@ func _on_debug_spawn_weapon(weapon_name: String) -> void:
 		fwd = Vector3.FORWARD
 	var pos := player.global_position + fwd.normalized() * 2.5
 	pos.y = 0.0
+	if (not _is_mp) or _is_host:
+		_host_spawn_weapon(weapon_name, pos)
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "debug_spawn_weapon",
+			{"weapon": weapon_name, "x": pos.x, "y": pos.y, "z": pos.z})
 
+## Host-side weapon spawn used by both the host's own debug panel and relayed
+## client requests. Allocates an id and instantiates the pickup; pickup_state
+## replication carries it to clients.
+func _host_spawn_weapon(weapon_name: String, pos: Vector3) -> void:
 	var pickup_id := _next_pickup_id
 	_next_pickup_id += 1
-	# Under GD-Sync there's no per-spawn RPC — the host instantiates the
-	# pickup locally and the next periodic pickup_state broadcast covers
-	# joining clients (see _build_pickup_state + _apply_pickup_state).
 	_create_pickup(pickup_id, weapon_name, pos)
+
+## Debug: drop an item / equipment pickup just in front of the player. Mirrors
+## the weapon-drop path (host instantiates locally; item_state covers clients).
+func _on_debug_spawn_item(item_id: String) -> void:
+	if player == null:
+		return
+	var fwd := player.global_transform.basis.z
+	fwd.y = 0.0
+	if fwd.length() < 0.01:
+		fwd = Vector3.FORWARD
+	var pos := player.global_position + fwd.normalized() * 2.5
+	pos.y = 0.0
+
+	var item_pickup_id := _next_item_id
+	_next_item_id += 1
+	_create_item_pickup(item_pickup_id, item_id, pos)
 
 # ------------------------------------------------------------------
 # Game Over / Win overlay
