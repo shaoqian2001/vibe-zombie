@@ -24,6 +24,14 @@ var target: Node3D = null
 var _offset: Vector3
 
 func _ready() -> void:
+	# Push the near plane well out from Godot's 0.05 m default. Depth-buffer
+	# precision is dominated by the near/far ratio, and the tight default
+	# starved the far ground of resolution — the near-coplanar road/paint/
+	# crosswalk quads z-fought and flickered. This camera always sits at
+	# least ZOOM_MIN (8 m) back from the player and never approaches world
+	# geometry, so a 0.5 m near plane clips nothing visible while giving the
+	# ground layers far more depth headroom.
+	near = 0.5
 	_update_offset()
 
 func set_target(node: Node3D) -> void:
