@@ -1516,8 +1516,9 @@ func _close_door() -> void:
 	else:
 		# Player is outside: full cleanup
 		_destroy_interior()
-		var building_node: MeshInstance3D = _active_building.node
-		building_node.visible = true
+		var shell := _active_building.get("container", _active_building.node) as Node3D
+		if shell:
+			shell.visible = true
 		_active_building = {}
 		_showing_interior = false
 
@@ -1598,8 +1599,10 @@ func _full_cleanup() -> void:
 	# Re-enable exterior collision
 	_set_exterior_collision(_active_building.node, true)
 
-	# Restore exterior visibility
-	_active_building.node.visible = true
+	# Restore exterior visibility (whole shell, incl. roof props)
+	var shell := _active_building.get("container", _active_building.node) as Node3D
+	if shell:
+		shell.visible = true
 
 	_destroy_interior()
 	_active_building = {}
@@ -1642,8 +1645,15 @@ func _switch_to_interior_view() -> void:
 	if _showing_interior:
 		return
 	_showing_interior = true
-	var building_node: MeshInstance3D = _active_building.node
-	building_node.visible = false
+	# Hide the WHOLE exterior shell, not just the body box. The rooftop
+	# ledge, wall trim and roof props (chimney, cross, tower…) are separate
+	# meshes parented to the building container; hiding only binfo.node left
+	# that opaque roof cap floating over the room, blocking the top-down
+	# camera's view of the character inside — the walls vanished but the
+	# "ceiling" did not.
+	var shell := _active_building.get("container", _active_building.node) as Node3D
+	if shell:
+		shell.visible = false
 	if _current_interior:
 		_current_interior.visible = true
 
@@ -1651,9 +1661,9 @@ func _switch_to_exterior_view() -> void:
 	if not _showing_interior:
 		return
 	_showing_interior = false
-	var building_node: MeshInstance3D = _active_building.node
-	building_node.visible = true
-	# Keep door mesh hidden (it's part of the pivot, not the exterior)
+	var shell := _active_building.get("container", _active_building.node) as Node3D
+	if shell:
+		shell.visible = true
 	if _current_interior:
 		_current_interior.visible = false
 
@@ -1767,5 +1777,19 @@ func _fade_mesh_tree(node: Node, alpha: float) -> void:
 				else:
 					mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
 					mat.albedo_color.a = 1.0
+		# The vision-shadow overlay (FovCuller) paints every surface outside
+		# the player's view cone black. We only fade a building so the player
+		# can see their character THROUGH it — but that shadow fights the
+		# transparency. It bites hardest on the roof: its whole footprint sits
+		# outside the forward cone, so it stays fully blackened and opaque,
+		# while the camera-facing walls (which straddle the cone edge) get less
+		# shadow and read as see-through. The result is a "transparent walls,
+		# solid roof" building. Strip the overlay while faded so the entire
+		# shell goes uniformly transparent, and restore it once opaque again.
+		if alpha < 1.0:
+			if mi.material_overlay != null:
+				mi.material_overlay = null
+		elif mi.material_overlay == null:
+			mi.material_overlay = FovCuller.get_shadow_material()
 	for child in node.get_children():
 		_fade_mesh_tree(child, alpha)

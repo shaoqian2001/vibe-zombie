@@ -33,6 +33,8 @@ const BOOTH_COLOR    := Color(0.65, 0.18, 0.15)
 const FRIDGE_COLOR   := Color(0.80, 0.82, 0.85)
 const TABLE_COLOR    := Color(0.48, 0.35, 0.22)
 
+const FovCuller = preload("res://scripts/fov_culler.gd")
+
 var building_type: BuildingType
 var interior_width: float
 var interior_depth: float
@@ -427,9 +429,19 @@ func update_wall_visibility(camera_dir_local: Vector3) -> void:
 			if alpha >= 1.0:
 				mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
 				mat.albedo_color.a = 1.0
+				# Opaque again → restore the FOV shadow so the wall darkens
+				# normally when it sits outside the player's vision cone.
+				if mi.material_overlay == null:
+					mi.material_overlay = FovCuller.get_shadow_material()
 			else:
 				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 				mat.albedo_color.a = alpha
+				# See-through walls are almost always behind the player's aim
+				# (i.e. in shadow). The black FOV-shadow overlay fighting the
+				# 0.2 alpha turned them into a murky slab instead of a clean
+				# window onto the room, so drop the overlay while transparent.
+				if mi.material_overlay != null:
+					mi.material_overlay = null
 
 # ------------------------------------------------------------------
 # Helper: add a wall panel (with collision, returns MeshInstance3D)
