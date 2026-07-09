@@ -7,6 +7,19 @@ const ACCELERATION = 18.0
 const GRAVITY = 24.0
 const ROTATION_SPEED = 14.0
 
+# Jump — launches the character straight up. The peak height is
+# JUMP_VELOCITY² / (2·GRAVITY) ≈ 0.56 m, which clears a low obstacle but
+# stays a touch below table height (~0.75 m) as requested. A queued flag is
+# consumed by _apply_gravity so the launch isn't clobbered by the on-floor
+# velocity clamp that runs later in the same physics frame.
+const JUMP_VELOCITY = 5.2
+var _jump_queued: bool = false
+
+# PvP / friendly-fire. Off in the co-op survival campaign (players can't hurt
+# each other); turned on by main.gd for the 1v1 Duel mode so weapon hits land
+# on the opposing player as well as zombies.
+var pvp_enabled: bool = false
+
 # Aim mode (hold the right mouse button while holding a ranged weapon): trades
 # mobility for precision and stopping power. Movement and turn speed drop, the
 # weapon barely sways and rounds scatter far less, and each shot lands for
@@ -1355,6 +1368,12 @@ func _input(event: InputEvent) -> void:
 	# Only the owning peer (or single-player) consumes input.
 	if not _owns_input:
 		return
+	# Jump — only from the ground. Queue it so _apply_gravity applies the launch
+	# on the next physics tick (setting velocity.y here would be overwritten by
+	# the on-floor clamp in _apply_gravity when it runs later this frame).
+	if event.is_action_pressed("jump") and not is_dead and is_on_floor():
+		_jump_queued = true
+		return
 	# Quick-bar selection — number keys 1..7 select (and hold) that slot's item.
 	for i in range(QUICK_SLOTS):
 		if event.is_action_pressed("weapon_%d" % (i + 1)):
@@ -2437,6 +2456,26 @@ func _aim_damage_mult() -> float:
 func _aim_spread_mult() -> float:
 	return AIM_SPREAD_FACTOR if _is_aiming else 1.0
 
+## Whether a body struck by a raycast weapon should take damage. Zombies always
+## do; other players only when PvP is on (1v1 Duel). Never self.
+func _weapon_can_hit(body: Node) -> bool:
+	if body == self:
+		return false
+	if body.is_in_group("enemy"):
+		return true
+	return pvp_enabled and body.is_in_group("player")
+
+## Target list for area / melee weapons: every zombie, plus the opposing
+## player(s) when PvP is on. take_damage(amount, knockback) is valid on both
+## enemies and players, so callers can invoke it uniformly.
+func _get_attack_targets() -> Array:
+	var targets: Array = get_tree().get_nodes_in_group("enemy")
+	if pvp_enabled:
+		for p in get_tree().get_nodes_in_group("player"):
+			if p != self:
+				targets.append(p)
+	return targets
+
 func _fire_single() -> void:
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 40.0)
@@ -2464,10 +2503,10 @@ func _fire_single() -> void:
 	var result := _cast_ray(ray_origin, ray_end)
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-		# Only zombies take weapon damage. Other players are CharacterBody3D too,
-		# but their take_damage(amount) takes a single argument — calling it with
-		# (damage, impulse) crashes — and co-op has no friendly fire anyway.
-		if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
+		# Zombies always take weapon damage; the opposing player does too in the
+		# 1v1 Duel (pvp_enabled). take_damage(amount, knockback) accepts the
+		# impulse on both, so co-op still has no friendly fire.
+		if _weapon_can_hit(hit_body) and hit_body.has_method("take_damage"):
 			hit_body.take_damage(damage, impulse)
 			_spawn_hit_sparks(result.position)
 
@@ -2516,9 +2555,8 @@ func _fire_pellet() -> void:
 
 		if result and result.collider is CharacterBody3D:
 			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-			# Enemies only — see the note in the single-shot path; a pellet that
-			# lands on a teammate must not call their 1-arg take_damage.
-			if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
+			# Zombies, plus the duel opponent when PvP is on (see _fire_single).
+			if _weapon_can_hit(hit_body) and hit_body.has_method("take_damage"):
 				hit_body.take_damage(damage_per_pellet, dir * knockback_per_pellet)
 				spark_points[hit_body] = result.position
 
@@ -2544,7 +2582,8 @@ func _fire_explosive() -> void:
 	_spawn_tracer(ray_origin, impact_pos)
 	_spawn_explosion(impact_pos, radius)
 
-	for node in get_tree().get_nodes_in_group("enemy"):
+	# Splash damages every zombie in radius, and the duel opponent when PvP is on.
+	for node in _get_attack_targets():
 		if not is_instance_valid(node) or not node is CharacterBody3D:
 			continue
 		var enemy_body: CharacterBody3D = node as CharacterBody3D
@@ -2619,7 +2658,8 @@ func _melee_strike(stats: Dictionary, draw_arc: bool) -> void:
 	_emit_player_sound("swing_bat" if draw_arc else "swing_fist", randf_range(0.94, 1.06), -10.0)
 	var hit_played := false
 
-	for node in get_tree().get_nodes_in_group("enemy"):
+	# Zombies in the swing cone, plus the duel opponent when PvP is on.
+	for node in _get_attack_targets():
 		if not is_instance_valid(node) or not node is CharacterBody3D:
 			continue
 		var enemy_body: CharacterBody3D = node as CharacterBody3D
@@ -2745,8 +2785,16 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 
 func _apply_gravity(delta: float) -> void:
 	if is_on_floor():
-		velocity.y = -0.5
+		if _jump_queued:
+			# Launch off the floor. Cleared here (not in _input) so the jump is
+			# only spent once we've actually applied the upward velocity.
+			velocity.y = JUMP_VELOCITY
+			_jump_queued = false
+		else:
+			velocity.y = -0.5
 	else:
+		# Can't jump mid-air — drop any stale request so it doesn't fire on landing.
+		_jump_queued = false
 		velocity.y -= GRAVITY * delta
 
 func _get_input_vector() -> Vector2:

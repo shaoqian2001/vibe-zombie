@@ -9,8 +9,10 @@ Explore a procedurally generated small town, enter buildings, and survive among 
 - **Explore** a procedurally generated 5×5 city grid with roads, sidewalks, and buildings
 - **Enter buildings** — press **F** to open/close doors and explore procedural interiors (convenience stores, apartments, offices, warehouses, diners)
 - **Sprint** with **Shift** (drains stamina; recovers after a cooldown)
+- **Jump** with **Space** to hop over low obstacles
 - **Survive** among 25 wandering zombies with visible HP bars
 - **Loot** weapons, consumables, and equipment that spawn around the map (mostly inside buildings)
+- **1v1 Duel** (multiplayer): two players fight on a compact 20×20 m barricaded arena — grab a weapon and eliminate your opponent; the first to fall loses
 
 ### Items & Equipment
 
@@ -32,6 +34,7 @@ Pickups glow and float on the ground; walk over one to collect it.
 | Move | W / A / S / D (or arrow keys) |
 | Rotate camera | Q / E |
 | Sprint | Shift |
+| Jump | Space |
 | Interact (doors) | F |
 | Select quick-bar slot | 1 – 7 |
 | Use held item | E |

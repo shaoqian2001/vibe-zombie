@@ -214,6 +214,23 @@ func _build_ui() -> void:
 		actions.add_child(_start_btn)
 
 func _build_host_config_controls(parent: VBoxContainer, s: float) -> void:
+	# 1v1 Duel is a fixed arena with a hard 2-player cap and no difficulty /
+	# style knobs — show its rules instead of the survival config controls.
+	if NetworkManager.game_mode == NetworkManager.GameMode.DUEL:
+		var mode_lbl := Label.new()
+		mode_lbl.text = "Mode: 1v1 Duel"
+		mode_lbl.add_theme_font_size_override("font_size", int(15 * s))
+		mode_lbl.add_theme_color_override("font_color", Color(0.95, 0.85, 0.55))
+		parent.add_child(mode_lbl)
+
+		var info := Label.new()
+		info.text = "Two players, one 20×20 m arena. Drop weapons from the debug panel (F3) and fight — first to die loses."
+		info.add_theme_font_size_override("font_size", int(13 * s))
+		info.add_theme_color_override("font_color", Color(0.75, 0.72, 0.62))
+		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		parent.add_child(info)
+		return
+
 	# Map size is determined by the chosen map style — display only,
 	# host can't tune it independently anymore.
 	var ms_row := HBoxContainer.new()
@@ -388,13 +405,16 @@ func _refresh_config() -> void:
 
 	# Client-side summary
 	if _config_summary:
-		var ns: int = NetworkManager.map_size
-		_config_summary.text = "Style: %s\nMap: %dx%d (%d blocks)\nPlayers: up to %d\nDifficulty: %s" % [
-			BuildingCatalog.style_name(NetworkManager.map_style),
-			ns, ns, ns * ns,
-			NetworkManager.max_players,
-			NetworkManager.difficulty_name(NetworkManager.difficulty),
-		]
+		if NetworkManager.game_mode == NetworkManager.GameMode.DUEL:
+			_config_summary.text = "Mode: 1v1 Duel\nA 20x20 m barricaded arena.\nTwo players — first to die loses."
+		else:
+			var ns: int = NetworkManager.map_size
+			_config_summary.text = "Mode: Survival\nStyle: %s\nMap: %dx%d (%d blocks)\nPlayers: up to %d\nDifficulty: %s" % [
+				BuildingCatalog.style_name(NetworkManager.map_style),
+				ns, ns, ns * ns,
+				NetworkManager.max_players,
+				NetworkManager.difficulty_name(NetworkManager.difficulty),
+			]
 
 func _difficulty_color(d: int) -> Color:
 	match d:
