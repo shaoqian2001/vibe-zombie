@@ -7,13 +7,18 @@ const ACCELERATION = 18.0
 const GRAVITY = 24.0
 const ROTATION_SPEED = 14.0
 
-# Jump — launches the character straight up. The peak height is
-# JUMP_VELOCITY² / (2·GRAVITY) ≈ 0.56 m, which clears a low obstacle but
-# stays a touch below table height (~0.75 m) as requested. A queued flag is
-# consumed by _apply_gravity so the launch isn't clobbered by the on-floor
-# velocity clamp that runs later in the same physics frame.
-const JUMP_VELOCITY = 5.2
+# Jump — launches the character straight up. While in a jump arc the body
+# falls under the slightly gentler JUMP_GRAVITY (rather than the normal
+# GRAVITY), which lifts the peak to JUMP_VELOCITY² / (2·JUMP_GRAVITY) ≈ 0.65 m
+# and stretches the hang time a little; ledge drops still use full GRAVITY so
+# ordinary falls stay snappy. A queued flag is consumed by _apply_gravity so
+# the launch isn't clobbered by the on-floor velocity clamp that runs later in
+# the same physics frame; `_jumping` tracks the arc so only jumps get the
+# lighter gravity.
+const JUMP_VELOCITY = 5.35
+const JUMP_GRAVITY = 22.0
 var _jump_queued: bool = false
+var _jumping: bool = false
 
 # PvP / friendly-fire. Off in the co-op survival campaign (players can't hurt
 # each other); turned on by main.gd for the 1v1 Duel mode so weapon hits land
@@ -272,12 +277,15 @@ const FOOT_HEIGHT := 0.08
 #   • Chest — rigid box that sits above the waist, hanging off _torso_top
 #     so it rotates as one rigid block with the shoulders/neck/head.
 const WAIST_BOTTOM_Y := 0.02   # = top of the pelvis box, in spine-local
-const WAIST_TOP_Y := 0.285     # = bottom of the chest box, in spine-local
+# Upper body (waist + chest) shortened ~20% for better proportions — the
+# pelvis/legs below and the head above keep their original size. Waist span
+# is WAIST_BOTTOM_Y..WAIST_TOP_Y = 0.212 (was 0.265); chest matches it.
+const WAIST_TOP_Y := 0.232     # = bottom of the chest box, in spine-local
 const WAIST_BOTTOM_W := 0.34   # pelvis width (waist itself is rectangular)
 const WAIST_TOP_W := 0.48      # waist + chest width (rectangular waist)
 const WAIST_DEPTH := 0.28
-const CHEST_HEIGHT := 0.265    # rigid chest. Sized so waist:chest ≈ 50/50
-                               # of the upper-body height (0.265:0.265).
+const CHEST_HEIGHT := 0.212    # rigid chest. Sized so waist:chest ≈ 50/50
+                               # of the upper-body height (0.212:0.212).
 # Shoulders sit just outside the torso so the hanging upper arm clears the
 # chest box (half-width WAIST_TOP_W/2 = 0.24) instead of overlapping it.
 # 0.24 (body edge) + the upper-arm radius (~0.055) keeps the arm flush
@@ -285,9 +293,9 @@ const CHEST_HEIGHT := 0.265    # rigid chest. Sized so waist:chest ≈ 50/50
 const SHOULDER_X := 0.30
 # Shoulder/neck Y in _torso_top-local — _torso_top sits at WAIST_TOP_Y in
 # spine-local, so subtract that to convert old spine-local heights.
-const SHOULDER_Y := 0.215
+const SHOULDER_Y := 0.172       # dropped with the shortened chest (was 0.215)
 const SHOULDER_Z := 0.02
-const NECK_Y := 0.265
+const NECK_Y := 0.212           # sits on top of the shortened chest (was 0.265)
 # Maximum twist the upper body (chest + waist) can absorb relative to the
 # legs before the whole body has to rotate to follow the aim. Lower values
 # = the body chases the cursor sooner.
@@ -2790,12 +2798,16 @@ func _apply_gravity(delta: float) -> void:
 			# only spent once we've actually applied the upward velocity.
 			velocity.y = JUMP_VELOCITY
 			_jump_queued = false
+			_jumping = true
 		else:
 			velocity.y = -0.5
+			_jumping = false
 	else:
 		# Can't jump mid-air — drop any stale request so it doesn't fire on landing.
 		_jump_queued = false
-		velocity.y -= GRAVITY * delta
+		# A jump arc floats under the lighter JUMP_GRAVITY for a bit more height
+		# and hang time; a plain fall off a ledge keeps the normal GRAVITY.
+		velocity.y -= (JUMP_GRAVITY if _jumping else GRAVITY) * delta
 
 func _get_input_vector() -> Vector2:
 	var x := 0.0
