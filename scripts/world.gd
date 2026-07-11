@@ -46,6 +46,14 @@ const Y_ROAD_MARK    := 0.09    # dashed centre lane paint (over the road)
 const Y_CROSSWALK    := 0.11    # crosswalk stripes (over the road)
 const Y_PATH         := 0.12    # park cross-paths (over the park floor)
 
+# 1v1 Duel arena geometry. The playable floor is a 20 m × 20 m square
+# (ARENA_HALF on each side of the origin) ringed by solid walls, with a set of
+# barricades scattered inside for cover.
+const ARENA_HALF       := 10.0   # half-extent of the 20×20 m play area
+const ARENA_WALL_H     := 4.0
+const DUEL_BARRICADES   := 11    # cover pieces scattered around the arena
+const ARENA_FLOOR_COLOR := Color(0.30, 0.29, 0.26)
+
 ## Number of blocks per axis (NxN grid). Each block is rectangular, so the
 ## world is num_blocks * CELL_WIDTH wide × num_blocks * CELL_DEPTH deep.
 @export var num_blocks: int = 3
@@ -139,6 +147,15 @@ func _ready() -> void:
 	else:
 		_rng.seed = 98765
 	map_style = NetworkManager.map_style
+
+	# 1v1 Duel uses a hand-built arena instead of the procedural city — a
+	# single small barricaded block where two players fight. Bail out here so
+	# none of the city-grid generation runs.
+	if NetworkManager.game_mode == NetworkManager.GameMode.DUEL:
+		_generate_duel_arena()
+		FovCuller.apply_shader_to_subtree(self)
+		return
+
 	# Map size is a preset per style so the layout always has the right
 	# footprint for its content (e.g. OPEN_WORLD needs space for a clean
 	# rural→urban gradient). NetworkManager.map_size mirrors this so the
@@ -216,6 +233,152 @@ func _generate_boundary_walls() -> void:
 		sb.position = walls[i]
 		sb.add_child(cs)
 		add_child(sb)
+
+# ------------------------------------------------------------------
+# 1v1 Duel arena — a single 20×20 m floor ringed by walls, with cover
+# barricades scattered around. Built entirely here instead of the city grid
+# so the mode has a small, symmetric map with no buildings / missions.
+# ------------------------------------------------------------------
+
+func _generate_duel_arena() -> void:
+	# One nominal block so incidental num_blocks reads stay sane; gameplay
+	# code uses the ARENA_* extents directly, not the block grid.
+	num_blocks = 1
+	NetworkManager.map_size = 1
+
+	_generate_arena_floor()
+	_generate_arena_walls()
+	_scatter_barricades()
+	_add_sun_and_sky()
+
+func _generate_arena_floor() -> void:
+	# Paved floor slab a little larger than the play area, over an infinite
+	# ground plane collider (matches the city's ground so falls can't clip out).
+	var mi := MeshInstance3D.new()
+	var mesh := PlaneMesh.new()
+	mesh.size = Vector2(ARENA_HALF * 2.0 + 2.0, ARENA_HALF * 2.0 + 2.0)
+	mesh.material = _mat(ARENA_FLOOR_COLOR, 0.95, 0.0)
+	mi.mesh = mesh
+	mi.name = "ArenaFloor"
+	add_child(mi)
+
+	var sb := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	cs.shape = WorldBoundaryShape3D.new()
+	sb.add_child(cs)
+	add_child(sb)
+
+func _generate_arena_walls() -> void:
+	var t := 0.6                      # wall thickness
+	var e := ARENA_HALF               # inner face sits at the play-area edge
+	var span := e * 2.0 + t * 2.0
+	var wall_mat := _mat(Color(0.40, 0.38, 0.34), 0.9, 0.0)
+	# Centre, size for each of the four walls (+X, -X, +Z, -Z).
+	var walls := [
+		[Vector3(e + t * 0.5, ARENA_WALL_H * 0.5, 0.0), Vector3(t, ARENA_WALL_H, span)],
+		[Vector3(-e - t * 0.5, ARENA_WALL_H * 0.5, 0.0), Vector3(t, ARENA_WALL_H, span)],
+		[Vector3(0.0, ARENA_WALL_H * 0.5, e + t * 0.5), Vector3(span, ARENA_WALL_H, t)],
+		[Vector3(0.0, ARENA_WALL_H * 0.5, -e - t * 0.5), Vector3(span, ARENA_WALL_H, t)],
+	]
+	for w in walls:
+		var pos: Vector3 = w[0]
+		var size: Vector3 = w[1]
+		var mesh := BoxMesh.new()
+		mesh.size = size
+		mesh.material = wall_mat
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.position = pos
+		add_child(mi)
+
+		var sb := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var shp := BoxShape3D.new()
+		shp.size = size
+		cs.shape = shp
+		sb.position = pos
+		sb.add_child(cs)
+		add_child(sb)
+
+## Scatter cover barricades across the arena. Positions come from the shared
+## seeded RNG so every peer builds the identical layout. The two spawn corners
+## (±(ARENA_HALF-3) on X) and the very centre are kept clear so nobody spawns
+## inside cover and neither side gets a free wall.
+func _scatter_barricades() -> void:
+	var placed: Array[Vector3] = []
+	var reserved := [
+		Vector3(-(ARENA_HALF - 3.0), 0.0, 0.0),   # player A spawn
+		Vector3(ARENA_HALF - 3.0, 0.0, 0.0),      # player B spawn
+	]
+	var margin := ARENA_HALF - 1.5
+	var attempts := 0
+	while placed.size() < DUEL_BARRICADES and attempts < DUEL_BARRICADES * 20:
+		attempts += 1
+		var pos := Vector3(_rng.randf_range(-margin, margin), 0.0, _rng.randf_range(-margin, margin))
+		var ok := true
+		for r in reserved:
+			if pos.distance_to(r) < 3.0:
+				ok = false
+				break
+		if ok:
+			for p in placed:
+				if pos.distance_to(p) < 3.2:
+					ok = false
+					break
+		if not ok:
+			continue
+		placed.append(pos)
+		_create_barricade(pos)
+
+## One barricade: a low stack of crates (wood) or a sandbag mound. Both are
+## solid boxes that block movement and gunfire; heights vary so some give full
+## cover and some can be shot over.
+func _create_barricade(pos: Vector3) -> void:
+	var is_wood := _rng.randf() < 0.55
+	var w := _rng.randf_range(1.4, 2.4)
+	var d := _rng.randf_range(0.7, 1.1)
+	var h := _rng.randf_range(0.9, 1.6)
+	var yaw := _rng.randf_range(0.0, TAU)
+
+	var base_color: Color
+	if is_wood:
+		base_color = Color(0.52, 0.36, 0.20).lerp(Color(0.42, 0.28, 0.15), _rng.randf())
+	else:
+		base_color = Color(0.62, 0.58, 0.42).lerp(Color(0.52, 0.48, 0.34), _rng.randf())
+
+	var root := Node3D.new()
+	root.position = Vector3(pos.x, 0.0, pos.z)
+	root.rotation.y = yaw
+	add_child(root)
+	root.add_to_group(&"fov_cullable")
+	root.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5 + 1.0)
+	root.set_meta(&"fov_cull_center", Vector2(pos.x, pos.z))
+
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(w, h, d)
+	mesh.material = _mat(base_color, 0.9, 0.0)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.position = Vector3(0.0, h * 0.5, 0.0)
+	root.add_child(mi)
+
+	# A thinner cap in a slightly different shade for a bit of readable detail.
+	var cap_mesh := BoxMesh.new()
+	cap_mesh.size = Vector3(w * 0.96, h * 0.18, d * 0.96)
+	cap_mesh.material = _mat(base_color.darkened(0.18), 0.9, 0.0)
+	var cap := MeshInstance3D.new()
+	cap.mesh = cap_mesh
+	cap.position = Vector3(0.0, h - h * 0.09, 0.0)
+	root.add_child(cap)
+
+	var sb := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shp := BoxShape3D.new()
+	shp.size = Vector3(w, h, d)
+	cs.shape = shp
+	cs.position = Vector3(0.0, h * 0.5, 0.0)
+	sb.add_child(cs)
+	root.add_child(sb)
 
 # ------------------------------------------------------------------
 # City grid

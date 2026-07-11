@@ -7,6 +7,24 @@ const ACCELERATION = 18.0
 const GRAVITY = 24.0
 const ROTATION_SPEED = 14.0
 
+# Jump — launches the character straight up. While in a jump arc the body
+# falls under the slightly gentler JUMP_GRAVITY (rather than the normal
+# GRAVITY), which lifts the peak to JUMP_VELOCITY² / (2·JUMP_GRAVITY) ≈ 0.65 m
+# and stretches the hang time a little; ledge drops still use full GRAVITY so
+# ordinary falls stay snappy. A queued flag is consumed by _apply_gravity so
+# the launch isn't clobbered by the on-floor velocity clamp that runs later in
+# the same physics frame; `_jumping` tracks the arc so only jumps get the
+# lighter gravity.
+const JUMP_VELOCITY = 5.35
+const JUMP_GRAVITY = 22.0
+var _jump_queued: bool = false
+var _jumping: bool = false
+
+# PvP / friendly-fire. Off in the co-op survival campaign (players can't hurt
+# each other); turned on by main.gd for the 1v1 Duel mode so weapon hits land
+# on the opposing player as well as zombies.
+var pvp_enabled: bool = false
+
 # Aim mode (hold the right mouse button while holding a ranged weapon): trades
 # mobility for precision and stopping power. Movement and turn speed drop, the
 # weapon barely sways and rounds scatter far less, and each shot lands for
@@ -259,12 +277,15 @@ const FOOT_HEIGHT := 0.08
 #   • Chest — rigid box that sits above the waist, hanging off _torso_top
 #     so it rotates as one rigid block with the shoulders/neck/head.
 const WAIST_BOTTOM_Y := 0.02   # = top of the pelvis box, in spine-local
-const WAIST_TOP_Y := 0.285     # = bottom of the chest box, in spine-local
+# Upper body (waist + chest) shortened ~20% for better proportions — the
+# pelvis/legs below and the head above keep their original size. Waist span
+# is WAIST_BOTTOM_Y..WAIST_TOP_Y = 0.212 (was 0.265); chest matches it.
+const WAIST_TOP_Y := 0.232     # = bottom of the chest box, in spine-local
 const WAIST_BOTTOM_W := 0.34   # pelvis width (waist itself is rectangular)
 const WAIST_TOP_W := 0.48      # waist + chest width (rectangular waist)
 const WAIST_DEPTH := 0.28
-const CHEST_HEIGHT := 0.265    # rigid chest. Sized so waist:chest ≈ 50/50
-                               # of the upper-body height (0.265:0.265).
+const CHEST_HEIGHT := 0.212    # rigid chest. Sized so waist:chest ≈ 50/50
+                               # of the upper-body height (0.212:0.212).
 # Shoulders sit just outside the torso so the hanging upper arm clears the
 # chest box (half-width WAIST_TOP_W/2 = 0.24) instead of overlapping it.
 # 0.24 (body edge) + the upper-arm radius (~0.055) keeps the arm flush
@@ -272,9 +293,9 @@ const CHEST_HEIGHT := 0.265    # rigid chest. Sized so waist:chest ≈ 50/50
 const SHOULDER_X := 0.30
 # Shoulder/neck Y in _torso_top-local — _torso_top sits at WAIST_TOP_Y in
 # spine-local, so subtract that to convert old spine-local heights.
-const SHOULDER_Y := 0.215
+const SHOULDER_Y := 0.172       # dropped with the shortened chest (was 0.215)
 const SHOULDER_Z := 0.02
-const NECK_Y := 0.265
+const NECK_Y := 0.212           # sits on top of the shortened chest (was 0.265)
 # Maximum twist the upper body (chest + waist) can absorb relative to the
 # legs before the whole body has to rotate to follow the aim. Lower values
 # = the body chases the cursor sooner.
@@ -1354,6 +1375,12 @@ func _apply_damage(amount: float) -> void:
 func _input(event: InputEvent) -> void:
 	# Only the owning peer (or single-player) consumes input.
 	if not _owns_input:
+		return
+	# Jump — only from the ground. Queue it so _apply_gravity applies the launch
+	# on the next physics tick (setting velocity.y here would be overwritten by
+	# the on-floor clamp in _apply_gravity when it runs later this frame).
+	if event.is_action_pressed("jump") and not is_dead and is_on_floor():
+		_jump_queued = true
 		return
 	# Quick-bar selection — number keys 1..7 select (and hold) that slot's item.
 	for i in range(QUICK_SLOTS):
@@ -2437,6 +2464,26 @@ func _aim_damage_mult() -> float:
 func _aim_spread_mult() -> float:
 	return AIM_SPREAD_FACTOR if _is_aiming else 1.0
 
+## Whether a body struck by a raycast weapon should take damage. Zombies always
+## do; other players only when PvP is on (1v1 Duel). Never self.
+func _weapon_can_hit(body: Node) -> bool:
+	if body == self:
+		return false
+	if body.is_in_group("enemy"):
+		return true
+	return pvp_enabled and body.is_in_group("player")
+
+## Target list for area / melee weapons: every zombie, plus the opposing
+## player(s) when PvP is on. take_damage(amount, knockback) is valid on both
+## enemies and players, so callers can invoke it uniformly.
+func _get_attack_targets() -> Array:
+	var targets: Array = get_tree().get_nodes_in_group("enemy")
+	if pvp_enabled:
+		for p in get_tree().get_nodes_in_group("player"):
+			if p != self:
+				targets.append(p)
+	return targets
+
 func _fire_single() -> void:
 	var forward := _get_aim_direction()
 	var weapon_range: float = _weapon_stats.get("range", 40.0)
@@ -2464,10 +2511,10 @@ func _fire_single() -> void:
 	var result := _cast_ray(ray_origin, ray_end)
 	if result and result.collider is CharacterBody3D:
 		var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-		# Only zombies take weapon damage. Other players are CharacterBody3D too,
-		# but their take_damage(amount) takes a single argument — calling it with
-		# (damage, impulse) crashes — and co-op has no friendly fire anyway.
-		if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
+		# Zombies always take weapon damage; the opposing player does too in the
+		# 1v1 Duel (pvp_enabled). take_damage(amount, knockback) accepts the
+		# impulse on both, so co-op still has no friendly fire.
+		if _weapon_can_hit(hit_body) and hit_body.has_method("take_damage"):
 			hit_body.take_damage(damage, impulse)
 			_spawn_hit_sparks(result.position)
 
@@ -2516,9 +2563,8 @@ func _fire_pellet() -> void:
 
 		if result and result.collider is CharacterBody3D:
 			var hit_body: CharacterBody3D = result.collider as CharacterBody3D
-			# Enemies only — see the note in the single-shot path; a pellet that
-			# lands on a teammate must not call their 1-arg take_damage.
-			if hit_body.is_in_group("enemy") and hit_body.has_method("take_damage"):
+			# Zombies, plus the duel opponent when PvP is on (see _fire_single).
+			if _weapon_can_hit(hit_body) and hit_body.has_method("take_damage"):
 				hit_body.take_damage(damage_per_pellet, dir * knockback_per_pellet)
 				spark_points[hit_body] = result.position
 
@@ -2544,7 +2590,8 @@ func _fire_explosive() -> void:
 	_spawn_tracer(ray_origin, impact_pos)
 	_spawn_explosion(impact_pos, radius)
 
-	for node in get_tree().get_nodes_in_group("enemy"):
+	# Splash damages every zombie in radius, and the duel opponent when PvP is on.
+	for node in _get_attack_targets():
 		if not is_instance_valid(node) or not node is CharacterBody3D:
 			continue
 		var enemy_body: CharacterBody3D = node as CharacterBody3D
@@ -2619,7 +2666,8 @@ func _melee_strike(stats: Dictionary, draw_arc: bool) -> void:
 	_emit_player_sound("swing_bat" if draw_arc else "swing_fist", randf_range(0.94, 1.06), -10.0)
 	var hit_played := false
 
-	for node in get_tree().get_nodes_in_group("enemy"):
+	# Zombies in the swing cone, plus the duel opponent when PvP is on.
+	for node in _get_attack_targets():
 		if not is_instance_valid(node) or not node is CharacterBody3D:
 			continue
 		var enemy_body: CharacterBody3D = node as CharacterBody3D
@@ -2745,9 +2793,21 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 
 func _apply_gravity(delta: float) -> void:
 	if is_on_floor():
-		velocity.y = -0.5
+		if _jump_queued:
+			# Launch off the floor. Cleared here (not in _input) so the jump is
+			# only spent once we've actually applied the upward velocity.
+			velocity.y = JUMP_VELOCITY
+			_jump_queued = false
+			_jumping = true
+		else:
+			velocity.y = -0.5
+			_jumping = false
 	else:
-		velocity.y -= GRAVITY * delta
+		# Can't jump mid-air — drop any stale request so it doesn't fire on landing.
+		_jump_queued = false
+		# A jump arc floats under the lighter JUMP_GRAVITY for a bit more height
+		# and hang time; a plain fall off a ledge keeps the normal GRAVITY.
+		velocity.y -= (JUMP_GRAVITY if _jumping else GRAVITY) * delta
 
 func _get_input_vector() -> Vector2:
 	var x := 0.0
