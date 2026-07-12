@@ -54,6 +54,9 @@ const MIN_PLAYERS := 2
 const MAX_PLAYERS_HARD_CAP := 8
 const CONNECT_TIMEOUT_SEC := 10.0
 const ROSTER_POLL_INTERVAL_SEC := 1.5
+# How often we re-measure round-trip latency to the other player(s). GD-Sync's
+# get_client_ping is a real ~0.1-0.6s ping exchange, so we don't run it faster.
+const PING_POLL_INTERVAL_SEC := 2.0
 
 # GD-Sync lobby-data keys. Peer roster entries are "zpeer_<id>" = "<name>|<host>".
 # Lobby config travels in dedicated keys so late joiners pick it up immediately.
@@ -97,6 +100,12 @@ var local_peer_id: int = -1
 # peer_id (int) -> { "id": int, "name": String, "is_host": bool }
 var peers: Dictionary = {}
 
+# Latest measured round-trip latency in milliseconds to the other player(s):
+# a client measures to the host, the host averages over its clients. -1 means
+# "not measured yet / unavailable". Read by the HUD for the on-screen readout.
+var ping_ms: float = -1.0
+var _ping_in_flight: bool = false
+
 # ------------------------------------------------------------------
 # Internal GD-Sync plumbing
 # ------------------------------------------------------------------
@@ -137,6 +146,15 @@ func _init_gdsync() -> void:
 	poll.one_shot = false
 	poll.timeout.connect(_on_roster_poll_tick)
 	add_child(poll)
+	# Separate, slower timer for latency measurement (get_client_ping is async
+	# and comparatively expensive, so it gets its own cadence + in-flight guard).
+	var ping_poll := Timer.new()
+	ping_poll.name = "PingPoll"
+	ping_poll.wait_time = PING_POLL_INTERVAL_SEC
+	ping_poll.autostart = true
+	ping_poll.one_shot = false
+	ping_poll.timeout.connect(_on_ping_poll_tick)
+	add_child(ping_poll)
 
 # ------------------------------------------------------------------
 # Difficulty presets — drives enemy spawn density and horde frequency
@@ -657,6 +675,46 @@ func _on_roster_poll_tick() -> void:
 		_refresh_roster_from_lobby()
 		if is_host:
 			broadcast_event("roster_sync", {"host_id": host_peer_id(), "peers": sorted_peers()})
+
+## Measure round-trip latency to the other player(s) and cache it in `ping_ms`.
+## Async — GD-Sync's get_client_ping runs a short ping exchange and awaits the
+## replies — so a re-entry guard stops overlapping measurements from stacking.
+func _on_ping_poll_tick() -> void:
+	if _ping_in_flight:
+		return
+	if not is_networked or _gdsync == null or not _gdsync.has_method("get_client_ping"):
+		_set_ping(-1.0)
+		return
+	# Client → host; host → average over its clients. This gives every peer a
+	# single "my latency" number without needing to know the topology.
+	var targets: Array = []
+	if is_host:
+		for pid in peers.keys():
+			if pid != local_peer_id:
+				targets.append(pid)
+	else:
+		var h := host_peer_id()
+		if h >= 0:
+			targets.append(h)
+	if targets.is_empty():
+		_set_ping(-1.0)
+		return
+
+	_ping_in_flight = true
+	var total := 0.0
+	var count := 0
+	for t in targets:
+		# get_client_ping returns the RTT in seconds (or -1 on failure).
+		var rtt: Variant = await _gdsync.get_client_ping(int(t))
+		var secs := float(rtt) if (rtt is float or rtt is int) else -1.0
+		if secs >= 0.0:
+			total += secs
+			count += 1
+	_ping_in_flight = false
+	_set_ping(total / float(count) * 1000.0 if count > 0 else -1.0)
+
+func _set_ping(ms: float) -> void:
+	ping_ms = ms
 
 func _publish_self_to_lobby_data() -> void:
 	if _gdsync == null or not _gdsync.has_method("lobby_set_data") or local_peer_id < 0:

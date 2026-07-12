@@ -15,6 +15,7 @@ var _peer_count_label: Label = null
 var _toast_label: Label = null
 var _toast_timer: float = 0.0
 var _buff_label: Label = null
+var _ping_label: Label = null   # top-left latency readout (multiplayer only)
 
 # Quick-item bar (mid-bottom). Built once; set_quick_bar() just updates contents.
 var _qb_slots: Array = []          # per-slot dict: {panel_style, name, count}
@@ -54,6 +55,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	_update_bars()
 	_update_toast(delta)
+	_update_ping()
 
 func set_stamina(value: float) -> void:
 	stamina = clamp(value, 0.0, max_stamina)
@@ -253,7 +255,59 @@ func _build_hud() -> void:
 	_health_fill = fills[1]
 	_stamina_fill = fills[2]
 
+	_build_ping_label()
 	_build_quick_bar()
+
+# ------------------------------------------------------------------
+# Latency readout — pinned top-left, shown only in multiplayer. Every peer's
+# HUD reads its own NetworkManager.ping_ms, so each player sees their own RTT.
+# ------------------------------------------------------------------
+
+func _build_ping_label() -> void:
+	_ping_label = Label.new()
+	_ping_label.name = "PingLabel"
+	_ping_label.add_theme_font_size_override("font_size", 14)
+	_ping_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	_ping_label.add_theme_constant_override("shadow_offset_x", 1)
+	_ping_label.add_theme_constant_override("shadow_offset_y", 1)
+	# Top-left corner (game code / dev label live top-right, so no overlap).
+	_ping_label.anchor_left = 0.0
+	_ping_label.anchor_top = 0.0
+	_ping_label.anchor_right = 0.0
+	_ping_label.anchor_bottom = 0.0
+	_ping_label.offset_left = MARGIN
+	_ping_label.offset_top = 12.0
+	_ping_label.offset_right = MARGIN + 180.0
+	_ping_label.offset_bottom = 34.0
+	_ping_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ping_label.visible = false
+	_container.add_child(_ping_label)
+
+func _update_ping() -> void:
+	if _ping_label == null:
+		return
+	if not NetworkManager.is_networked:
+		if _ping_label.visible:
+			_ping_label.visible = false
+		return
+	_ping_label.visible = true
+	var ms: float = NetworkManager.ping_ms
+	if ms < 0.0:
+		_ping_label.text = "PING  – ms"
+		_ping_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7, 0.9))
+	else:
+		_ping_label.text = "PING  %d ms" % int(round(ms))
+		_ping_label.add_theme_color_override("font_color", _ping_color(ms))
+
+## Green (good) → yellow → orange → red (bad) by round-trip milliseconds.
+func _ping_color(ms: float) -> Color:
+	if ms < 80.0:
+		return Color(0.40, 0.85, 0.40, 0.95)
+	elif ms < 150.0:
+		return Color(0.85, 0.85, 0.35, 0.95)
+	elif ms < 250.0:
+		return Color(0.90, 0.60, 0.25, 0.95)
+	return Color(0.90, 0.30, 0.25, 0.95)
 
 # ------------------------------------------------------------------
 # Quick-item bar (mid-bottom). Seven slots mapped to number keys 1..7, with a

@@ -44,7 +44,7 @@ Weapons and consumables share one **quick-item bar** (mid-bottom of the screen, 
 
 ### HUD
 
-The on-screen HUD displays Armor, Health, and Stamina bars. Armor (filled by body-armor pickups) absorbs incoming damage before it reaches health.
+The on-screen HUD displays Armor, Health, and Stamina bars. Armor (filled by body-armor pickups) absorbs incoming damage before it reaches health. In multiplayer, a live **ping (round-trip latency) readout** appears at the top-left, colour-coded from green (good) to red (high latency).
 
 ## Screenshots
 
