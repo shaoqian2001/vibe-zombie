@@ -18,6 +18,7 @@ var _map_size_label: Label = null
 
 var _difficulty: int = NetworkManager.Difficulty.MEDIUM
 var _map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
+var _game_mode: int = NetworkManager.GameMode.CAMPAIGN
 
 func _ready() -> void:
 	_build_ui()
@@ -43,7 +44,7 @@ func _build_ui() -> void:
 	add_child(_center)
 
 	_create_panel = PanelContainer.new()
-	_create_panel.custom_minimum_size = Vector2(580 * s, 620 * s)
+	_create_panel.custom_minimum_size = Vector2(580 * s, 740 * s)
 	_create_panel.add_theme_stylebox_override("panel", MenuShared.make_panel_style(s))
 	_center.add_child(_create_panel)
 
@@ -64,6 +65,19 @@ func _build_ui() -> void:
 	subtitle.add_theme_font_size_override("font_size", int(13 * s))
 	subtitle.add_theme_color_override("font_color", Color(0.55, 0.55, 0.50))
 	vbox.add_child(subtitle)
+
+	# --- Game mode ---
+	vbox.add_child(_make_section_label("Game Mode", s))
+	var mode_desc := Label.new()
+	mode_desc.name = "GameModeDesc"
+	mode_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mode_desc.add_theme_font_size_override("font_size", int(13 * s))
+	mode_desc.add_theme_color_override("font_color", Color(0.60, 0.62, 0.55))
+	mode_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	mode_desc.custom_minimum_size = Vector2(0, 56 * s)
+	vbox.add_child(_make_game_mode_row(s, mode_desc))
+	vbox.add_child(mode_desc)
+	mode_desc.text = NetworkManager.game_mode_description(_game_mode)
 
 	# --- Map style ---
 	vbox.add_child(_make_section_label("Map Style", s))
@@ -130,6 +144,7 @@ func _on_start_pressed() -> void:
 	NetworkManager.map_size = BuildingCatalog.map_size_for(_map_style)
 	NetworkManager.difficulty = _difficulty
 	NetworkManager.map_style = _map_style
+	NetworkManager.game_mode = _game_mode
 	NetworkManager.game_seed = int(Time.get_unix_time_from_system()) ^ (randi() << 1)
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
@@ -192,6 +207,42 @@ func _update_difficulty_desc(desc: Label) -> void:
 		settings.horde_mult,
 		settings.starting_hordes,
 	]
+
+## Survival works solo too — one defender, a smaller horde (waves scale with
+## the party size), same day-7 / day-12 / day-15 calendar.
+func _make_game_mode_row(s: float, desc_label: Label) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", int(10 * s))
+
+	var modes := [NetworkManager.GameMode.CAMPAIGN, NetworkManager.GameMode.SURVIVAL]
+	var accent := Color(0.30, 0.55, 0.70)
+	var buttons: Array[Button] = []
+
+	for m in modes:
+		var idx: int = m
+		var btn := MenuShared.make_button(NetworkManager.game_mode_name(idx), s, 150, 44, 16)
+		btn.pressed.connect(func() -> void:
+			_game_mode = idx
+			_refresh_game_mode_buttons(buttons, modes, accent)
+			desc_label.text = NetworkManager.game_mode_description(_game_mode)
+		)
+		buttons.append(btn)
+		row.add_child(btn)
+
+	_refresh_game_mode_buttons(buttons, modes, accent)
+	return row
+
+func _refresh_game_mode_buttons(buttons: Array[Button], modes: Array, accent: Color) -> void:
+	var s := MenuShared.ui_scale()
+	for i in range(buttons.size()):
+		var btn := buttons[i]
+		if modes[i] == _game_mode:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(accent, s))
+			btn.add_theme_color_override("font_color", Color(1, 1, 1))
+		else:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.20, 0.20, 0.24, 0.9), s))
+			btn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
 
 func _make_map_style_row(s: float, desc_label: Label) -> HBoxContainer:
 	var row := HBoxContainer.new()

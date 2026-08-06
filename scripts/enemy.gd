@@ -98,6 +98,18 @@ var _groan_timer := 0.0
 # Vector3.INF means "no cached value, fall back to the single-threaded search".
 var cached_target_pos: Vector3 = Vector3.INF
 
+## Survival mode: a place this zombie marches on when no player is within
+## detect range (the HQ it was spawned to assault). Vector3.INF = free-roaming,
+## which is how every ambient city zombie behaves.
+var home_target: Vector3 = Vector3.INF
+## How close to `home_target` counts as "arrived" — past this the zombie mills
+## around the base instead of piling onto one exact point.
+const HOME_ARRIVE_DIST := 6.0
+
+## Throttle for the "is there a barricade in my face" scan (see _try_attack_structure).
+const STRUCTURE_SCAN_INTERVAL := 0.2
+var _structure_scan_timer := 0.0
+
 func _ready() -> void:
 	add_to_group("enemy")
 	# The GD-Sync host owns every enemy's AI. In single-player this is just self.
@@ -183,17 +195,17 @@ func _physics_process(delta: float) -> void:
 				move_dir = to_target.normalized()
 			current_speed = CHASE_SPEED
 		else:
-			# Too far — wander
-			_wander_timer -= delta
-			if _wander_timer <= 0.0:
-				_pick_new_wander()
-			move_dir = _wander_dir
+			# Too far to chase — march on the assault target if we have one,
+			# otherwise fall back to aimless wandering.
+			move_dir = _home_or_wander(delta)
 	else:
-		# No player found — just wander
-		_wander_timer -= delta
-		if _wander_timer <= 0.0:
-			_pick_new_wander()
-		move_dir = _wander_dir
+		# No player found — march on the assault target, or just wander.
+		move_dir = _home_or_wander(delta)
+
+	# Barricades and traps stand between the horde and whatever it wants. A
+	# zombie pressed up against one stops and claws it down.
+	if _try_attack_structure():
+		move_dir = Vector3.ZERO
 
 	# AI-driven horizontal velocity
 	var target_xz := move_dir * current_speed
@@ -278,7 +290,7 @@ func _apply_damage(amount: float, knockback: Vector3 = Vector3.ZERO) -> void:
 		var mission_nodes := get_tree().get_nodes_in_group("mission_system")
 		for ms in mission_nodes:
 			if ms.has_method("notify_enemy_killed"):
-				ms.notify_enemy_killed()
+				ms.notify_enemy_killed(global_position)
 		# Detached one-shot death voice at the local death position — the node
 		# is freed this frame, so it can't be parented. Plays on host and
 		# clients alike (each peer sees the despawn via the next enemy_state
@@ -307,6 +319,56 @@ func _maybe_groan(delta: float) -> void:
 	if p == null or global_position.distance_to(p.global_position) > 24.0:
 		return
 	SoundManager.play_on(self, "zombie_groan", _rng.randf_range(0.82, 1.2), -3.0)
+
+## Movement for a zombie with no player in range: head for `home_target` when
+## Survival gave it one, otherwise wander. Returns the desired direction.
+func _home_or_wander(delta: float) -> Vector3:
+	if home_target != Vector3.INF:
+		var to_home := home_target - global_position
+		to_home.y = 0.0
+		if to_home.length() > HOME_ARRIVE_DIST:
+			return to_home.normalized()
+	_wander_timer -= delta
+	if _wander_timer <= 0.0:
+		_pick_new_wander()
+	return _wander_dir
+
+## Claw at the nearest crafted structure within reach. Returns true when a hit
+## landed this tick so the caller can hold the zombie in place against it.
+func _try_attack_structure() -> bool:
+	if _attack_timer > 0.0:
+		return false
+	# Nothing built yet — the overwhelmingly common case. Counting the group is
+	# allocation-free, unlike fetching it.
+	if get_tree().get_node_count_in_group("structure") == 0:
+		return false
+	# Scanning the structure group is O(structures) per zombie, so throttle it.
+	# The 1.5s attack cooldown makes a 5Hz scan indistinguishable from per-frame.
+	_structure_scan_timer -= get_physics_process_delta_time()
+	if _structure_scan_timer > 0.0:
+		return false
+	_structure_scan_timer = STRUCTURE_SCAN_INTERVAL
+	var best: Node3D = null
+	var best_d := ATTACK_RANGE + 0.7
+	for n in get_tree().get_nodes_in_group("structure"):
+		if not is_instance_valid(n):
+			continue
+		var s := n as Node3D
+		var d := Vector2(s.global_position.x - global_position.x, s.global_position.z - global_position.z).length()
+		if d < best_d:
+			best_d = d
+			best = s
+	if best == null or not best.has_method("take_damage"):
+		return false
+	_attack_timer = ATTACK_COOLDOWN
+	var pitch := _rng.randf_range(0.9, 1.12)
+	SoundManager.play_on(self, "zombie_attack", pitch, -2.0)
+	if NetworkManager.is_networked:
+		NetworkManager.broadcast_event("enemy_sound", {
+			"id": network_id, "sound": "zombie_attack", "pitch": pitch,
+		})
+	best.take_damage(ATTACK_DAMAGE)
+	return true
 
 func _try_attack() -> void:
 	_try_attack_at(_player_ref.global_position if _player_ref else Vector3.INF)

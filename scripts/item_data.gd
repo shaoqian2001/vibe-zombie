@@ -10,6 +10,9 @@ class_name ItemData
 #     management yet). Body armor feeds the (previously dormant) armor bar,
 #     the backpack enlarges the stamina pool, and tactical shoes raise base
 #     movement speed.
+#   • "material"   — craft stock (wood, scrap). Stacks in the bag, never takes a
+#     quick-bar slot and can't be held or used directly; it is spent by the
+#     Craft menu (B). See craft_data.gd.
 #
 # Effects are read by Player.pickup_item(); see _apply_consumable /
 # _apply_equipment there. Everything visual (the floating world model, glow
@@ -68,6 +71,22 @@ const ITEMS := {
 		"speed_mult": 1.15,
 		"glow_color": Color(0.40, 0.85, 0.50, 0.45),
 		"spawn_weight": 1.4,
+	},
+	"wood": {
+		"category": "material",
+		"display_name": "Wood",
+		# Salvaged planks — the bulk material behind barricades. Weighted below
+		# the common consumables so world loot still leans toward apples and
+		# ammo; Survival tops materials up with base caches and zombie drops.
+		"glow_color": Color(0.62, 0.44, 0.22, 0.42),
+		"spawn_weight": 2.5,
+	},
+	"scrap": {
+		"category": "material",
+		"display_name": "Scrap",
+		# Bent metal and wiring — reinforcement, spikes and floodlights.
+		"glow_color": Color(0.62, 0.66, 0.72, 0.42),
+		"spawn_weight": 2.2,
 	},
 }
 

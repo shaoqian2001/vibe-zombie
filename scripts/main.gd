@@ -19,6 +19,11 @@ const FovOverlay = preload("res://scripts/fov_overlay.gd")
 const FovCuller = preload("res://scripts/fov_culler.gd")
 const MissionSystem = preload("res://scripts/mission_system.gd")
 const DebugPanel = preload("res://scripts/debug_panel.gd")
+const TimeSystem = preload("res://scripts/time_system.gd")
+const SurvivalMode = preload("res://scripts/survival_mode.gd")
+const CraftMenu = preload("res://scripts/craft_menu.gd")
+const Structure = preload("res://scripts/structure.gd")
+const CraftDataRef = preload("res://scripts/craft_data.gd")
 
 const DEV_MODE := true
 
@@ -104,6 +109,14 @@ var _mp_mission_beacons: Array = []          # client-side 3D beacon roots
 var _mp_mission_sig: String = ""             # marker-set signature to gate beacon rebuilds
 # Item replication cadence (base branch's world-item system; mirrors pickups).
 var _net_item_timer: float = 0.0
+# Survival mode replication: one packet carries the clock, wave progress and HQ
+# integrity; crafted structures reconcile like pickups do.
+const NET_SURVIVAL_SYNC_HZ := 2.0
+const NET_STRUCTURE_SYNC_HZ := 2.0
+var _net_survival_timer: float = 0.0
+var _net_structure_timer: float = 0.0
+# Counter for unique structure names emitted by the host.
+var _next_structure_id: int = 0
 
 # UI
 var _prompt_label: Label = null
@@ -114,6 +127,8 @@ var _manual_open: bool = false
 var _inventory_open: bool = false
 var _map_view: CanvasLayer = null
 var _map_open: bool = false
+var _craft_menu: CanvasLayer = null
+var _craft_open: bool = false
 var _fov_overlay: CanvasLayer = null
 var _fov_culler: Node = null
 
@@ -129,12 +144,40 @@ var _occluded_buildings: Array = []     # buildings currently made transparent
 # Mission system
 enum GameState { PLAYING, WON, LOST }
 var _game_state: int = GameState.PLAYING
+## The active game-mode driver. Campaign points this at MissionSystem, Survival
+## at SurvivalMode — both expose process() / get_objective_text() /
+## get_map_markers() / spawn_horde_at() / notify_enemy_killed(), so the HUD,
+## map view and debug panel drive either one through the same calls.
 var _mission_system: Node = null
 var _debug_panel: CanvasLayer = null
 var _objective_label: Label = null
 var _overlay_canvas: CanvasLayer = null
 
 const MISSION_COUNT := 4
+
+# ------------------------------------------------------------------
+# Survival mode
+# ------------------------------------------------------------------
+var _survival: bool = false
+var _time_system: Node = null
+var _hq_building: Dictionary = {}
+## Ring of spawn points around the HQ used instead of the map rim in Survival.
+const SURVIVAL_SPAWN_RADIUS := 12.0
+
+# Structure placement (the Craft menu's "place this" mode)
+var _placing_recipe: String = ""
+var _placing_structure: String = ""
+var _ghost: Node3D = null
+var _ghost_yaw: float = 0.0
+## Player-applied rotation from the mouse wheel, on top of the automatic
+## "face across your line of sight" orientation.
+var _ghost_yaw_offset: float = 0.0
+var _ghost_valid: bool = false
+var _mouse_ground: Vector3 = Vector3.ZERO
+## How far from the player a structure may be dropped.
+const PLACE_MAX_DIST := 9.0
+## Minimum gap between two structures, so barricades can't be stacked in place.
+const PLACE_MIN_SPACING := 1.6
 
 func _ready() -> void:
 	# Network state snapshot for this scene
@@ -170,7 +213,16 @@ func _ready() -> void:
 	# which would leave the player wedged between walls at start. Drop any
 	# overlapping candidates; if every rim point is blocked, scan for a
 	# fallback walkable position.
-	var rim_candidates := _build_rim_spawn_candidates()
+	#
+	# Survival replaces the rim spawn with a ring around the headquarters: the
+	# whole mode is about that building, so players start on its doorstep. The
+	# HQ is picked deterministically from the shared world seed, so every peer
+	# resolves the same building without a single network message.
+	_survival = NetworkManager.game_mode == NetworkManager.GameMode.SURVIVAL
+	if _survival:
+		_hq_building = SurvivalMode.pick_hq_building(world)
+
+	var rim_candidates := _build_survival_spawn_candidates() if _survival else _build_rim_spawn_candidates()
 	var valid_rim: Array = []
 	for cand in rim_candidates:
 		if not _pos_inside_building(cand):
@@ -249,11 +301,16 @@ func _ready() -> void:
 
 	await get_tree().process_frame
 
-	# Mission system runs only on the host. Clients see hordes via networked
-	# enemy spawns; mission UI for clients is a TODO (objective text comes
-	# from the host's mission system in this iteration).
-	if _is_host:
+	# Game-mode driver. Campaign's mission system runs only on the host (clients
+	# read the host-synced objective text). Survival runs on EVERY peer: the HQ
+	# and its beacon are seed-deterministic, so clients build the same base
+	# locally and only the wave/clock/integrity numbers need syncing.
+	if _survival:
+		_setup_survival_mode(rng)
+	elif _is_host:
 		_setup_mission_system(rng)
+
+	if _is_host:
 		_spawn_enemies(rng)
 		_spawn_weapon_pickups(rng)
 		_spawn_items(rng)
@@ -336,8 +393,13 @@ func _process(delta: float) -> void:
 	# Objective text runs on every peer: the host reads its live mission system,
 	# clients read the host-synced mission state. Clients also spin their beacons.
 	_update_objective_label()
-	if _is_mp and not _is_host:
+	if _survival:
+		_update_survival_hud()
+	elif _is_mp and not _is_host:
 		_animate_mission_beacons(delta)
+	# Crafting is available in both modes, so the placement ghost always ticks.
+	if _placing_structure != "":
+		_update_placement()
 
 # ------------------------------------------------------------------
 # GD-Sync replication (host broadcast + event dispatch)
@@ -359,14 +421,28 @@ func _host_net_sync(delta: float) -> void:
 		NetworkManager.broadcast_event("pickup_state", {"p": _build_pickup_state()})
 	# Mission view (objective text + map/world marker positions) so clients can
 	# see and follow the mission even though the mission system is host-only.
-	_net_mission_timer -= delta
-	if _net_mission_timer <= 0.0:
-		_net_mission_timer = 1.0 / NET_MISSION_SYNC_HZ
-		if _mission_system:
-			NetworkManager.broadcast_event("mission_sync", {
-				"obj": _mission_system.get_objective_text(),
-				"m": _serialize_mission_markers(_mission_system.get_map_markers()),
-			}, false)
+	# Survival needs none of this — its objective text and HQ marker are derived
+	# locally on every peer from the shared seed — so it syncs numbers instead.
+	if not _survival:
+		_net_mission_timer -= delta
+		if _net_mission_timer <= 0.0:
+			_net_mission_timer = 1.0 / NET_MISSION_SYNC_HZ
+			if _mission_system:
+				NetworkManager.broadcast_event("mission_sync", {
+					"obj": _mission_system.get_objective_text(),
+					"m": _serialize_mission_markers(_mission_system.get_map_markers()),
+				}, false)
+	else:
+		_net_survival_timer -= delta
+		if _net_survival_timer <= 0.0:
+			_net_survival_timer = 1.0 / NET_SURVIVAL_SYNC_HZ
+			if _mission_system:
+				NetworkManager.broadcast_event("survival_sync", _mission_system.build_state(), false)
+	# Crafted structures: full-set reconcile, same shape as pickups.
+	_net_structure_timer -= delta
+	if _net_structure_timer <= 0.0:
+		_net_structure_timer = 1.0 / NET_STRUCTURE_SYNC_HZ
+		NetworkManager.broadcast_event("structure_state", {"s": _build_structure_state()})
 	# World items — base branch's item-replication system (mirrors pickups).
 	_net_item_timer -= delta
 	if _net_item_timer <= 0.0:
@@ -512,6 +588,19 @@ func _build_item_state() -> Array:
 		out.append([int(child.get("network_id")), String(child.get("item_id")), pos.x, pos.y, pos.z])
 	return out
 
+func _build_structure_state() -> Array:
+	var out: Array = []
+	for n in get_tree().get_nodes_in_group("structure"):
+		if not is_instance_valid(n):
+			continue
+		var s := n as Node3D
+		out.append([
+			int(s.get("network_id")), String(s.get("structure_id")),
+			s.global_position.x, s.global_position.y, s.global_position.z,
+			s.rotation.y, float(s.get("hp")), float(s.get("max_hp")),
+		])
+	return out
+
 func _on_net_event(event_name: String, payload: Dictionary) -> void:
 	match event_name:
 		"player_xform":
@@ -568,6 +657,35 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 					NetworkManager.send_event_to(who, "enemy_state", {"e": _build_enemy_state()})
 					NetworkManager.send_event_to(who, "pickup_state", {"p": _build_pickup_state()})
 					NetworkManager.send_event_to(who, "item_state", {"i": _build_item_state()})
+					NetworkManager.send_event_to(who, "structure_state", {"s": _build_structure_state()})
+					if _survival and _mission_system:
+						NetworkManager.send_event_to(who, "survival_sync", _mission_system.build_state())
+		"survival_sync":
+			# Host-pushed clock + wave + HQ integrity. The client's own survival
+			# node owns the HQ visuals; this just feeds it the live numbers.
+			if not _is_host and _mission_system and _mission_system.has_method("apply_state"):
+				_mission_system.apply_state(payload)
+		"structure_state":
+			if not _is_host:
+				_apply_structure_state(payload.get("s", []))
+		"structure_place":
+			# Client -> host placement request. The host owns structure ids, so it
+			# instantiates and the next structure_state broadcast replicates it.
+			if _is_host:
+				_host_place_structure(
+					String(payload.get("sid", "")),
+					Vector3(float(payload.get("x", 0.0)), float(payload.get("y", 0.0)), float(payload.get("z", 0.0))),
+					float(payload.get("yaw", 0.0)))
+		"structure_damage":
+			# Client -> host damage request (a client's spike trap or a stray hit).
+			if _is_host:
+				var st := get_node_or_null("Structure_%d" % int(payload.get("id", -1)))
+				if st and st.has_method("apply_remote_damage"):
+					st.apply_remote_damage(float(payload.get("amount", 0.0)))
+		"survival_outcome":
+			# Shared end state — the base held, or it fell. The host's own
+			# broadcast echoes back here; _show_survival_outcome is idempotent.
+			_show_survival_outcome(String(payload.get("state", "")) == "won")
 		"enemy_sound":
 			# Host broadcasts when a zombie lunges/attacks; play on the local
 			# copy of that enemy. The host already played it locally before
@@ -689,6 +807,63 @@ func _apply_item_state(list: Array) -> void:
 		if not seen.has(int(child.get("network_id"))):
 			child.queue_free()
 
+## Client: reconcile the crafted-structure set against the host's snapshot —
+## create unseen, refresh HP on known, drop anything the host no longer reports
+## (destroyed barricades, worn-out traps).
+func _apply_structure_state(list: Array) -> void:
+	var seen: Dictionary = {}
+	for entry in list:
+		if typeof(entry) != TYPE_ARRAY or (entry as Array).size() < 8:
+			continue
+		var id := int(entry[0])
+		seen[id] = true
+		var node := get_node_or_null("Structure_%d" % id)
+		if node == null:
+			node = _create_structure(id, String(entry[1]),
+				Vector3(float(entry[2]), float(entry[3]), float(entry[4])),
+				float(entry[5]), float(entry[7]))
+		if node and node.has_method("net_set_hp"):
+			node.net_set_hp(float(entry[6]))
+	for n in get_tree().get_nodes_in_group("structure"):
+		if not is_instance_valid(n):
+			continue
+		if not seen.has(int(n.get("network_id"))):
+			n.queue_free()
+
+## Instantiates a structure locally. The host calls this for every placement;
+## clients create their copies from the host's structure_state broadcast.
+func _create_structure(structure_net_id: int, structure_id: String, pos: Vector3, yaw: float, max_hp: float = 0.0) -> Node3D:
+	var node_name := "Structure_%d" % structure_net_id
+	var existing := get_node_or_null(node_name)
+	if existing:
+		return existing as Node3D
+	if CraftDataRef.get_structure(structure_id).is_empty():
+		return null
+	var s := StaticBody3D.new()
+	s.set_script(Structure)
+	s.name = node_name
+	# These are read by structure._ready, so they must be set before add_child.
+	s.set("network_id", structure_net_id)
+	s.set("structure_id", structure_id)
+	if max_hp > 0.0:
+		s.set("max_hp", max_hp)
+		s.set("hp", max_hp)
+	add_child(s)
+	s.global_position = pos
+	s.rotation.y = yaw
+	if structure_net_id >= _next_structure_id:
+		_next_structure_id = structure_net_id + 1
+	return s
+
+## Host-side placement used by both the host's own craft menu and relayed client
+## requests. Allocates an id; structure_state replication carries it to clients.
+func _host_place_structure(structure_id: String, pos: Vector3, yaw: float) -> void:
+	if structure_id == "":
+		return
+	var sid := _next_structure_id
+	_next_structure_id += 1
+	_create_structure(sid, structure_id, pos, yaw)
+
 # ------------------------------------------------------------------
 # Parallel enemy AI (host only)
 # ------------------------------------------------------------------
@@ -753,6 +928,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if _game_state != GameState.PLAYING:
 		return
+	# Placement mode owns the mouse: left click commits, right click / ESC
+	# cancels, wheel spins the structure. Handled first so none of it leaks
+	# through to the door prompt or the weapon.
+	if _placing_structure != "" and _handle_placement_input(event):
+		return
 	if event.is_action_pressed("game_manual"):
 		_toggle_game_manual()
 		return
@@ -762,7 +942,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("map"):
 		_toggle_map()
 		return
-	if _manual_open or _inventory_open or _map_open:
+	if event.is_action_pressed("craft"):
+		_toggle_craft_menu()
+		return
+	if _manual_open or _inventory_open or _map_open or _craft_open:
 		return  # block other input while overlay is open
 	if event.is_action_pressed("interact"):
 		_handle_interact()
@@ -795,6 +978,8 @@ func _toggle_game_manual() -> void:
 		_close_inventory()
 	if _map_open:
 		_close_map()
+	if _craft_open:
+		_close_craft_menu()
 	if _manual_open:
 		_close_game_manual()
 	else:
@@ -818,8 +1003,8 @@ func _close_game_manual() -> void:
 	_rebuild_hud()
 
 func _toggle_inventory() -> void:
-	if _manual_open:
-		return  # don't open inventory while manual is open
+	if _manual_open or _craft_open:
+		return  # don't open inventory while another overlay is up
 	if _inventory_open:
 		_close_inventory()
 	else:
@@ -846,7 +1031,7 @@ func _close_inventory() -> void:
 # ------------------------------------------------------------------
 
 func _toggle_map() -> void:
-	if _manual_open or _inventory_open:
+	if _manual_open or _inventory_open or _craft_open:
 		return
 	if _map_open:
 		_close_map()
@@ -869,6 +1054,308 @@ func _close_map() -> void:
 	if _map_view:
 		_map_view.queue_free()
 		_map_view = null
+
+# ------------------------------------------------------------------
+# Craft menu (B) — available in every mode.
+#
+# Recipes cost materials (wood / scrap) out of the player's bag. An "item"
+# recipe lands straight in the inventory; a "structure" recipe hands off to
+# placement mode below, where a translucent ghost follows the cursor until the
+# player commits with a click.
+# ------------------------------------------------------------------
+
+func _toggle_craft_menu() -> void:
+	if _manual_open or _inventory_open or _map_open:
+		return
+	if _craft_open:
+		_close_craft_menu()
+	else:
+		_open_craft_menu()
+
+func _open_craft_menu() -> void:
+	# Opening the bench cancels a half-finished placement so the two modes
+	# never fight over the mouse.
+	_cancel_placement()
+	_craft_open = true
+	_craft_menu = CanvasLayer.new()
+	_craft_menu.set_script(CraftMenu)
+	_craft_menu.name = "CraftMenu"
+	_craft_menu.set("player_ref", player)
+	_craft_menu.craft_requested.connect(_on_craft_requested)
+	_craft_menu.craft_closed.connect(_close_craft_menu)
+	add_child(_craft_menu)
+	# The menu's Craft buttons sit under the crosshair; don't also fire the gun.
+	player.input_locked = true
+
+func _close_craft_menu() -> void:
+	_craft_open = false
+	if _craft_menu:
+		_craft_menu.queue_free()
+		_craft_menu = null
+	# Placement mode keeps its own lock; only release when nothing else wants it.
+	if _placing_structure == "":
+		player.input_locked = false
+
+func _on_craft_requested(recipe_id: String) -> void:
+	var recipe := CraftDataRef.get_recipe(recipe_id)
+	if recipe.is_empty():
+		return
+	var cost: Dictionary = recipe.get("cost", {})
+	if not player.has_materials(cost):
+		return
+
+	if String(recipe.get("kind", "")) == "item":
+		# Instant craft: pay now and route the result through the normal pickup
+		# path, so a crafted medkit stows and crafted armor equips.
+		if not player.consume_materials(cost):
+			return
+		player.grant_item(String(recipe.get("item", "")))
+		_close_craft_menu()
+		return
+
+	# Structure: materials are spent when the placement is actually committed,
+	# so cancelling costs nothing.
+	_close_craft_menu()
+	_begin_placement(recipe_id, String(recipe.get("structure", "")))
+
+# ------------------------------------------------------------------
+# Structure placement — translucent ghost under the cursor, click to commit.
+# ------------------------------------------------------------------
+
+func _begin_placement(recipe_id: String, structure_id: String, keep_rotation: bool = false) -> void:
+	if CraftDataRef.get_structure(structure_id).is_empty():
+		return
+	_cancel_placement()
+	_placing_recipe = recipe_id
+	_placing_structure = structure_id
+	if not keep_rotation:
+		_ghost_yaw_offset = 0.0
+	_ghost = Structure.build_visual(structure_id)
+	_ghost.name = "PlacementGhost"
+	add_child(_ghost)
+	_set_ghost_tint(true)
+	# Left click commits the placement, so the weapon must stay holstered.
+	player.input_locked = true
+	if _hud and _hud.has_method("show_toast"):
+		_hud.show_toast("Click to place  ·  wheel to rotate  ·  right click to cancel", Color(0.75, 0.90, 1.0))
+
+func _cancel_placement() -> void:
+	if _ghost and is_instance_valid(_ghost):
+		_ghost.queue_free()
+	_ghost = null
+	_placing_recipe = ""
+	_placing_structure = ""
+	if not _craft_open:
+		player.input_locked = false
+
+func _update_placement() -> void:
+	if _ghost == null or not is_instance_valid(_ghost):
+		return
+	# Anchor to the cursor's ground point, but never further than arm's reach —
+	# beyond that, pin it to the edge of the allowed radius so the ghost stays
+	# on screen and the rule is obvious.
+	var origin := player.global_position
+	var to_mouse := Vector3(_mouse_ground.x - origin.x, 0.0, _mouse_ground.z - origin.z)
+	if to_mouse.length() > PLACE_MAX_DIST:
+		to_mouse = to_mouse.normalized() * PLACE_MAX_DIST
+	var pos := Vector3(origin.x + to_mouse.x, 0.0, origin.z + to_mouse.z)
+
+	# Face the wall across the player's line of sight by default (so a barricade
+	# blocks what's in front of you), plus whatever the wheel has added.
+	var facing := to_mouse
+	if facing.length() < 0.01:
+		facing = Vector3.FORWARD
+	_ghost_yaw = atan2(facing.x, facing.z) + _ghost_yaw_offset
+
+	_ghost.global_position = pos
+	_ghost.rotation.y = _ghost_yaw
+
+	var valid := _placement_is_valid(pos)
+	if valid != _ghost_valid:
+		_ghost_valid = valid
+		_set_ghost_tint(valid)
+
+## A spot is placeable when it's clear of building footprints and isn't sitting
+## on top of another structure.
+func _placement_is_valid(pos: Vector3) -> bool:
+	if _pos_inside_building(pos):
+		return false
+	for n in get_tree().get_nodes_in_group("structure"):
+		if not is_instance_valid(n):
+			continue
+		var s := n as Node3D
+		if Vector2(s.global_position.x - pos.x, s.global_position.z - pos.z).length() < PLACE_MIN_SPACING:
+			return false
+	return true
+
+## Wash the ghost in translucent green / red. build_visual() makes fresh
+## materials per call, so mutating them can't leak into placed structures.
+func _set_ghost_tint(valid: bool) -> void:
+	if _ghost == null:
+		return
+	var tint := Color(0.35, 1.0, 0.45, 0.45) if valid else Color(1.0, 0.30, 0.25, 0.40)
+	_tint_subtree(_ghost, tint)
+
+func _tint_subtree(node: Node, tint: Color) -> void:
+	if node is MeshInstance3D:
+		var prim := (node as MeshInstance3D).mesh as PrimitiveMesh
+		if prim:
+			var mat := prim.material as StandardMaterial3D
+			if mat:
+				mat.albedo_color = tint
+				mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+				mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+				mat.emission_enabled = false
+	elif node is Light3D:
+		# The floodlight's own lamp would blow out the preview.
+		(node as Light3D).visible = false
+	for child in node.get_children():
+		_tint_subtree(child, tint)
+
+## Returns true when the event was consumed by placement mode.
+func _handle_placement_input(event: InputEvent) -> bool:
+	if event.is_action_pressed("game_manual") or event.is_action_pressed("craft"):
+		_cancel_placement()
+		return true
+	if event is InputEventMouseButton and event.pressed:
+		var mb := event as InputEventMouseButton
+		match mb.button_index:
+			MOUSE_BUTTON_LEFT:
+				_commit_placement()
+				return true
+			MOUSE_BUTTON_RIGHT:
+				_cancel_placement()
+				return true
+			MOUSE_BUTTON_WHEEL_UP:
+				_ghost_yaw_offset += PI / 8.0
+				return true
+			MOUSE_BUTTON_WHEEL_DOWN:
+				_ghost_yaw_offset -= PI / 8.0
+				return true
+	return false
+
+func _commit_placement() -> void:
+	if _ghost == null or not is_instance_valid(_ghost):
+		return
+	var pos := _ghost.global_position
+	var yaw := _ghost.rotation.y
+	var structure_id := _placing_structure
+	if not _placement_is_valid(pos):
+		if _hud and _hud.has_method("show_toast"):
+			_hud.show_toast("Can't build there", Color(1.0, 0.45, 0.40))
+		return
+
+	# Pay only now, so a cancelled or blocked placement is free.
+	var cost: Dictionary = CraftDataRef.get_recipe(_placing_recipe).get("cost", {})
+	if not player.consume_materials(cost):
+		if _hud and _hud.has_method("show_toast"):
+			_hud.show_toast("Not enough materials", Color(1.0, 0.45, 0.40))
+		_cancel_placement()
+		return
+
+	# The host owns structure ids; a client asks and picks the result up from
+	# the next structure_state broadcast.
+	if _is_host:
+		_host_place_structure(structure_id, pos, yaw)
+	else:
+		NetworkManager.send_event_to(NetworkManager.host_peer_id(), "structure_place", {
+			"sid": structure_id, "x": pos.x, "y": pos.y, "z": pos.z, "yaw": yaw,
+		})
+
+	if _hud and _hud.has_method("show_toast"):
+		var data := CraftDataRef.get_structure(structure_id)
+		_hud.show_toast("%s built" % data.get("display_name", structure_id), Color(0.60, 0.95, 0.70))
+	SoundManager.play_2d("item_pickup", randf_range(0.85, 0.95), -4.0)
+
+	# Chain-build: keep placing while the player can still afford another one,
+	# holding the rotation so a run of barricades lines up.
+	if player.has_materials(cost):
+		_begin_placement(_placing_recipe, structure_id, true)
+	else:
+		_cancel_placement()
+
+# ------------------------------------------------------------------
+# Survival mode setup + HUD
+# ------------------------------------------------------------------
+
+func _setup_survival_mode(rng: RandomNumberGenerator) -> void:
+	_time_system = Node.new()
+	_time_system.set_script(TimeSystem)
+	_time_system.name = "TimeSystem"
+	add_child(_time_system)
+
+	# Slotted into _mission_system so the objective label, map markers and debug
+	# panel keep talking to one interface regardless of the mode.
+	_mission_system = Node.new()
+	_mission_system.set_script(SurvivalMode)
+	_mission_system.name = "SurvivalMode"
+	add_child(_mission_system)
+	_mission_system.add_to_group("mission_system")
+	_mission_system.setup(self, world, _hq_building, _time_system, _is_host, rng)
+	_mission_system.wave_announced.connect(_on_wave_announced)
+	_mission_system.survival_won.connect(_on_survival_won)
+	_mission_system.survival_lost.connect(_on_survival_lost)
+
+	if _hud and _hud.has_method("announce"):
+		_hud.announce("Defend the base until day %d" % int(SurvivalMode.WAVES[-1]["day"]), Color(0.75, 0.92, 1.0))
+
+## Spawn ring around the headquarters — Survival's replacement for the map rim.
+func _build_survival_spawn_candidates() -> Array:
+	if _hq_building.is_empty():
+		return _build_rim_spawn_candidates()
+	var bp: Vector3 = _hq_building.node.position
+	# Clear the building's own footprint before stepping out to the ring.
+	var radius: float = maxf(SURVIVAL_SPAWN_RADIUS,
+		maxf(float(_hq_building.width), float(_hq_building.depth)) * 0.5 + 4.0)
+	var out: Array = []
+	for i in range(8):
+		var angle := TAU * float(i) / 8.0
+		out.append(Vector3(bp.x + cos(angle) * radius, 0.5, bp.z + sin(angle) * radius))
+	return out
+
+func _update_survival_hud() -> void:
+	if _time_system == null:
+		return
+	# The clock drives the world lighting as well as the corner read-out.
+	if world.has_method("set_time_of_day"):
+		world.set_time_of_day(_time_system.hour_of_day())
+	if _hud == null:
+		return
+	if _hud.has_method("set_clock"):
+		_hud.set_clock(_time_system.clock_text(), _time_system.is_night())
+	if _hud.has_method("set_defense") and _mission_system:
+		var ratio: float = _mission_system.hq_ratio()
+		_hud.set_defense("HQ INTEGRITY  %d%%" % int(round(ratio * 100.0)), ratio)
+
+func _on_wave_announced(text: String, color: Color) -> void:
+	if _hud and _hud.has_method("announce"):
+		_hud.announce(text, color)
+
+func _on_survival_won() -> void:
+	_show_survival_outcome(true)
+	if _is_mp:
+		NetworkManager.broadcast_event("survival_outcome", {"state": "won"})
+
+func _on_survival_lost() -> void:
+	_show_survival_outcome(false)
+	if _is_mp:
+		NetworkManager.broadcast_event("survival_outcome", {"state": "lost"})
+
+## Idempotent end-of-run screen — safe to call again when the host's own
+## broadcast echoes back to it.
+func _show_survival_outcome(won: bool) -> void:
+	if _game_state != GameState.PLAYING:
+		return
+	_cancel_placement()
+	if _craft_open:
+		_close_craft_menu()
+	_game_state = GameState.WON if won else GameState.LOST
+	if won:
+		_show_overlay("BASE HELD", Color(0.1, 0.8, 0.2))
+	else:
+		_show_overlay("BASE OVERRUN", Color(0.7, 0.1, 0.05))
+	if _objective_label:
+		_objective_label.text = "You survived the outbreak!" if won else "The headquarters has fallen."
 
 # ------------------------------------------------------------------
 # Rim spawn candidates — positions just inside each edge of the map
@@ -1111,6 +1598,16 @@ func _spawn_items(rng: RandomNumberGenerator) -> void:
 		_next_item_id += 1
 		_create_item_pickup(item_pickup_id, item_id, pos)
 
+## Host-side item drop used by Survival's material caches and zombie loot.
+## Allocates an id and instantiates the pickup; item_state replication carries
+## it to clients. Mirrors _host_spawn_weapon.
+func host_spawn_item(item_id: String, pos: Vector3) -> void:
+	if not _is_host:
+		return
+	var new_id := _next_item_id
+	_next_item_id += 1
+	_create_item_pickup(new_id, item_id, pos)
+
 ## Instantiates an item pickup locally. Host spawns them; clients create their
 ## copies from the host's `item_state` broadcast (mirrors _create_pickup).
 func _create_item_pickup(item_pickup_id: int, item_id: String, pos: Vector3) -> void:
@@ -1247,6 +1744,9 @@ func _on_player_rescued() -> void:
 		NetworkManager.broadcast_event("mission_outcome", {"state": "won"})
 
 func _on_player_died() -> void:
+	_cancel_placement()
+	if _craft_open:
+		_close_craft_menu()
 	_game_state = GameState.LOST
 	_show_overlay("YOU DIED", Color(0.7, 0.1, 0.05))
 	if _objective_label:
@@ -1431,6 +1931,8 @@ func _update_mouse_look() -> void:
 		return
 	var ground_point := ray_origin + ray_dir * t
 	player.look_target = ground_point
+	# Reused by the structure-placement ghost so it tracks the same cursor point.
+	_mouse_ground = ground_point
 
 # ------------------------------------------------------------------
 # Entrance area connections (proximity detection only)

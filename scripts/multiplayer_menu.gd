@@ -29,6 +29,7 @@ var _create_status_label: Label = null
 var _create_max_players: int = 4
 var _create_difficulty: int = NetworkManager.Difficulty.MEDIUM
 var _create_map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
+var _create_game_mode: int = NetworkManager.GameMode.CAMPAIGN
 var _map_size_label: Label = null
 
 func _ready() -> void:
@@ -124,7 +125,7 @@ func _show_create() -> void:
 
 	var s := MenuShared.ui_scale()
 	_create_panel = PanelContainer.new()
-	_create_panel.custom_minimum_size = Vector2(580 * s, 660 * s)
+	_create_panel.custom_minimum_size = Vector2(580 * s, 780 * s)
 	_create_panel.add_theme_stylebox_override("panel", MenuShared.make_panel_style(s))
 	_center.add_child(_create_panel)
 
@@ -138,6 +139,19 @@ func _show_create() -> void:
 	title.add_theme_font_size_override("font_size", int(28 * s))
 	title.add_theme_color_override("font_color", Color(0.90, 0.85, 0.70))
 	vbox.add_child(title)
+
+	# --- Game mode ---
+	vbox.add_child(_make_section_label("Game Mode", s))
+	var mode_desc := Label.new()
+	mode_desc.name = "GameModeDesc"
+	mode_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mode_desc.add_theme_font_size_override("font_size", int(13 * s))
+	mode_desc.add_theme_color_override("font_color", Color(0.60, 0.62, 0.55))
+	mode_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	mode_desc.custom_minimum_size = Vector2(0, 56 * s)
+	vbox.add_child(_make_game_mode_row(s, mode_desc))
+	vbox.add_child(mode_desc)
+	_update_game_mode_desc(mode_desc)
 
 	# --- Map style ---
 	vbox.add_child(_make_section_label("Map Style", s))
@@ -299,6 +313,45 @@ func _update_difficulty_desc(desc: Label) -> void:
 		settings.starting_hordes,
 	]
 
+## Campaign vs Survival. Survival is the wave-defence mode: the party holds a
+## headquarters building through assaults scheduled on the in-game calendar.
+func _make_game_mode_row(s: float, desc_label: Label) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", int(10 * s))
+
+	var modes := [NetworkManager.GameMode.CAMPAIGN, NetworkManager.GameMode.SURVIVAL]
+	var accent := Color(0.30, 0.55, 0.70)
+	var buttons: Array[Button] = []
+
+	for m in modes:
+		var idx: int = m
+		var btn := MenuShared.make_button(NetworkManager.game_mode_name(idx), s, 150, 44, 16)
+		btn.pressed.connect(func() -> void:
+			_create_game_mode = idx
+			_refresh_game_mode_buttons(buttons, modes, accent)
+			_update_game_mode_desc(desc_label)
+		)
+		buttons.append(btn)
+		row.add_child(btn)
+
+	_refresh_game_mode_buttons(buttons, modes, accent)
+	return row
+
+func _refresh_game_mode_buttons(buttons: Array[Button], modes: Array, accent: Color) -> void:
+	var s := MenuShared.ui_scale()
+	for i in range(buttons.size()):
+		var btn := buttons[i]
+		if modes[i] == _create_game_mode:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(accent, s))
+			btn.add_theme_color_override("font_color", Color(1, 1, 1))
+		else:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.20, 0.20, 0.24, 0.9), s))
+			btn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
+
+func _update_game_mode_desc(desc: Label) -> void:
+	desc.text = NetworkManager.game_mode_description(_create_game_mode)
+
 func _make_map_style_row(s: float, desc_label: Label) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -354,7 +407,7 @@ func _on_host_pressed() -> void:
 	# property of the chosen style — derive it from BuildingCatalog rather
 	# than letting the host pick freely.
 	var preset_size := BuildingCatalog.map_size_for(_create_map_style)
-	var code := NetworkManager.host_game(preset_size, _create_max_players, _create_difficulty, _create_map_style)
+	var code := NetworkManager.host_game(preset_size, _create_max_players, _create_difficulty, _create_map_style, _create_game_mode)
 	if code.is_empty():
 		if _create_status_label:
 			_create_status_label.add_theme_color_override("font_color", Color(0.85, 0.55, 0.45))

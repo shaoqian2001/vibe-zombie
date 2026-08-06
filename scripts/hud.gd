@@ -16,6 +16,20 @@ var _toast_label: Label = null
 var _toast_timer: float = 0.0
 var _buff_label: Label = null
 
+# Survival-mode read-outs (top-left corner): the day/hour clock, the HQ
+# integrity bar under it, and the big centred wave announcement.
+var _clock_label: Label = null
+var _defense_label: Label = null
+var _defense_bg: ColorRect = null
+var _defense_fill: ColorRect = null
+var _announce_label: Label = null
+var _announce_timer: float = 0.0
+
+const ANNOUNCE_HOLD := 3.6
+const ANNOUNCE_FADE := 1.0
+const DEFENSE_BAR_WIDTH := 180.0
+const DEFENSE_BAR_HEIGHT := 12.0
+
 # Quick-item bar (mid-bottom). Built once; set_quick_bar() just updates contents.
 var _qb_slots: Array = []          # per-slot dict: {panel_style, name, count}
 var _use_prompt_label: Label = null
@@ -54,6 +68,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	_update_bars()
 	_update_toast(delta)
+	_update_announce(delta)
 
 func set_stamina(value: float) -> void:
 	stamina = clamp(value, 0.0, max_stamina)
@@ -133,6 +148,125 @@ func _build_buff_label() -> void:
 	_buff_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_buff_label.visible = false
 	_container.add_child(_buff_label)
+
+# ------------------------------------------------------------------
+# Survival mode: day/hour clock, HQ integrity, wave announcements.
+# Everything here is built lazily so Campaign runs never pay for it.
+# ------------------------------------------------------------------
+
+## Top-left day/hour read-out, e.g. "Day 7  ·  19:12". `night` tints it cold so
+## a glance tells you whether the horde is arriving.
+func set_clock(text: String, night: bool = false) -> void:
+	if _clock_label == null:
+		_build_clock()
+	_clock_label.text = text
+	_clock_label.add_theme_color_override("font_color",
+		Color(0.62, 0.74, 1.0) if night else Color(1.0, 0.94, 0.72))
+
+func _build_clock() -> void:
+	_clock_label = Label.new()
+	_clock_label.name = "ClockLabel"
+	_clock_label.add_theme_font_size_override("font_size", 20)
+	_clock_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.85))
+	_clock_label.add_theme_constant_override("shadow_offset_x", 2)
+	_clock_label.add_theme_constant_override("shadow_offset_y", 2)
+	_clock_label.anchor_left = 0.0
+	_clock_label.anchor_top = 0.0
+	_clock_label.offset_left = MARGIN
+	_clock_label.offset_top = 12
+	_clock_label.offset_right = MARGIN + 260
+	_clock_label.offset_bottom = 40
+	_clock_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.add_child(_clock_label)
+
+## HQ integrity bar, drawn under the clock. `ratio` < 0 hides the whole widget.
+func set_defense(text: String, ratio: float) -> void:
+	if ratio < 0.0:
+		if _defense_label:
+			_defense_label.visible = false
+			_defense_bg.visible = false
+			_defense_fill.visible = false
+		return
+	if _defense_label == null:
+		_build_defense()
+	_defense_label.visible = true
+	_defense_bg.visible = true
+	_defense_fill.visible = true
+	_defense_label.text = text
+	var r := clampf(ratio, 0.0, 1.0)
+	_defense_fill.size.x = DEFENSE_BAR_WIDTH * r
+	# Green while the base is healthy, red once it's being torn apart.
+	_defense_fill.color = Color(0.85, 0.25, 0.20, 0.95) if r < 0.35 else (
+		Color(0.90, 0.70, 0.20, 0.95) if r < 0.7 else Color(0.30, 0.75, 0.85, 0.95))
+
+func _build_defense() -> void:
+	_defense_label = Label.new()
+	_defense_label.name = "DefenseLabel"
+	_defense_label.add_theme_font_size_override("font_size", 12)
+	_defense_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.90))
+	_defense_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	_defense_label.add_theme_constant_override("shadow_offset_x", 1)
+	_defense_label.add_theme_constant_override("shadow_offset_y", 1)
+	_defense_label.anchor_left = 0.0
+	_defense_label.anchor_top = 0.0
+	_defense_label.offset_left = MARGIN
+	_defense_label.offset_top = 42
+	_defense_label.offset_right = MARGIN + 260
+	_defense_label.offset_bottom = 60
+	_defense_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.add_child(_defense_label)
+
+	_defense_bg = ColorRect.new()
+	_defense_bg.color = BG_COLOR
+	_defense_bg.position = Vector2(MARGIN, 62)
+	_defense_bg.size = Vector2(DEFENSE_BAR_WIDTH, DEFENSE_BAR_HEIGHT)
+	_defense_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.add_child(_defense_bg)
+
+	_defense_fill = ColorRect.new()
+	_defense_fill.color = Color(0.30, 0.75, 0.85, 0.95)
+	_defense_fill.position = Vector2(MARGIN, 62)
+	_defense_fill.size = Vector2(DEFENSE_BAR_WIDTH, DEFENSE_BAR_HEIGHT)
+	_defense_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_container.add_child(_defense_fill)
+
+## Big centred banner for wave events ("FINAL ASSAULT — defend the base!").
+## Louder and longer-lived than show_toast, which is for pickups.
+func announce(text: String, color: Color = Color(1, 1, 1)) -> void:
+	if _announce_label == null:
+		_build_announce()
+	_announce_label.text = text
+	var c := color
+	c.a = 1.0
+	_announce_label.add_theme_color_override("font_color", c)
+	_announce_label.modulate.a = 1.0
+	_announce_label.visible = true
+	_announce_timer = ANNOUNCE_HOLD + ANNOUNCE_FADE
+
+func _build_announce() -> void:
+	_announce_label = Label.new()
+	_announce_label.name = "AnnounceLabel"
+	_announce_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_announce_label.add_theme_font_size_override("font_size", 34)
+	_announce_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.95))
+	_announce_label.add_theme_constant_override("shadow_offset_x", 3)
+	_announce_label.add_theme_constant_override("shadow_offset_y", 3)
+	_announce_label.anchor_left = 0.0
+	_announce_label.anchor_right = 1.0
+	_announce_label.anchor_top = 0.28
+	_announce_label.anchor_bottom = 0.36
+	_announce_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_announce_label.visible = false
+	_container.add_child(_announce_label)
+
+func _update_announce(delta: float) -> void:
+	if _announce_label == null or _announce_timer <= 0.0:
+		return
+	_announce_timer -= delta
+	if _announce_timer <= 0.0:
+		_announce_label.visible = false
+	elif _announce_timer < ANNOUNCE_FADE:
+		_announce_label.modulate.a = _announce_timer / ANNOUNCE_FADE
 
 func set_ammo(current: int, magazine: int) -> void:
 	if _ammo_label:

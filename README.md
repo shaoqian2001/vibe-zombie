@@ -11,6 +11,38 @@ Explore a procedurally generated small town, enter buildings, and survive among 
 - **Sprint** with **Shift** (drains stamina; recovers after a cooldown)
 - **Survive** among 25 wandering zombies with visible HP bars
 - **Loot** weapons, consumables, and equipment that spawn around the map (mostly inside buildings)
+- **Craft** barricades, traps and supplies with **B**
+
+### Game Modes
+
+Pick a mode in the single-player setup screen, or in the multiplayer create-game panel (the host can also switch it in the lobby).
+
+**Campaign** — run a chain of missions across the city, then reach the rescue point to escape.
+
+**Survival** — the party is given a headquarters building and has to hold it against zombie assaults scheduled on the in-game calendar:
+
+| Day | Event |
+|---|---|
+| 7 | First assault |
+| 12 | Second assault |
+| 15 | Final assault — survive it and you win |
+
+A day/hour clock runs in the top-left corner (one in-game day takes about two minutes of real time), and the world lights and sky follow it, so the assaults really do arrive after dark. Under the clock is the HQ integrity bar: zombies that get inside the base's defence ring during an assault tear it down, and if it hits zero the run is lost. Between assaults the base repairs itself, which is your window to scavenge and fortify.
+
+### Crafting
+
+Press **B** to open the Craft screen. Recipes are paid for with **Wood** and **Scrap**, which are scattered around the city, cached at the base, and dropped by zombies you kill during Survival.
+
+| Recipe | Cost | Effect |
+|---|---|---|
+| Wooden Barricade | 3 Wood | Plank wall that blocks zombies and soaks their claws |
+| Reinforced Barricade | 3 Wood, 3 Scrap | Same, with a scrap frame — over twice the durability |
+| Spike Trap | 2 Wood, 2 Scrap | Bleeds zombies standing on it; wears out as it works |
+| Floodlight | 4 Scrap | Lights the ground around the base through the night |
+| Field Medkit | 3 Scrap, 1 Wood | Stowed in your bag — hold it and press E for a full heal |
+| Scrap Armor | 6 Scrap | Plate vest, equipped on the spot |
+
+Anything placeable drops you into placement mode: a translucent preview follows the cursor, **left click** builds, the **mouse wheel** rotates, and **right click** or **ESC** cancels. Materials are only spent when you actually place something, and if you can still afford another the preview stays up so you can run a whole wall in one go.
 
 ### Items & Equipment
 
@@ -24,6 +56,8 @@ Pickups glow and float on the ground; walk over one to collect it.
 | Body Armor | Equipment | Adds armor that soaks damage before health |
 | Backpack | Equipment | Enlarges the stamina pool (sprint longer) |
 | Tactical Shoes | Equipment | Small permanent movement-speed boost |
+| Wood | Material | Craft stock for barricades |
+| Scrap | Material | Craft stock for reinforcement, traps and lights |
 
 ### Controls
 
@@ -36,6 +70,8 @@ Pickups glow and float on the ground; walk over one to collect it.
 | Select quick-bar slot | 1 – 7 |
 | Use held item | E |
 | Inventory | I |
+| Map | M |
+| Craft | B |
 
 Weapons and consumables share one **quick-item bar** (mid-bottom of the screen, 7 slots). Press a number key to hold that slot's item; holding a consumable shows a *"Press E to use"* prompt. Picked-up weapons and consumables are stored in your inventory and auto-placed on the bar when a slot is free; equipment is equipped instantly.
 
@@ -63,7 +99,13 @@ vibe-zombie/
     ├── world.gd               # Procedural city generation
     ├── enemy.gd               # Zombie AI, wandering, HP bars
     ├── building_interior.gd   # Procedural interior generation
-    └── hud.gd                 # Armor / Health / Stamina display
+    ├── mission_system.gd      # Campaign mode — mission chain + rescue
+    ├── survival_mode.gd       # Survival mode — HQ, wave schedule, integrity
+    ├── time_system.gd         # Day / hour game clock
+    ├── craft_data.gd          # Craft recipes + structure stats
+    ├── craft_menu.gd          # Craft screen (B)
+    ├── structure.gd           # Placed barricades / traps / floodlights
+    └── hud.gd                 # Armor / Health / Stamina, clock, HQ integrity
 ```
 
 All visuals are generated procedurally in code — no external 3D models or textures are required.

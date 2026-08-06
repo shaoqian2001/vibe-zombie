@@ -37,6 +37,11 @@ signal net_event(event_name: String, payload: Dictionary)
 
 enum Difficulty { EASY, MEDIUM, TOUGH, NIGHTMARE }
 
+## Game modes. CAMPAIGN is the original mission chain (deliver / hold / clear,
+## then reach the rescue point). SURVIVAL hands the party a headquarters
+## building and a calendar of zombie assaults to defend it against.
+enum GameMode { CAMPAIGN, SURVIVAL }
+
 const BuildingCatalog = preload("res://scripts/building_catalog.gd")
 
 const CODE_LENGTH := 6
@@ -54,6 +59,7 @@ const CFG_PLAYERS_KEY := "cfg_players"
 const CFG_DIFF_KEY := "cfg_diff"
 const CFG_SEED_KEY := "cfg_seed"
 const CFG_STYLE_KEY := "cfg_style"
+const CFG_MODE_KEY := "cfg_mode"
 
 # GD-Sync enum mirrors (from addons/GD-Sync/Scripts/Enums/Enums.gd) so error
 # messages are human-readable instead of "code 2".
@@ -80,6 +86,7 @@ var map_size: int = 3                       # world.num_blocks (each block ~100Ã
 var max_players: int = 4                    # 2..8
 var difficulty: int = Difficulty.MEDIUM
 var map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
+var game_mode: int = GameMode.CAMPAIGN
 var local_player_name: String = "Player"
 var local_peer_id: int = -1
 
@@ -154,10 +161,28 @@ static func difficulty_name(d: int) -> String:
 	return "Medium"
 
 # ------------------------------------------------------------------
+# Game modes
+# ------------------------------------------------------------------
+
+static func game_mode_name(m: int) -> String:
+	match m:
+		GameMode.CAMPAIGN: return "Campaign"
+		GameMode.SURVIVAL: return "Survival"
+	return "Campaign"
+
+static func game_mode_description(m: int) -> String:
+	match m:
+		GameMode.CAMPAIGN:
+			return "Run a chain of missions across the city, then reach the rescue point to escape."
+		GameMode.SURVIVAL:
+			return "Hold a headquarters building against scheduled zombie assaults. Waves land on day 7 and day 12; survive the final assault on day 15 to win. Craft barricades and traps with B."
+	return ""
+
+# ------------------------------------------------------------------
 # Host / join lifecycle (public API consumed by the menu)
 # ------------------------------------------------------------------
 
-func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1) -> String:
+func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1, p_game_mode: int = -1) -> String:
 	## Kicks off an asynchronous GD-Sync host. Returns the generated room code
 	## immediately (so the menu can show it); success/failure arrives later via
 	## the join_succeeded / join_failed signals.
@@ -166,6 +191,8 @@ func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_sty
 	reset()
 	if p_map_style >= 0:
 		map_style = p_map_style
+	if p_game_mode >= 0:
+		game_mode = clampi(p_game_mode, 0, GameMode.size() - 1)
 	# Map size is a property of the chosen style; the caller passes the
 	# style's preset and we just snap it to safe bounds.
 	map_size = clampi(p_map_size, 2, 12)
@@ -273,6 +300,12 @@ func set_map_style(v: int) -> void:
 	lobby_config_changed.emit()
 	_publish_config()
 
+func set_game_mode(v: int) -> void:
+	if not is_host: return
+	game_mode = clampi(v, 0, GameMode.size() - 1)
+	lobby_config_changed.emit()
+	_publish_config()
+
 func _publish_config() -> void:
 	if _gdsync == null or not _gdsync.has_method("lobby_set_data"):
 		return
@@ -281,11 +314,12 @@ func _publish_config() -> void:
 	_gdsync.call("lobby_set_data", CFG_DIFF_KEY, str(difficulty))
 	_gdsync.call("lobby_set_data", CFG_SEED_KEY, str(game_seed))
 	_gdsync.call("lobby_set_data", CFG_STYLE_KEY, str(map_style))
+	_gdsync.call("lobby_set_data", CFG_MODE_KEY, str(game_mode))
 	# Belt-and-braces: broadcast as an event too, for builds whose
 	# lobby_data_changed signal is unreliable.
 	broadcast_event("cfg_sync", {
 		"map": map_size, "players": max_players, "diff": difficulty,
-		"seed": game_seed, "style": map_style,
+		"seed": game_seed, "style": map_style, "mode": game_mode,
 	})
 
 func _ingest_config_from_lobby_data() -> void:
@@ -311,6 +345,9 @@ func _ingest_config_from_lobby_data() -> void:
 	if d.has(CFG_STYLE_KEY):
 		var vst := int(str(d[CFG_STYLE_KEY]))
 		if vst != map_style: map_style = vst; changed = true
+	if d.has(CFG_MODE_KEY):
+		var vmo := int(str(d[CFG_MODE_KEY]))
+		if vmo != game_mode: game_mode = vmo; changed = true
 	if changed:
 		lobby_config_changed.emit()
 
@@ -328,7 +365,7 @@ func start_game() -> void:
 	# exact same procedural city / difficulty even if lobby-data sync lagged.
 	broadcast_event("game_started", {
 		"seed": game_seed, "map": map_size, "players": max_players,
-		"diff": difficulty, "style": map_style,
+		"diff": difficulty, "style": map_style, "mode": game_mode,
 	})
 	_enter_game_scene()
 
@@ -428,6 +465,7 @@ func _on_event_received(event_name: String, payload: Dictionary) -> void:
 			if payload.has("diff") and int(payload["diff"]) != difficulty: difficulty = int(payload["diff"]); changed = true
 			if payload.has("seed") and int(payload["seed"]) != game_seed: game_seed = int(payload["seed"]); changed = true
 			if payload.has("style") and int(payload["style"]) != map_style: map_style = int(payload["style"]); changed = true
+			if payload.has("mode") and int(payload["mode"]) != game_mode: game_mode = int(payload["mode"]); changed = true
 			if changed:
 				lobby_config_changed.emit()
 		"game_started":
@@ -439,6 +477,7 @@ func _on_event_received(event_name: String, payload: Dictionary) -> void:
 				if payload.has("players"): max_players = int(payload["players"])
 				if payload.has("diff"): difficulty = int(payload["diff"])
 				if payload.has("style"): map_style = int(payload["style"])
+				if payload.has("mode"): game_mode = int(payload["mode"])
 				_set_state(State.IN_GAME)
 				_enter_game_scene()
 	net_event.emit(event_name, payload)
@@ -699,7 +738,7 @@ func _on_hello_received(payload: Dictionary) -> void:
 	if is_host:
 		# Reply with the canonical roster + config so newcomers sync up.
 		broadcast_event("roster_sync", {"host_id": host_peer_id(), "peers": sorted_peers()})
-		broadcast_event("cfg_sync", {"map": map_size, "players": max_players, "diff": difficulty, "seed": game_seed, "style": map_style})
+		broadcast_event("cfg_sync", {"map": map_size, "players": max_players, "diff": difficulty, "seed": game_seed, "style": map_style, "mode": game_mode})
 		broadcast_event("hello", {"peer_id": local_peer_id, "name": local_player_name, "is_host": true})
 
 func _apply_roster_sync(remote_peers: Array) -> void:
