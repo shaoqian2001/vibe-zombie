@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Vibe Zombie is a 2.5D cartoon zombie survival game built with **Godot 4.6** and **GDScript**. It features procedurally generated cities, multiplayer via LAN, and a mission system — all visuals are generated in code with no external art assets.
+Vibe Zombie is a 2.5D cartoon zombie survival game built with **Godot 4.6** and **GDScript**. It features procedurally generated cities, multiplayer via LAN, three game modes (Campaign missions, Survival wave-defence, and a 1v1 Duel), and a crafting system — all visuals are generated in code with no external art assets.
 
 ## Running the Game
 
@@ -31,7 +31,40 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 
 > Setup: enable the GD-Sync plugin and set its API key in **Project → Tools → GD-Sync**. Order the `GDSync` autoload **before** `NetworkManager` (NetworkManager retries once deferred if not). Without the addon, single-player still runs; multiplayer is disabled with a warning.
 
-**Enemy AI** (`scripts/enemy.gd`): Wander/chase/attack state machine, networked health, HP bars. The host runs AI; clients apply host-pushed transform/HP via `net_apply_transform()` / `net_set_hp()`.
+**Enemy AI** (`scripts/enemy.gd`): Wander/chase/attack state machine, networked health, HP bars. The host runs AI; clients apply host-pushed transform/HP via `net_apply_transform()` / `net_set_hp()`. Two hooks feed the modes below: `home_target` makes a zombie march on a fixed point (Survival's HQ) when no player is in detect range, and `_try_attack_structure()` makes one claw down any crafted barricade it's pressed against.
+
+### Game Modes
+
+`NetworkManager.game_mode` (`GameMode.CAMPAIGN` / `SURVIVAL` / `DUEL`) is lobby config like map size or difficulty — published in lobby data, carried in `cfg_sync` / `game_started`, and picked in the multiplayer create panel and the lobby (host). The single-player setup screen offers Campaign and Survival; the Duel is multiplayer-only. `game_mode_name()` / `game_mode_description()` are the single source of mode copy — the menus render from them rather than hard-coding labels.
+
+`main.gd` holds the active driver in `_mission_system` (the Duel has none and leaves it null). Campaign and Survival expose the same surface — `setup()`, `process(delta)`, `get_objective_text()`, `get_map_markers()`, `spawn_horde_at()`, `notify_enemy_killed(pos)`, `zombie_density_multiplier` — so the objective label, map view, and debug panel drive either one through identical calls.
+
+**Campaign** (`scripts/mission_system.gd`): the original mission chain. Host-only; clients read a host-pushed `mission_sync` (objective text + marker positions).
+
+**Duel** (no driver script): 1v1 PvP. `world.gd` bails out of city generation and builds a small barricaded arena instead; `main.gd` uses two fixed arena spawns, sets `Player.pvp_enabled`, skips zombies/missions/loot entirely, and resolves the round through `duel_over`. `NetworkManager` pins `max_players` to `DUEL_MAX_PLAYERS`, and both the create panel and the lobby hide the co-op knobs (map style / player count / difficulty) while it's selected.
+
+**Survival** (`scripts/survival_mode.gd`): wave defence. Runs on **every** peer, not just the host — the HQ is chosen deterministically from the shared world seed (`SurvivalMode.pick_hq_building()` ranks `world.buildings` by distance to the map centre, then picks the largest of the closest few), so each peer builds the same beacon, defence ring and map marker locally with zero networking. Only the numbers sync, in a single `survival_sync` packet (clock, wave index, wave enemies left, HQ integrity) at 2 Hz.
+
+- Players spawn in a ring around the HQ instead of the map rim.
+- Assaults land at 19:00 on **day 7**, **day 12** and **day 15** (final). The scheduler is calendar-driven: a wave launches on its date whether or not the previous one was cleared. Clear every launched wave once the last is out and the run is won.
+- The HQ has integrity (`HQ_MAX_HP`), drained only *during* an assault by zombies inside `HQ_RADIUS`, and repaired between them. Zero = loss. Outcomes broadcast as `survival_outcome`.
+- Kills drop craft material; a cache spawns at the base on day 1 and restocks daily.
+
+The HUD's top-left corner is shared: `_layout_top_left()` stacks the Survival clock and HQ integrity bar above the multiplayer ping readout, so widgets built lazily and in any order never land on the same row.
+
+**Game clock** (`scripts/time_system.gd`): a single monotonic `total_hours` float, so it replicates as one number and can't drift out of order. Day 1 starts at 08:00; `REAL_SECONDS_PER_DAY` (120s) sets the pace. Every peer ticks it locally for a smooth display; `net_set_hours()` eases in the host's value. The HUD shows it top-left via `set_clock()`, and it drives `world.set_time_of_day()` — sun elevation/colour, ambient, fog and sky all follow the hour (Campaign never calls this and keeps its fixed midday lighting).
+
+### Crafting (B) — available in every mode
+
+`scripts/craft_data.gd` (`CraftData`) is the recipe table plus stats for anything placeable, in the same shape as `WeaponData` / `ItemData`. Recipes cost **materials** — `wood` and `scrap`, ordinary `ItemData` entries tagged `category: "material"`. Materials stack in `Player._inventory`, never claim a quick-bar slot, and can't be held or used; they're spent through `Player.has_materials()` / `consume_materials()`.
+
+Two recipe kinds:
+- `"item"` — crafted instantly into the bag via `Player.grant_item()` → the normal `pickup_item()` path, so a crafted medkit stows and crafted armor equips.
+- `"structure"` — hands off to **placement mode** in `main.gd`: a translucent ghost (built by `Structure.build_visual()`, the same static helper the real node uses, so preview == result) follows the cursor within `PLACE_MAX_DIST`, tinted green/red by `_placement_is_valid()`. Left click commits, right click / ESC cancels, wheel rotates. Materials are spent only on commit, and an affordable recipe chain-builds.
+
+`scripts/structure.gd` is the placed node: HP, an optional blocking collider, and a spike-trap tick that damages zombies standing on it while wearing itself down. Replication mirrors pickups — the host owns ids and broadcasts the full set as `structure_state` (2 Hz), clients reconcile; clients request placement (`structure_place`) and damage (`structure_damage`) from the host.
+
+While the Craft menu is open or a ghost is up, `main.gd` sets `Player.input_locked` so the same mouse button doesn't also fire the weapon.
 
 ### Key Patterns
 
@@ -50,6 +83,10 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 | `World.tscn` | `world.gd` | Procedural city generation |
 | `Player.tscn` | `player.gd` | Movement, combat, stamina, inventory |
 | *(no scene)* | `network_manager.gd` | Autoload — multiplayer authority |
+| *(no scene)* | `survival_mode.gd` | Survival driver — HQ, waves, integrity |
+| *(no scene)* | `time_system.gd` | Day / hour clock |
+| *(no scene)* | `craft_menu.gd` | Craft screen (B) |
+| *(no scene)* | `structure.gd` | Placed barricades / traps / floodlights |
 
 ### Weapon System
 
@@ -69,6 +106,10 @@ Equipment is also **worn on the character model**: `player.gd` builds procedural
 Weapons AND consumables are unified "items" in a single 7-slot hotbar, selected with number keys **1–7** (`weapon_1`..`weapon_7`). `player.gd` owns the model: `_inventory` (id → count; weapons are count 1, consumables stack) and `_quick` (7 slot ids). Pickups route through `pickup_weapon` / `pickup_item` → `_assign_quick_slot`. Selecting a slot (`_select_quick_slot`) either **draws a weapon** (`_hold_weapon`, the existing armed/aim/fire path) or **holds a consumable** (`_hold_consumable`, shows an in-hand model + a "Press E to use" prompt). **E** (`use_item`) uses the held consumable (`_use_held_item`); since E also rotates the camera, `camera_controller.gd` yields the key when `Player.wants_use_key()` is true. The bar + prompt render at mid-bottom via `HUD.set_quick_bar` / `set_use_prompt` (pushed every frame from `_sync_hud`); the held consumable is networked via the `held` field in `player_xform`. The inventory screen (`I`) lists the real stored items via `Player.get_inventory_items()`.
 
 Item pickups: the host broadcasts the full set as `item_state` (~1 Hz) and clients reconcile; `item_despawn` drops a collected pickup. Pickups feed the HUD's toast (`show_toast`) and speed-buff indicator (`set_speed_buff`).
+
+### Input Actions
+
+All input is defined in `project.godot` under `[input]`. Recent additions: `craft` (**B**) opens the Craft screen. Placement mode reads raw mouse buttons in `main._unhandled_input` rather than adding actions, so left/right click and the wheel keep their obvious meanings.
 
 ### Camera
 

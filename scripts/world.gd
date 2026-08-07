@@ -132,6 +132,13 @@ var _parking_line_xforms: Array[Transform3D] = []
 ##               entrance_pos: Vector3, entrance_facing: Vector3 }
 var buildings: Array = []
 
+## Lighting handles kept so Survival's day/hour clock can drive a day-night
+## cycle (see set_time_of_day). Null until _add_sun_and_sky has run.
+var _sun: DirectionalLight3D = null
+var _fill: DirectionalLight3D = null
+var _env: Environment = null
+var _sky_mat: ProceduralSkyMaterial = null
+
 ## Per-block metadata — used by the map view and gameplay code.
 ##   { row: int, col: int, category: int,
 ##     origin: Vector3, width: float, depth: float }
@@ -1597,6 +1604,7 @@ func _add_sun_and_sky() -> void:
 	# still receive crisp shadows.
 	sun.directional_shadow_max_distance = 240.0
 	add_child(sun)
+	_sun = sun
 
 	var fill := DirectionalLight3D.new()
 	fill.name = "FillLight"
@@ -1605,6 +1613,7 @@ func _add_sun_and_sky() -> void:
 	fill.light_color = Color(0.75, 0.82, 1.0)
 	fill.shadow_enabled = false
 	add_child(fill)
+	_fill = fill
 
 	var sky_mat := ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color = Color(0.35, 0.55, 0.85)
@@ -1638,3 +1647,47 @@ func _add_sun_and_sky() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
+	_env = env
+	_sky_mat = sky_mat
+
+# ------------------------------------------------------------------
+# Day / night cycle (Survival mode)
+# ------------------------------------------------------------------
+
+## Drive the sky and lights from the game clock. `hour` is the fractional
+## hour-of-day (13.5 == 13:30). Campaign never calls this, so those runs keep
+## the fixed midday lighting they've always had.
+##
+## The sun sweeps from the eastern horizon at 06:00 to the western one at
+## 18:00; outside that window everything drops to a cold, dim moonlit look.
+func set_time_of_day(hour: float) -> void:
+	if _sun == null:
+		return
+	var day_t := clampf((hour - 6.0) / 12.0, 0.0, 1.0)   # 0 at dawn, 1 at dusk
+	var is_daytime := hour >= 6.0 and hour < 18.0
+	# 0 at the horizons, 1 at noon — drives both elevation and brightness.
+	var elevation := sin(day_t * PI) if is_daytime else 0.0
+
+	_sun.rotation_degrees = Vector3(-(6.0 + elevation * 66.0), -60.0 + day_t * 200.0, 0.0)
+	_sun.light_energy = 0.05 + elevation * 1.45
+	# Warm at the horizons, neutral at noon.
+	_sun.light_color = Color(1.0, 0.62, 0.38).lerp(Color(1.0, 0.97, 0.92), clampf(elevation * 1.6, 0.0, 1.0))
+	_sun.visible = is_daytime
+
+	if _fill:
+		# Night keeps a faint blue fill so the city reads as moonlit rather than black.
+		_fill.light_energy = 0.10 + elevation * 0.28
+		_fill.light_color = Color(0.45, 0.55, 0.95) if not is_daytime else Color(0.75, 0.82, 1.0)
+
+	if _env:
+		_env.ambient_light_energy = 0.10 + elevation * 0.45
+		_env.fog_light_color = Color(0.10, 0.13, 0.22).lerp(Color(0.65, 0.72, 0.82), elevation)
+
+	if _sky_mat:
+		var night_top := Color(0.03, 0.04, 0.09)
+		var night_horizon := Color(0.08, 0.10, 0.18)
+		var dusk_horizon := Color(0.85, 0.55, 0.35)
+		_sky_mat.sky_top_color = night_top.lerp(Color(0.35, 0.55, 0.85), elevation)
+		# Blend through a sunset band so dawn/dusk aren't a hard cut to night.
+		var horizon := night_horizon.lerp(dusk_horizon, clampf(elevation * 3.0, 0.0, 1.0))
+		_sky_mat.sky_horizon_color = horizon.lerp(Color(0.65, 0.75, 0.90), clampf((elevation - 0.35) / 0.65, 0.0, 1.0))

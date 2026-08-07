@@ -86,6 +86,8 @@ func _build_model() -> void:
 		"body_armor": _build_body_armor_model()
 		"backpack": _build_backpack_model()
 		"tactical_shoes": _build_shoes_model()
+		"wood": _build_wood_model()
+		"scrap": _build_scrap_model()
 		_: _build_apple_model()
 
 func _mat(color: Color, rough: float = 0.7) -> StandardMaterial3D:
@@ -164,6 +166,19 @@ func _build_shoes_model() -> void:
 		_box(Vector3(0.11, 0.04, 0.24), Color(0.10, 0.10, 0.12, 1), Vector3(side * 0.075, -0.06, 0.0))
 		# Upper.
 		_box(Vector3(0.10, 0.10, 0.18), Color(0.20, 0.24, 0.20, 1), Vector3(side * 0.075, 0.0, -0.02))
+
+func _build_wood_model() -> void:
+	# A small stack of salvaged planks, cross-tied at the top.
+	for i in range(3):
+		_box(Vector3(0.42, 0.05, 0.13), Color(0.56, 0.39, 0.22, 1).lightened(0.05 * float(i)),
+			Vector3(0.0, -0.06 + float(i) * 0.06, 0.0))
+	_box(Vector3(0.13, 0.05, 0.36), Color(0.48, 0.33, 0.19, 1), Vector3(0.0, 0.15, 0.0))
+
+func _build_scrap_model() -> void:
+	# A jumble of bent plate and a length of pipe.
+	_box(Vector3(0.30, 0.06, 0.22), Color(0.55, 0.58, 0.62, 1), Vector3(0.0, -0.06, 0.0), 0.4)
+	_box(Vector3(0.22, 0.05, 0.26), Color(0.46, 0.44, 0.42, 1), Vector3(0.03, 0.01, 0.02), 0.4)
+	_cyl(0.035, 0.34, Color(0.62, 0.64, 0.68, 1), Vector3(-0.02, 0.09, 0.0), Vector3(0.0, 0.0, 78.0))
 
 func _build_glow() -> void:
 	var glow_mat := StandardMaterial3D.new()

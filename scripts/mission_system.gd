@@ -144,7 +144,9 @@ func get_objective_text() -> String:
 
 	return prefix + mission.get("description", "")
 
-func notify_enemy_killed() -> void:
+## Called by enemy.gd on every kill. `_pos` is where the zombie fell — unused
+## here, but part of the shared signature Survival mode uses for loot drops.
+func notify_enemy_killed(_pos: Vector3 = Vector3.ZERO) -> void:
 	if not _mission_active:
 		return
 	if current_mission_index < 0 or current_mission_index >= missions.size():

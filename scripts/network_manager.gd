@@ -38,10 +38,13 @@ signal net_event(event_name: String, payload: Dictionary)
 enum Difficulty { EASY, MEDIUM, TOUGH, NIGHTMARE }
 
 ## Game modes selectable when hosting.
-##   SURVIVAL — the co-op zombie campaign (procedural city, missions, hordes).
+##   CAMPAIGN — the co-op mission chain (procedural city, missions, hordes),
+##              then reach the rescue point to escape.
+##   SURVIVAL — hold a headquarters building against a calendar of zombie
+##              assaults; clear the final one to win.
 ##   DUEL     — 1v1 PvP on a single 20×20 m barricaded arena; capped at two
 ##              players, and the round ends the moment one player dies.
-enum GameMode { SURVIVAL, DUEL }
+enum GameMode { CAMPAIGN, SURVIVAL, DUEL }
 
 ## Player cap for the 1v1 Duel — the host plus exactly one challenger.
 const DUEL_MAX_PLAYERS := 2
@@ -93,7 +96,7 @@ var map_size: int = 3                       # world.num_blocks (each block ~100�
 var max_players: int = 4                    # 2..8
 var difficulty: int = Difficulty.MEDIUM
 var map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
-var game_mode: int = GameMode.SURVIVAL
+var game_mode: int = GameMode.CAMPAIGN
 var local_player_name: String = "Player"
 var local_peer_id: int = -1
 
@@ -183,17 +186,38 @@ static func difficulty_name(d: int) -> String:
 	return "Medium"
 
 # ------------------------------------------------------------------
+# Game modes
+# ------------------------------------------------------------------
+
+static func game_mode_name(m: int) -> String:
+	match m:
+		GameMode.CAMPAIGN: return "Campaign"
+		GameMode.SURVIVAL: return "Survival"
+		GameMode.DUEL: return "1v1 Duel"
+	return "Campaign"
+
+static func game_mode_description(m: int) -> String:
+	match m:
+		GameMode.CAMPAIGN:
+			return "Run a chain of missions across the city, then reach the rescue point to escape."
+		GameMode.SURVIVAL:
+			return "Hold a headquarters building against scheduled zombie assaults. Waves land on day 7 and day 12; survive the final assault on day 15 to win. Craft barricades and traps with B."
+		GameMode.DUEL:
+			return "1v1 PvP on a single barricaded arena. Capped at two players; the round ends the moment one of you goes down."
+	return ""
+
+# ------------------------------------------------------------------
 # Host / join lifecycle (public API consumed by the menu)
 # ------------------------------------------------------------------
 
-func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1, p_game_mode: int = GameMode.SURVIVAL) -> String:
+func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1, p_game_mode: int = GameMode.CAMPAIGN) -> String:
 	## Kicks off an asynchronous GD-Sync host. Returns the generated room code
 	## immediately (so the menu can show it); success/failure arrives later via
 	## the join_succeeded / join_failed signals.
 	if not _ensure_addon():
 		return ""
 	reset()
-	game_mode = p_game_mode
+	game_mode = clampi(p_game_mode, 0, GameMode.size() - 1)
 	if p_map_style >= 0:
 		map_style = p_map_style
 	# Map size is a property of the chosen style; the caller passes the
@@ -309,8 +333,8 @@ func set_map_style(v: int) -> void:
 
 func set_game_mode(v: int) -> void:
 	if not is_host: return
-	game_mode = v
-	# The duel is always 2-player; leaving the mode restores the survival cap.
+	game_mode = clampi(v, 0, GameMode.size() - 1)
+	# The duel is always 2-player; the co-op modes keep the host's chosen cap.
 	if game_mode == GameMode.DUEL:
 		max_players = DUEL_MAX_PLAYERS
 	lobby_config_changed.emit()
@@ -788,7 +812,7 @@ func _on_hello_received(payload: Dictionary) -> void:
 	if is_host:
 		# Reply with the canonical roster + config so newcomers sync up.
 		broadcast_event("roster_sync", {"host_id": host_peer_id(), "peers": sorted_peers()})
-		broadcast_event("cfg_sync", {"map": map_size, "players": max_players, "diff": difficulty, "seed": game_seed, "style": map_style})
+		broadcast_event("cfg_sync", {"map": map_size, "players": max_players, "diff": difficulty, "seed": game_seed, "style": map_style, "mode": game_mode})
 		broadcast_event("hello", {"peer_id": local_peer_id, "name": local_player_name, "is_host": true})
 
 func _apply_roster_sync(remote_peers: Array) -> void:

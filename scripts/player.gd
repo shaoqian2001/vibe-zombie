@@ -86,6 +86,10 @@ var _inventory: Dictionary = {}
 var _quick: Array = []
 var _quick_index: int = -1
 var _held_consumable: String = ""
+## Suppresses gameplay input (shoot / hotbar / use / jump) while main.gd has a
+## menu or the structure-placement ghost up. WASD movement and the camera, which
+## are polled rather than event-driven, keep working.
+var input_locked: bool = false
 
 var _weapon_ammo: Dictionary = {}
 var _current_weapon: String = ""
@@ -1328,7 +1332,7 @@ func _apply_recoil() -> void:
 ## frame), and semi-automatic weapons simply lack the "automatic" flag and so
 ## still require one click per shot.
 func _handle_auto_fire() -> void:
-	if not _armed or is_dead:
+	if not _armed or is_dead or input_locked:
 		return
 	if not _weapon_stats.get("automatic", false):
 		return
@@ -1376,6 +1380,12 @@ func _input(event: InputEvent) -> void:
 	# Only the owning peer (or single-player) consumes input.
 	if not _owns_input:
 		return
+	# Set by main.gd while a full-screen menu (Craft) is open or a structure is
+	# being placed — the same mouse button confirms the placement, so the gun
+	# must not also fire on it. Checked before everything else so no gameplay
+	# key leaks through a menu.
+	if input_locked:
+		return
 	# Jump — only from the ground. Queue it so _apply_gravity applies the launch
 	# on the next physics tick (setting velocity.y here would be overwritten by
 	# the on-floor clamp in _apply_gravity when it runs later this frame).
@@ -1403,7 +1413,7 @@ func _input(event: InputEvent) -> void:
 ## True when E should be consumed as "use item" (a usable consumable is held), so
 ## the camera shouldn't also rotate-right on the same key. Read by camera_controller.
 func wants_use_key() -> bool:
-	return _owns_input and _held_consumable != ""
+	return _owns_input and not input_locked and _held_consumable != ""
 
 # ------------------------------------------------------------------
 # Weapon inventory
@@ -1463,6 +1473,11 @@ func pickup_item(item_id: String) -> void:
 		var nm: String = data.get("display_name", item_id)
 		msg = ("%s  ×%d" % [nm, cnt]) if cnt > 1 else ("%s (stowed)" % nm)
 		_refresh_quick_bar()
+	elif category == "material":
+		# Craft stock. It stacks in the bag but never claims a quick-bar slot —
+		# it can't be held or used, only spent by the Craft menu (B).
+		_inventory[item_id] = int(_inventory.get(item_id, 0)) + 1
+		msg = "%s  ×%d" % [data.get("display_name", item_id), int(_inventory[item_id])]
 	else:
 		return
 
@@ -1522,6 +1537,42 @@ func _apply_equipment(data: Dictionary) -> String:
 			return "%s equipped  +%d%% speed" % [item_name, int(round((data["speed_mult"] - 1.0) * 100.0))]
 		return "%s (already equipped)" % item_name
 	return ""
+
+# ------------------------------------------------------------------
+# Craft materials. Wood / scrap live in the same `_inventory` dictionary as
+# everything else; these helpers are what craft_menu.gd and main.gd use to
+# price and pay for a recipe.
+# ------------------------------------------------------------------
+
+func material_count(item_id: String) -> int:
+	return int(_inventory.get(item_id, 0))
+
+## True when the bag holds every material in `cost` (id -> amount).
+func has_materials(cost: Dictionary) -> bool:
+	for id in cost:
+		if material_count(id) < int(cost[id]):
+			return false
+	return true
+
+## Spend a recipe's cost. All-or-nothing: returns false and changes nothing when
+## the player can't afford it.
+func consume_materials(cost: Dictionary) -> bool:
+	if not has_materials(cost):
+		return false
+	for id in cost:
+		var left := material_count(id) - int(cost[id])
+		if left > 0:
+			_inventory[id] = left
+		else:
+			_inventory.erase(id)
+	_refresh_quick_bar()
+	return true
+
+## Give the player a crafted item — routed through the normal pickup path so a
+## crafted medkit stows into the quick bar and crafted armor equips, exactly as
+## the looted versions do.
+func grant_item(item_id: String) -> void:
+	pickup_item(item_id)
 
 # ------------------------------------------------------------------
 # Quick bar — unified weapon/consumable hotbar (number keys 1..7).
