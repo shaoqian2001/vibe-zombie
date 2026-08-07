@@ -31,6 +31,19 @@ var _create_difficulty: int = NetworkManager.Difficulty.MEDIUM
 var _create_map_style: int = BuildingCatalog.MapStyle.DOWNTOWN
 var _create_game_mode: int = NetworkManager.GameMode.CAMPAIGN
 var _map_size_label: Label = null
+# Config rows that only apply to the co-op modes (Campaign / Survival) —
+# hidden when the host switches to the 1v1 Duel, which has a fixed arena and a
+# 2-player cap.
+var _coop_only_nodes: Array = []
+var _mode_info_label: Label = null
+var _mode_buttons: Array[Button] = []
+
+## Button order of the game-mode row — also the index basis for highlighting.
+const MODE_ORDER := [
+	NetworkManager.GameMode.CAMPAIGN,
+	NetworkManager.GameMode.SURVIVAL,
+	NetworkManager.GameMode.DUEL,
+]
 
 func _ready() -> void:
 	_build_root()
@@ -140,21 +153,27 @@ func _show_create() -> void:
 	title.add_theme_color_override("font_color", Color(0.90, 0.85, 0.70))
 	vbox.add_child(title)
 
+	_coop_only_nodes.clear()
+	_mode_buttons.clear()
+
 	# --- Game mode ---
 	vbox.add_child(_make_section_label("Game Mode", s))
-	var mode_desc := Label.new()
-	mode_desc.name = "GameModeDesc"
-	mode_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	mode_desc.add_theme_font_size_override("font_size", int(13 * s))
-	mode_desc.add_theme_color_override("font_color", Color(0.60, 0.62, 0.55))
-	mode_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	mode_desc.custom_minimum_size = Vector2(0, 56 * s)
-	vbox.add_child(_make_game_mode_row(s, mode_desc))
-	vbox.add_child(mode_desc)
-	_update_game_mode_desc(mode_desc)
+	vbox.add_child(_make_mode_row(s))
+
+	# Blurb for whichever mode is selected, straight from NetworkManager's
+	# description table so the menus can't drift from the modes themselves.
+	_mode_info_label = Label.new()
+	_mode_info_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_mode_info_label.add_theme_font_size_override("font_size", int(13 * s))
+	_mode_info_label.add_theme_color_override("font_color", Color(0.72, 0.66, 0.55))
+	_mode_info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_mode_info_label.custom_minimum_size = Vector2(0, 60 * s)
+	vbox.add_child(_mode_info_label)
 
 	# --- Map style ---
-	vbox.add_child(_make_section_label("Map Style", s))
+	var style_section := _make_section_label("Map Style", s)
+	vbox.add_child(style_section)
+	_coop_only_nodes.append(style_section)
 	var style_desc := Label.new()
 	style_desc.name = "MapStyleDesc"
 	style_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -162,8 +181,11 @@ func _show_create() -> void:
 	style_desc.add_theme_color_override("font_color", Color(0.60, 0.62, 0.55))
 	style_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	style_desc.custom_minimum_size = Vector2(0, 48 * s)
-	vbox.add_child(_make_map_style_row(s, style_desc))
+	var style_row := _make_map_style_row(s, style_desc)
+	vbox.add_child(style_row)
 	vbox.add_child(style_desc)
+	_coop_only_nodes.append(style_row)
+	_coop_only_nodes.append(style_desc)
 
 	# Map size is fixed per style — show it as info, not a control.
 	_map_size_label = Label.new()
@@ -171,20 +193,28 @@ func _show_create() -> void:
 	_map_size_label.add_theme_font_size_override("font_size", int(12 * s))
 	_map_size_label.add_theme_color_override("font_color", Color(0.55, 0.60, 0.50))
 	vbox.add_child(_map_size_label)
+	_coop_only_nodes.append(_map_size_label)
 	_update_map_style_desc(style_desc)
 
 	# --- Number of players (2..8) ---
-	vbox.add_child(_make_section_label("Number of Players", s))
+	var players_section := _make_section_label("Number of Players", s)
+	vbox.add_child(players_section)
+	_coop_only_nodes.append(players_section)
 	var players_row := _make_stepper_row(s,
 		_create_max_players, 2, 8,
 		func(v: int) -> void: _create_max_players = v,
 		func(v: int) -> String: return "%d players" % v
 	)
 	vbox.add_child(players_row)
+	_coop_only_nodes.append(players_row)
 
 	# --- Difficulty ---
-	vbox.add_child(_make_section_label("Difficulty", s))
-	vbox.add_child(_make_difficulty_row(s))
+	var diff_section := _make_section_label("Difficulty", s)
+	vbox.add_child(diff_section)
+	_coop_only_nodes.append(diff_section)
+	var diff_row := _make_difficulty_row(s)
+	vbox.add_child(diff_row)
+	_coop_only_nodes.append(diff_row)
 
 	# --- Difficulty description ---
 	var desc := Label.new()
@@ -195,7 +225,10 @@ func _show_create() -> void:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	desc.custom_minimum_size = Vector2(0, 48 * s)
 	vbox.add_child(desc)
+	_coop_only_nodes.append(desc)
 	_update_difficulty_desc(desc)
+
+	_apply_mode_visibility()
 
 	# --- Status (shows "Creating room…" / errors during the async host flow) ---
 	_create_status_label = Label.new()
@@ -264,6 +297,45 @@ func _make_stepper_row(s: float, start_val: int, lo: int, hi: int, on_change: Ca
 	)
 	return row
 
+func _make_mode_row(s: float) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", int(10 * s))
+
+	_mode_buttons.clear()
+	for mode_id in MODE_ORDER:
+		var btn := MenuShared.make_button(NetworkManager.game_mode_name(mode_id), s, 128, 44, 15)
+		btn.pressed.connect(func() -> void:
+			_create_game_mode = mode_id
+			_apply_mode_visibility()
+		)
+		_mode_buttons.append(btn)
+		row.add_child(btn)
+
+	return row
+
+func _apply_mode_visibility() -> void:
+	# The duel is a fixed 2-player arena, so map style / player count /
+	# difficulty don't apply to it. Campaign and Survival both use them.
+	var duel := _create_game_mode == NetworkManager.GameMode.DUEL
+	for n in _coop_only_nodes:
+		if is_instance_valid(n):
+			(n as CanvasItem).visible = not duel
+	if _mode_info_label:
+		_mode_info_label.text = NetworkManager.game_mode_description(_create_game_mode)
+
+	# Highlight the active mode button.
+	var s := MenuShared.ui_scale()
+	var accent := Color(0.55, 0.55, 0.65)
+	for i in range(_mode_buttons.size()):
+		var btn := _mode_buttons[i]
+		if i < MODE_ORDER.size() and MODE_ORDER[i] == _create_game_mode:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(accent, s))
+			btn.add_theme_color_override("font_color", Color(1, 1, 1))
+		else:
+			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.20, 0.20, 0.24, 0.9), s))
+			btn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
+
 func _make_difficulty_row(s: float) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -312,45 +384,6 @@ func _update_difficulty_desc(desc: Label) -> void:
 		settings.horde_mult,
 		settings.starting_hordes,
 	]
-
-## Campaign vs Survival. Survival is the wave-defence mode: the party holds a
-## headquarters building through assaults scheduled on the in-game calendar.
-func _make_game_mode_row(s: float, desc_label: Label) -> HBoxContainer:
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", int(10 * s))
-
-	var modes := [NetworkManager.GameMode.CAMPAIGN, NetworkManager.GameMode.SURVIVAL]
-	var accent := Color(0.30, 0.55, 0.70)
-	var buttons: Array[Button] = []
-
-	for m in modes:
-		var idx: int = m
-		var btn := MenuShared.make_button(NetworkManager.game_mode_name(idx), s, 150, 44, 16)
-		btn.pressed.connect(func() -> void:
-			_create_game_mode = idx
-			_refresh_game_mode_buttons(buttons, modes, accent)
-			_update_game_mode_desc(desc_label)
-		)
-		buttons.append(btn)
-		row.add_child(btn)
-
-	_refresh_game_mode_buttons(buttons, modes, accent)
-	return row
-
-func _refresh_game_mode_buttons(buttons: Array[Button], modes: Array, accent: Color) -> void:
-	var s := MenuShared.ui_scale()
-	for i in range(buttons.size()):
-		var btn := buttons[i]
-		if modes[i] == _create_game_mode:
-			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(accent, s))
-			btn.add_theme_color_override("font_color", Color(1, 1, 1))
-		else:
-			btn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.20, 0.20, 0.24, 0.9), s))
-			btn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
-
-func _update_game_mode_desc(desc: Label) -> void:
-	desc.text = NetworkManager.game_mode_description(_create_game_mode)
 
 func _make_map_style_row(s: float, desc_label: Label) -> HBoxContainer:
 	var row := HBoxContainer.new()
@@ -407,6 +440,8 @@ func _on_host_pressed() -> void:
 	# property of the chosen style — derive it from BuildingCatalog rather
 	# than letting the host pick freely.
 	var preset_size := BuildingCatalog.map_size_for(_create_map_style)
+	# The duel forces a 2-player cap inside NetworkManager, so the requested
+	# player count / style are ignored for that mode.
 	var code := NetworkManager.host_game(preset_size, _create_max_players, _create_difficulty, _create_map_style, _create_game_mode)
 	if code.is_empty():
 		if _create_status_label:

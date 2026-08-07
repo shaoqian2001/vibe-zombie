@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Vibe Zombie is a 2.5D cartoon zombie survival game built with **Godot 4.6** and **GDScript**. It features procedurally generated cities, multiplayer via LAN, two game modes (Campaign missions and Survival wave-defence), and a crafting system — all visuals are generated in code with no external art assets.
+Vibe Zombie is a 2.5D cartoon zombie survival game built with **Godot 4.6** and **GDScript**. It features procedurally generated cities, multiplayer via LAN, three game modes (Campaign missions, Survival wave-defence, and a 1v1 Duel), and a crafting system — all visuals are generated in code with no external art assets.
 
 ## Running the Game
 
@@ -35,11 +35,13 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 
 ### Game Modes
 
-`NetworkManager.game_mode` (`GameMode.CAMPAIGN` / `SURVIVAL`) is lobby config like map size or difficulty — published in lobby data, carried in `cfg_sync` / `game_started`, and picked in the multiplayer create panel, the lobby (host), and the single-player setup screen.
+`NetworkManager.game_mode` (`GameMode.CAMPAIGN` / `SURVIVAL` / `DUEL`) is lobby config like map size or difficulty — published in lobby data, carried in `cfg_sync` / `game_started`, and picked in the multiplayer create panel and the lobby (host). The single-player setup screen offers Campaign and Survival; the Duel is multiplayer-only. `game_mode_name()` / `game_mode_description()` are the single source of mode copy — the menus render from them rather than hard-coding labels.
 
-`main.gd` holds the active driver in `_mission_system`. Both modes expose the same surface — `setup()`, `process(delta)`, `get_objective_text()`, `get_map_markers()`, `spawn_horde_at()`, `notify_enemy_killed(pos)`, `zombie_density_multiplier` — so the objective label, map view, and debug panel drive either one through identical calls.
+`main.gd` holds the active driver in `_mission_system` (the Duel has none and leaves it null). Campaign and Survival expose the same surface — `setup()`, `process(delta)`, `get_objective_text()`, `get_map_markers()`, `spawn_horde_at()`, `notify_enemy_killed(pos)`, `zombie_density_multiplier` — so the objective label, map view, and debug panel drive either one through identical calls.
 
 **Campaign** (`scripts/mission_system.gd`): the original mission chain. Host-only; clients read a host-pushed `mission_sync` (objective text + marker positions).
+
+**Duel** (no driver script): 1v1 PvP. `world.gd` bails out of city generation and builds a small barricaded arena instead; `main.gd` uses two fixed arena spawns, sets `Player.pvp_enabled`, skips zombies/missions/loot entirely, and resolves the round through `duel_over`. `NetworkManager` pins `max_players` to `DUEL_MAX_PLAYERS`, and both the create panel and the lobby hide the co-op knobs (map style / player count / difficulty) while it's selected.
 
 **Survival** (`scripts/survival_mode.gd`): wave defence. Runs on **every** peer, not just the host — the HQ is chosen deterministically from the shared world seed (`SurvivalMode.pick_hq_building()` ranks `world.buildings` by distance to the map centre, then picks the largest of the closest few), so each peer builds the same beacon, defence ring and map marker locally with zero networking. Only the numbers sync, in a single `survival_sync` packet (clock, wave index, wave enemies left, HQ integrity) at 2 Hz.
 
@@ -48,9 +50,11 @@ There is no linting tool, test framework, or package manager — Godot is self-c
 - The HQ has integrity (`HQ_MAX_HP`), drained only *during* an assault by zombies inside `HQ_RADIUS`, and repaired between them. Zero = loss. Outcomes broadcast as `survival_outcome`.
 - Kills drop craft material; a cache spawns at the base on day 1 and restocks daily.
 
+The HUD's top-left corner is shared: `_layout_top_left()` stacks the Survival clock and HQ integrity bar above the multiplayer ping readout, so widgets built lazily and in any order never land on the same row.
+
 **Game clock** (`scripts/time_system.gd`): a single monotonic `total_hours` float, so it replicates as one number and can't drift out of order. Day 1 starts at 08:00; `REAL_SECONDS_PER_DAY` (120s) sets the pace. Every peer ticks it locally for a smooth display; `net_set_hours()` eases in the host's value. The HUD shows it top-left via `set_clock()`, and it drives `world.set_time_of_day()` — sun elevation/colour, ambient, fog and sky all follow the hour (Campaign never calls this and keeps its fixed midday lighting).
 
-### Crafting (B) — available in both modes
+### Crafting (B) — available in every mode
 
 `scripts/craft_data.gd` (`CraftData`) is the recipe table plus stats for anything placeable, in the same shape as `WeaponData` / `ItemData`. Recipes cost **materials** — `wood` and `scrap`, ordinary `ItemData` entries tagged `category: "material"`. Materials stack in `Player._inventory`, never claim a quick-bar slot, and can't be held or used; they're spent through `Player.has_materials()` / `consume_materials()`.
 

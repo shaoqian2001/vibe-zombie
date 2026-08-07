@@ -144,10 +144,15 @@ var _occluded_buildings: Array = []     # buildings currently made transparent
 # Mission system
 enum GameState { PLAYING, WON, LOST }
 var _game_state: int = GameState.PLAYING
+
+# 1v1 Duel mode (set from NetworkManager.game_mode in _ready).
+var _is_duel: bool = false
+
 ## The active game-mode driver. Campaign points this at MissionSystem, Survival
 ## at SurvivalMode — both expose process() / get_objective_text() /
 ## get_map_markers() / spawn_horde_at() / notify_enemy_killed(), so the HUD,
-## map view and debug panel drive either one through the same calls.
+## map view and debug panel drive either one through the same calls. The Duel
+## has no driver and leaves it null.
 var _mission_system: Node = null
 var _debug_panel: CanvasLayer = null
 var _objective_label: Label = null
@@ -184,6 +189,8 @@ func _ready() -> void:
 	_is_mp = NetworkManager.is_networked
 	_is_host = (not _is_mp) or NetworkManager.is_host
 	_local_peer_id = NetworkManager.local_peer_id if _is_mp else 1
+	# 1v1 Duel: PvP arena, no zombies / missions, first death ends the round.
+	_is_duel = NetworkManager.game_mode == NetworkManager.GameMode.DUEL
 
 	# GD-Sync replication runs through NetworkManager's generic event channel
 	# (the @rpc replacement). Subscribe once; main is the single dispatcher that
@@ -217,36 +224,53 @@ func _ready() -> void:
 	# Survival replaces the rim spawn with a ring around the headquarters: the
 	# whole mode is about that building, so players start on its doorstep. The
 	# HQ is picked deterministically from the shared world seed, so every peer
-	# resolves the same building without a single network message.
+	# resolves the same building without a single network message. (The Duel
+	# uses its own two fixed arena spawns, below.)
 	_survival = NetworkManager.game_mode == NetworkManager.GameMode.SURVIVAL
 	if _survival:
 		_hq_building = SurvivalMode.pick_hq_building(world)
 
-	var rim_candidates := _build_survival_spawn_candidates() if _survival else _build_rim_spawn_candidates()
-	var valid_rim: Array = []
-	for cand in rim_candidates:
-		if not _pos_inside_building(cand):
-			valid_rim.append(cand)
-	if valid_rim.is_empty():
-		valid_rim.append(_find_clear_fallback_spawn(rng, rim_candidates[0]))
-
 	# Pick spawn slots. In MP, every peer evaluates the same RNG against the
 	# same sorted peer list, so each one places the others identically.
 	var spawn_assignments: Dictionary = {}  # peer_id -> Vector3
-	if _is_mp:
-		var ids := NetworkManager.peers.keys()
-		ids.sort()
-		# Shuffle so spawn points look random without being correlated to peer
-		# id ordering (shared seed makes this deterministic across peers).
-		_shuffle_array(valid_rim, rng)
-		for i in range(ids.size()):
-			spawn_assignments[ids[i]] = valid_rim[i % valid_rim.size()]
+	var valid_rim: Array = []
+	if _is_duel:
+		# Two fixed spawns at opposite ends of the arena, facing each other.
+		# Sorted peer id → the host (lowest id) takes the left slot.
+		var ax: float = world.ARENA_HALF - 3.0
+		var duel_pts := [Vector3(-ax, 0.6, 0.0), Vector3(ax, 0.6, 0.0)]
+		valid_rim = duel_pts.duplicate()
+		if _is_mp:
+			var ids := NetworkManager.peers.keys()
+			ids.sort()
+			for i in range(ids.size()):
+				spawn_assignments[ids[i]] = duel_pts[i % duel_pts.size()]
+		else:
+			spawn_assignments[1] = duel_pts[0]
 	else:
-		valid_rim.shuffle()
-		spawn_assignments[1] = valid_rim[0]
+		var rim_candidates := _build_survival_spawn_candidates() if _survival else _build_rim_spawn_candidates()
+		for cand in rim_candidates:
+			if not _pos_inside_building(cand):
+				valid_rim.append(cand)
+		if valid_rim.is_empty():
+			valid_rim.append(_find_clear_fallback_spawn(rng, rim_candidates[0]))
+
+		if _is_mp:
+			var ids := NetworkManager.peers.keys()
+			ids.sort()
+			# Shuffle so spawn points look random without being correlated to peer
+			# id ordering (shared seed makes this deterministic across peers).
+			_shuffle_array(valid_rim, rng)
+			for i in range(ids.size()):
+				spawn_assignments[ids[i]] = valid_rim[i % valid_rim.size()]
+		else:
+			valid_rim.shuffle()
+			spawn_assignments[1] = valid_rim[0]
 
 	# The Player node baked into Main.tscn becomes the LOCAL player.
 	player.add_to_group("player")
+	# In the duel, this player's weapons hit the opposing player (friendly fire).
+	player.pvp_enabled = _is_duel
 	if _is_mp:
 		# Ownership is decided by peer_id (GD-Sync client id) rather than Godot's
 		# multiplayer authority, since GD-Sync runs its own networking layer.
@@ -305,12 +329,15 @@ func _ready() -> void:
 	# read the host-synced objective text). Survival runs on EVERY peer: the HQ
 	# and its beacon are seed-deterministic, so clients build the same base
 	# locally and only the wave/clock/integrity numbers need syncing.
+	# The 1v1 Duel has no driver at all — no zombies, missions or loot; its only
+	# pickups are the weapons the host drops from the debug panel, which
+	# replicate via pickup_state like any other pickup.
 	if _survival:
 		_setup_survival_mode(rng)
-	elif _is_host:
+	elif _is_host and not _is_duel:
 		_setup_mission_system(rng)
 
-	if _is_host:
+	if _is_host and not _is_duel:
 		_spawn_enemies(rng)
 		_spawn_weapon_pickups(rng)
 		_spawn_items(rng)
@@ -347,6 +374,7 @@ func _spawn_remote_player(peer_id: int, pos: Vector3) -> CharacterBody3D:
 		p.refresh_authority()
 	p.global_position = pos
 	p.add_to_group("player")
+	p.pvp_enabled = _is_duel
 	# Remote players are visible-but-far-away characters from this peer's
 	# point of view, so they should darken with the FOV like zombies do.
 	# (The local player skips this in FovCuller.configure().)
@@ -724,6 +752,9 @@ func _on_net_event(event_name: String, payload: Dictionary) -> void:
 			if not _is_host:
 				_mp_mission_objective = String(payload.get("obj", ""))
 				_apply_mission_markers(payload.get("m", []))
+		"duel_over":
+			# 1v1 Duel result — one player died; resolve win/lose on every peer.
+			_end_duel(int(payload.get("loser", -1)))
 		"mission_outcome":
 			# Shared win state — a teammate reached the rescue point.
 			if String(payload.get("state", "")) == "won" and _game_state == GameState.PLAYING:
@@ -1744,16 +1775,45 @@ func _on_player_rescued() -> void:
 		NetworkManager.broadcast_event("mission_outcome", {"state": "won"})
 
 func _on_player_died() -> void:
+	# Drop any craft UI first — it holds Player.input_locked, and the duel path
+	# below returns early.
 	_cancel_placement()
 	if _craft_open:
 		_close_craft_menu()
+	if _is_duel:
+		# The local player fell — this peer loses the round. Tell everyone so the
+		# opponent sees their victory (the death is only detected locally, on the
+		# machine that owns the dying player).
+		_end_duel(_local_peer_id)
+		if _is_mp:
+			NetworkManager.broadcast_event("duel_over", {"loser": _local_peer_id})
+		return
 	_game_state = GameState.LOST
 	_show_overlay("YOU DIED", Color(0.7, 0.1, 0.05))
 	if _objective_label:
 		_objective_label.text = ""
 
+## Resolve a duel: whoever's peer id is `loser_id` is defeated, the other peer
+## wins. Guarded so the echoed broadcast (and the local call that triggered it)
+## only take effect once.
+func _end_duel(loser_id: int) -> void:
+	if _game_state != GameState.PLAYING:
+		return
+	if loser_id == _local_peer_id:
+		_game_state = GameState.LOST
+		_show_overlay("DEFEAT", Color(0.7, 0.1, 0.05))
+	else:
+		_game_state = GameState.WON
+		_show_overlay("VICTORY", Color(0.1, 0.8, 0.2))
+	if _objective_label:
+		_objective_label.text = ""
+
 func _update_objective_label() -> void:
 	if _objective_label == null:
+		return
+	if _is_duel:
+		if _game_state == GameState.PLAYING:
+			_objective_label.text = "1v1 DUEL — eliminate your opponent!"
 		return
 	if _mission_system:
 		# Host (or single-player): read the live mission system.
@@ -2018,8 +2078,9 @@ func _close_door() -> void:
 	else:
 		# Player is outside: full cleanup
 		_destroy_interior()
-		var building_node: MeshInstance3D = _active_building.node
-		building_node.visible = true
+		var shell := _active_building.get("container", _active_building.node) as Node3D
+		if shell:
+			shell.visible = true
 		_active_building = {}
 		_showing_interior = false
 
@@ -2100,8 +2161,10 @@ func _full_cleanup() -> void:
 	# Re-enable exterior collision
 	_set_exterior_collision(_active_building.node, true)
 
-	# Restore exterior visibility
-	_active_building.node.visible = true
+	# Restore exterior visibility (whole shell, incl. roof props)
+	var shell := _active_building.get("container", _active_building.node) as Node3D
+	if shell:
+		shell.visible = true
 
 	_destroy_interior()
 	_active_building = {}
@@ -2144,8 +2207,15 @@ func _switch_to_interior_view() -> void:
 	if _showing_interior:
 		return
 	_showing_interior = true
-	var building_node: MeshInstance3D = _active_building.node
-	building_node.visible = false
+	# Hide the WHOLE exterior shell, not just the body box. The rooftop
+	# ledge, wall trim and roof props (chimney, cross, tower…) are separate
+	# meshes parented to the building container; hiding only binfo.node left
+	# that opaque roof cap floating over the room, blocking the top-down
+	# camera's view of the character inside — the walls vanished but the
+	# "ceiling" did not.
+	var shell := _active_building.get("container", _active_building.node) as Node3D
+	if shell:
+		shell.visible = false
 	if _current_interior:
 		_current_interior.visible = true
 
@@ -2153,9 +2223,9 @@ func _switch_to_exterior_view() -> void:
 	if not _showing_interior:
 		return
 	_showing_interior = false
-	var building_node: MeshInstance3D = _active_building.node
-	building_node.visible = true
-	# Keep door mesh hidden (it's part of the pivot, not the exterior)
+	var shell := _active_building.get("container", _active_building.node) as Node3D
+	if shell:
+		shell.visible = true
 	if _current_interior:
 		_current_interior.visible = false
 
@@ -2269,5 +2339,19 @@ func _fade_mesh_tree(node: Node, alpha: float) -> void:
 				else:
 					mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
 					mat.albedo_color.a = 1.0
+		# The vision-shadow overlay (FovCuller) paints every surface outside
+		# the player's view cone black. We only fade a building so the player
+		# can see their character THROUGH it — but that shadow fights the
+		# transparency. It bites hardest on the roof: its whole footprint sits
+		# outside the forward cone, so it stays fully blackened and opaque,
+		# while the camera-facing walls (which straddle the cone edge) get less
+		# shadow and read as see-through. The result is a "transparent walls,
+		# solid roof" building. Strip the overlay while faded so the entire
+		# shell goes uniformly transparent, and restore it once opaque again.
+		if alpha < 1.0:
+			if mi.material_overlay != null:
+				mi.material_overlay = null
+		elif mi.material_overlay == null:
+			mi.material_overlay = FovCuller.get_shadow_material()
 	for child in node.get_children():
 		_fade_mesh_tree(child, alpha)

@@ -37,10 +37,17 @@ signal net_event(event_name: String, payload: Dictionary)
 
 enum Difficulty { EASY, MEDIUM, TOUGH, NIGHTMARE }
 
-## Game modes. CAMPAIGN is the original mission chain (deliver / hold / clear,
-## then reach the rescue point). SURVIVAL hands the party a headquarters
-## building and a calendar of zombie assaults to defend it against.
-enum GameMode { CAMPAIGN, SURVIVAL }
+## Game modes selectable when hosting.
+##   CAMPAIGN — the co-op mission chain (procedural city, missions, hordes),
+##              then reach the rescue point to escape.
+##   SURVIVAL — hold a headquarters building against a calendar of zombie
+##              assaults; clear the final one to win.
+##   DUEL     — 1v1 PvP on a single 20×20 m barricaded arena; capped at two
+##              players, and the round ends the moment one player dies.
+enum GameMode { CAMPAIGN, SURVIVAL, DUEL }
+
+## Player cap for the 1v1 Duel — the host plus exactly one challenger.
+const DUEL_MAX_PLAYERS := 2
 
 const BuildingCatalog = preload("res://scripts/building_catalog.gd")
 
@@ -50,6 +57,9 @@ const MIN_PLAYERS := 2
 const MAX_PLAYERS_HARD_CAP := 8
 const CONNECT_TIMEOUT_SEC := 10.0
 const ROSTER_POLL_INTERVAL_SEC := 1.5
+# How often we re-measure round-trip latency to the other player(s). GD-Sync's
+# get_client_ping is a real ~0.1-0.6s ping exchange, so we don't run it faster.
+const PING_POLL_INTERVAL_SEC := 2.0
 
 # GD-Sync lobby-data keys. Peer roster entries are "zpeer_<id>" = "<name>|<host>".
 # Lobby config travels in dedicated keys so late joiners pick it up immediately.
@@ -93,6 +103,12 @@ var local_peer_id: int = -1
 # peer_id (int) -> { "id": int, "name": String, "is_host": bool }
 var peers: Dictionary = {}
 
+# Latest measured round-trip latency in milliseconds to the other player(s):
+# a client measures to the host, the host averages over its clients. -1 means
+# "not measured yet / unavailable". Read by the HUD for the on-screen readout.
+var ping_ms: float = -1.0
+var _ping_in_flight: bool = false
+
 # ------------------------------------------------------------------
 # Internal GD-Sync plumbing
 # ------------------------------------------------------------------
@@ -133,6 +149,15 @@ func _init_gdsync() -> void:
 	poll.one_shot = false
 	poll.timeout.connect(_on_roster_poll_tick)
 	add_child(poll)
+	# Separate, slower timer for latency measurement (get_client_ping is async
+	# and comparatively expensive, so it gets its own cadence + in-flight guard).
+	var ping_poll := Timer.new()
+	ping_poll.name = "PingPoll"
+	ping_poll.wait_time = PING_POLL_INTERVAL_SEC
+	ping_poll.autostart = true
+	ping_poll.one_shot = false
+	ping_poll.timeout.connect(_on_ping_poll_tick)
+	add_child(ping_poll)
 
 # ------------------------------------------------------------------
 # Difficulty presets — drives enemy spawn density and horde frequency
@@ -168,6 +193,7 @@ static func game_mode_name(m: int) -> String:
 	match m:
 		GameMode.CAMPAIGN: return "Campaign"
 		GameMode.SURVIVAL: return "Survival"
+		GameMode.DUEL: return "1v1 Duel"
 	return "Campaign"
 
 static func game_mode_description(m: int) -> String:
@@ -176,27 +202,32 @@ static func game_mode_description(m: int) -> String:
 			return "Run a chain of missions across the city, then reach the rescue point to escape."
 		GameMode.SURVIVAL:
 			return "Hold a headquarters building against scheduled zombie assaults. Waves land on day 7 and day 12; survive the final assault on day 15 to win. Craft barricades and traps with B."
+		GameMode.DUEL:
+			return "1v1 PvP on a single barricaded arena. Capped at two players; the round ends the moment one of you goes down."
 	return ""
 
 # ------------------------------------------------------------------
 # Host / join lifecycle (public API consumed by the menu)
 # ------------------------------------------------------------------
 
-func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1, p_game_mode: int = -1) -> String:
+func host_game(p_map_size: int, p_max_players: int, p_difficulty: int, p_map_style: int = -1, p_game_mode: int = GameMode.CAMPAIGN) -> String:
 	## Kicks off an asynchronous GD-Sync host. Returns the generated room code
 	## immediately (so the menu can show it); success/failure arrives later via
 	## the join_succeeded / join_failed signals.
 	if not _ensure_addon():
 		return ""
 	reset()
+	game_mode = clampi(p_game_mode, 0, GameMode.size() - 1)
 	if p_map_style >= 0:
 		map_style = p_map_style
-	if p_game_mode >= 0:
-		game_mode = clampi(p_game_mode, 0, GameMode.size() - 1)
 	# Map size is a property of the chosen style; the caller passes the
 	# style's preset and we just snap it to safe bounds.
 	map_size = clampi(p_map_size, 2, 12)
-	max_players = clampi(p_max_players, MIN_PLAYERS, MAX_PLAYERS_HARD_CAP)
+	# The 1v1 Duel is hard-capped at two players regardless of the requested cap.
+	if game_mode == GameMode.DUEL:
+		max_players = DUEL_MAX_PLAYERS
+	else:
+		max_players = clampi(p_max_players, MIN_PLAYERS, MAX_PLAYERS_HARD_CAP)
 	difficulty = clampi(p_difficulty, 0, 3)
 	game_seed = int(Time.get_unix_time_from_system()) ^ (randi() << 1)
 	game_code = _generate_code()
@@ -303,6 +334,9 @@ func set_map_style(v: int) -> void:
 func set_game_mode(v: int) -> void:
 	if not is_host: return
 	game_mode = clampi(v, 0, GameMode.size() - 1)
+	# The duel is always 2-player; the co-op modes keep the host's chosen cap.
+	if game_mode == GameMode.DUEL:
+		max_players = DUEL_MAX_PLAYERS
 	lobby_config_changed.emit()
 	_publish_config()
 
@@ -665,6 +699,46 @@ func _on_roster_poll_tick() -> void:
 		_refresh_roster_from_lobby()
 		if is_host:
 			broadcast_event("roster_sync", {"host_id": host_peer_id(), "peers": sorted_peers()})
+
+## Measure round-trip latency to the other player(s) and cache it in `ping_ms`.
+## Async — GD-Sync's get_client_ping runs a short ping exchange and awaits the
+## replies — so a re-entry guard stops overlapping measurements from stacking.
+func _on_ping_poll_tick() -> void:
+	if _ping_in_flight:
+		return
+	if not is_networked or _gdsync == null or not _gdsync.has_method("get_client_ping"):
+		_set_ping(-1.0)
+		return
+	# Client → host; host → average over its clients. This gives every peer a
+	# single "my latency" number without needing to know the topology.
+	var targets: Array = []
+	if is_host:
+		for pid in peers.keys():
+			if pid != local_peer_id:
+				targets.append(pid)
+	else:
+		var h := host_peer_id()
+		if h >= 0:
+			targets.append(h)
+	if targets.is_empty():
+		_set_ping(-1.0)
+		return
+
+	_ping_in_flight = true
+	var total := 0.0
+	var count := 0
+	for t in targets:
+		# get_client_ping returns the RTT in seconds (or -1 on failure).
+		var rtt: Variant = await _gdsync.get_client_ping(int(t))
+		var secs := float(rtt) if (rtt is float or rtt is int) else -1.0
+		if secs >= 0.0:
+			total += secs
+			count += 1
+	_ping_in_flight = false
+	_set_ping(total / float(count) * 1000.0 if count > 0 else -1.0)
+
+func _set_ping(ms: float) -> void:
+	ping_ms = ms
 
 func _publish_self_to_lobby_data() -> void:
 	if _gdsync == null or not _gdsync.has_method("lobby_set_data") or local_peer_id < 0:

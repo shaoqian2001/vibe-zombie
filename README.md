@@ -9,15 +9,18 @@ Explore a procedurally generated small town, enter buildings, and survive among 
 - **Explore** a procedurally generated 5×5 city grid with roads, sidewalks, and buildings
 - **Enter buildings** — press **F** to open/close doors and explore procedural interiors (convenience stores, apartments, offices, warehouses, diners)
 - **Sprint** with **Shift** (drains stamina; recovers after a cooldown)
+- **Jump** with **Space** to hop over low obstacles
 - **Survive** among 25 wandering zombies with visible HP bars
 - **Loot** weapons, consumables, and equipment that spawn around the map (mostly inside buildings)
 - **Craft** barricades, traps and supplies with **B**
 
 ### Game Modes
 
-Pick a mode in the single-player setup screen, or in the multiplayer create-game panel (the host can also switch it in the lobby).
+Pick a mode in the single-player setup screen, or in the multiplayer create-game panel (the host can also switch it in the lobby). The 1v1 Duel is multiplayer-only.
 
 **Campaign** — run a chain of missions across the city, then reach the rescue point to escape.
+
+**1v1 Duel** — two players fight on a compact 20×20 m barricaded arena; grab a weapon and eliminate your opponent, and the first to fall loses. Capped at two players.
 
 **Survival** — the party is given a headquarters building and has to hold it against zombie assaults scheduled on the in-game calendar:
 
@@ -66,6 +69,7 @@ Pickups glow and float on the ground; walk over one to collect it.
 | Move | W / A / S / D (or arrow keys) |
 | Rotate camera | Q / E |
 | Sprint | Shift |
+| Jump | Space |
 | Interact (doors) | F |
 | Select quick-bar slot | 1 – 7 |
 | Use held item | E |
@@ -77,7 +81,7 @@ Weapons and consumables share one **quick-item bar** (mid-bottom of the screen, 
 
 ### HUD
 
-The on-screen HUD displays Armor, Health, and Stamina bars. Armor (filled by body-armor pickups) absorbs incoming damage before it reaches health.
+The on-screen HUD displays Armor, Health, and Stamina bars. Armor (filled by body-armor pickups) absorbs incoming damage before it reaches health. The top-left corner stacks the Survival day/hour clock and HQ integrity bar (Survival only) above the multiplayer **ping (round-trip latency) readout**, which is colour-coded from green (good) to red (high latency).
 
 ## Screenshots
 

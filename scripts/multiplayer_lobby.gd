@@ -24,6 +24,17 @@ var _status_label: Label
 var _difficulty_buttons: Array[Button] = []
 var _map_style_buttons: Array[Button] = []
 var _game_mode_buttons: Array[Button] = []
+## The host's config panel, kept so it can be rebuilt when the mode switches
+## across the duel boundary (the duel shows rules where the co-op knobs go).
+var _config_vbox: VBoxContainer = null
+var _built_duel: bool = false
+
+## Button order of the mode row — also the index basis for highlighting.
+const MODE_ORDER := [
+	NetworkManager.GameMode.CAMPAIGN,
+	NetworkManager.GameMode.SURVIVAL,
+	NetworkManager.GameMode.DUEL,
+]
 var _map_size_label: Label = null
 var _max_players_label: Label = null
 
@@ -184,6 +195,7 @@ func _build_ui() -> void:
 	config_vbox.add_child(cfg_title)
 
 	if NetworkManager.is_host:
+		_config_vbox = config_vbox
 		_build_host_config_controls(config_vbox, s)
 	else:
 		_config_summary = Label.new()
@@ -215,8 +227,12 @@ func _build_ui() -> void:
 		actions.add_child(_start_btn)
 
 func _build_host_config_controls(parent: VBoxContainer, s: float) -> void:
-	# Game mode — Campaign (mission chain) or Survival (defend the HQ through
-	# scheduled waves). Host-only, published to everyone via lobby config.
+	_built_duel = NetworkManager.game_mode == NetworkManager.GameMode.DUEL
+
+	# Game mode switcher — Campaign (mission chain), Survival (hold the HQ
+	# through scheduled waves) or the 1v1 Duel. Host-only, published to everyone
+	# via lobby config. It stays on screen in every mode so the host can switch
+	# back out of the duel without leaving the lobby.
 	var mode_lbl := Label.new()
 	mode_lbl.text = "Mode:"
 	mode_lbl.add_theme_font_size_override("font_size", int(13 * s))
@@ -226,14 +242,25 @@ func _build_host_config_controls(parent: VBoxContainer, s: float) -> void:
 	mode_row.add_theme_constant_override("separation", int(4 * s))
 	parent.add_child(mode_row)
 
-	for m in [NetworkManager.GameMode.CAMPAIGN, NetworkManager.GameMode.SURVIVAL]:
+	for m in MODE_ORDER:
 		var idx: int = m
-		var btn := MenuShared.make_button(NetworkManager.game_mode_name(idx), s, 96, 36, 12)
+		var btn := MenuShared.make_button(NetworkManager.game_mode_name(idx), s, 84, 36, 11)
 		btn.pressed.connect(func() -> void:
 			NetworkManager.set_game_mode(idx)
 		)
 		_game_mode_buttons.append(btn)
 		mode_row.add_child(btn)
+
+	# 1v1 Duel is a fixed arena with a hard 2-player cap and no difficulty /
+	# style knobs — show its rules instead of the co-op config controls.
+	if _built_duel:
+		var info := Label.new()
+		info.text = "Two players, one 20×20 m arena. Drop weapons from the debug panel (F3) and fight — first to die loses."
+		info.add_theme_font_size_override("font_size", int(13 * s))
+		info.add_theme_color_override("font_color", Color(0.75, 0.72, 0.62))
+		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		parent.add_child(info)
+		return
 
 	# Map size is determined by the chosen map style — display only,
 	# host can't tune it independently anymore.
@@ -371,6 +398,11 @@ func _refresh_peers() -> void:
 func _refresh_config() -> void:
 	_code_label.text = NetworkManager.game_code
 
+	# The duel replaces the co-op knobs with its rules, so crossing that
+	# boundary needs the host panel rebuilt rather than just re-highlighted.
+	if _config_vbox and _built_duel != (NetworkManager.game_mode == NetworkManager.GameMode.DUEL):
+		_rebuild_host_config()
+
 	if _map_size_label:
 		var n: int = NetworkManager.map_size
 		_map_size_label.text = "%d x %d  (%d blocks)" % [n, n, n * n]
@@ -389,10 +421,9 @@ func _refresh_config() -> void:
 			btn.add_theme_color_override("font_color", Color(0.80, 0.80, 0.80))
 
 	# Highlight selected game mode (host)
-	var mode_order := [NetworkManager.GameMode.CAMPAIGN, NetworkManager.GameMode.SURVIVAL]
 	for i in range(_game_mode_buttons.size()):
 		var mbtn := _game_mode_buttons[i]
-		if i < mode_order.size() and mode_order[i] == NetworkManager.game_mode:
+		if i < MODE_ORDER.size() and MODE_ORDER[i] == NetworkManager.game_mode:
 			mbtn.add_theme_stylebox_override("normal", MenuShared.make_btn_style(Color(0.30, 0.55, 0.70), s))
 			mbtn.add_theme_color_override("font_color", Color(1, 1, 1))
 		else:
@@ -420,14 +451,31 @@ func _refresh_config() -> void:
 
 	# Client-side summary
 	if _config_summary:
-		var ns: int = NetworkManager.map_size
-		_config_summary.text = "Mode: %s\nStyle: %s\nMap: %dx%d (%d blocks)\nPlayers: up to %d\nDifficulty: %s" % [
-			NetworkManager.game_mode_name(NetworkManager.game_mode),
-			BuildingCatalog.style_name(NetworkManager.map_style),
-			ns, ns, ns * ns,
-			NetworkManager.max_players,
-			NetworkManager.difficulty_name(NetworkManager.difficulty),
-		]
+		if NetworkManager.game_mode == NetworkManager.GameMode.DUEL:
+			_config_summary.text = "Mode: 1v1 Duel\nA 20x20 m barricaded arena.\nTwo players — first to die loses."
+		else:
+			var ns: int = NetworkManager.map_size
+			_config_summary.text = "Mode: %s\nStyle: %s\nMap: %dx%d (%d blocks)\nPlayers: up to %d\nDifficulty: %s" % [
+				NetworkManager.game_mode_name(NetworkManager.game_mode),
+				BuildingCatalog.style_name(NetworkManager.map_style),
+				ns, ns, ns * ns,
+				NetworkManager.max_players,
+				NetworkManager.difficulty_name(NetworkManager.difficulty),
+			]
+
+## Tear down and rebuild the host's config controls in place, keeping the
+## "GAME SETTINGS" heading that was added ahead of them.
+func _rebuild_host_config() -> void:
+	var children := _config_vbox.get_children()
+	for i in range(1, children.size()):
+		_config_vbox.remove_child(children[i])
+		children[i].queue_free()
+	_difficulty_buttons.clear()
+	_map_style_buttons.clear()
+	_game_mode_buttons.clear()
+	_map_size_label = null
+	_max_players_label = null
+	_build_host_config_controls(_config_vbox, MenuShared.ui_scale())
 
 func _difficulty_color(d: int) -> Color:
 	match d:

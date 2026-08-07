@@ -15,6 +15,7 @@ var _peer_count_label: Label = null
 var _toast_label: Label = null
 var _toast_timer: float = 0.0
 var _buff_label: Label = null
+var _ping_label: Label = null   # top-left latency readout (multiplayer only)
 
 # Survival-mode read-outs (top-left corner): the day/hour clock, the HQ
 # integrity bar under it, and the big centred wave announcement.
@@ -29,6 +30,8 @@ const ANNOUNCE_HOLD := 3.6
 const ANNOUNCE_FADE := 1.0
 const DEFENSE_BAR_WIDTH := 180.0
 const DEFENSE_BAR_HEIGHT := 12.0
+## First row of the top-left stack (clock, HQ bar, ping) — see _layout_top_left.
+const CLOCK_TOP := 12.0
 
 # Quick-item bar (mid-bottom). Built once; set_quick_bar() just updates contents.
 var _qb_slots: Array = []          # per-slot dict: {panel_style, name, count}
@@ -69,6 +72,7 @@ func _process(delta: float) -> void:
 	_update_bars()
 	_update_toast(delta)
 	_update_announce(delta)
+	_update_ping()
 
 func set_stamina(value: float) -> void:
 	stamina = clamp(value, 0.0, max_stamina)
@@ -173,11 +177,12 @@ func _build_clock() -> void:
 	_clock_label.anchor_left = 0.0
 	_clock_label.anchor_top = 0.0
 	_clock_label.offset_left = MARGIN
-	_clock_label.offset_top = 12
+	_clock_label.offset_top = CLOCK_TOP
 	_clock_label.offset_right = MARGIN + 260
-	_clock_label.offset_bottom = 40
+	_clock_label.offset_bottom = CLOCK_TOP + 28
 	_clock_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_container.add_child(_clock_label)
+	_layout_top_left()
 
 ## HQ integrity bar, drawn under the clock. `ratio` < 0 hides the whole widget.
 func set_defense(text: String, ratio: float) -> void:
@@ -210,25 +215,42 @@ func _build_defense() -> void:
 	_defense_label.anchor_left = 0.0
 	_defense_label.anchor_top = 0.0
 	_defense_label.offset_left = MARGIN
-	_defense_label.offset_top = 42
 	_defense_label.offset_right = MARGIN + 260
-	_defense_label.offset_bottom = 60
 	_defense_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_container.add_child(_defense_label)
 
 	_defense_bg = ColorRect.new()
 	_defense_bg.color = BG_COLOR
-	_defense_bg.position = Vector2(MARGIN, 62)
 	_defense_bg.size = Vector2(DEFENSE_BAR_WIDTH, DEFENSE_BAR_HEIGHT)
 	_defense_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_container.add_child(_defense_bg)
 
 	_defense_fill = ColorRect.new()
 	_defense_fill.color = Color(0.30, 0.75, 0.85, 0.95)
-	_defense_fill.position = Vector2(MARGIN, 62)
 	_defense_fill.size = Vector2(DEFENSE_BAR_WIDTH, DEFENSE_BAR_HEIGHT)
 	_defense_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_container.add_child(_defense_fill)
+	_layout_top_left()
+
+## Stack the top-left widgets so the multiplayer ping readout and the Survival
+## clock / HQ bar never land on the same row. Both are built lazily and in
+## either order, so every builder calls this once it has added its node.
+func _layout_top_left() -> void:
+	var y := float(CLOCK_TOP)
+	if _clock_label:
+		_clock_label.offset_top = y
+		_clock_label.offset_bottom = y + 28.0
+		y += 30.0
+	if _defense_label:
+		_defense_label.offset_top = y
+		_defense_label.offset_bottom = y + 18.0
+		y += 20.0
+		_defense_bg.position = Vector2(MARGIN, y)
+		_defense_fill.position = Vector2(MARGIN, y)
+		y += DEFENSE_BAR_HEIGHT + 8.0
+	if _ping_label:
+		_ping_label.offset_top = y
+		_ping_label.offset_bottom = y + 22.0
 
 ## Big centred banner for wave events ("FINAL ASSAULT — defend the base!").
 ## Louder and longer-lived than show_toast, which is for pickups.
@@ -387,7 +409,60 @@ func _build_hud() -> void:
 	_health_fill = fills[1]
 	_stamina_fill = fills[2]
 
+	_build_ping_label()
 	_build_quick_bar()
+
+# ------------------------------------------------------------------
+# Latency readout — pinned top-left, shown only in multiplayer. Every peer's
+# HUD reads its own NetworkManager.ping_ms, so each player sees their own RTT.
+# ------------------------------------------------------------------
+
+func _build_ping_label() -> void:
+	_ping_label = Label.new()
+	_ping_label.name = "PingLabel"
+	_ping_label.add_theme_font_size_override("font_size", 14)
+	_ping_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	_ping_label.add_theme_constant_override("shadow_offset_x", 1)
+	_ping_label.add_theme_constant_override("shadow_offset_y", 1)
+	# Top-left corner (game code / dev label live top-right, so no overlap).
+	# Its exact row comes from _layout_top_left, which stacks it under the
+	# Survival clock when that's on screen too.
+	_ping_label.anchor_left = 0.0
+	_ping_label.anchor_top = 0.0
+	_ping_label.anchor_right = 0.0
+	_ping_label.anchor_bottom = 0.0
+	_ping_label.offset_left = MARGIN
+	_ping_label.offset_right = MARGIN + 180.0
+	_ping_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ping_label.visible = false
+	_container.add_child(_ping_label)
+	_layout_top_left()
+
+func _update_ping() -> void:
+	if _ping_label == null:
+		return
+	if not NetworkManager.is_networked:
+		if _ping_label.visible:
+			_ping_label.visible = false
+		return
+	_ping_label.visible = true
+	var ms: float = NetworkManager.ping_ms
+	if ms < 0.0:
+		_ping_label.text = "PING  – ms"
+		_ping_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7, 0.9))
+	else:
+		_ping_label.text = "PING  %d ms" % int(round(ms))
+		_ping_label.add_theme_color_override("font_color", _ping_color(ms))
+
+## Green (good) → yellow → orange → red (bad) by round-trip milliseconds.
+func _ping_color(ms: float) -> Color:
+	if ms < 80.0:
+		return Color(0.40, 0.85, 0.40, 0.95)
+	elif ms < 150.0:
+		return Color(0.85, 0.85, 0.35, 0.95)
+	elif ms < 250.0:
+		return Color(0.90, 0.60, 0.25, 0.95)
+	return Color(0.90, 0.30, 0.25, 0.95)
 
 # ------------------------------------------------------------------
 # Quick-item bar (mid-bottom). Seven slots mapped to number keys 1..7, with a

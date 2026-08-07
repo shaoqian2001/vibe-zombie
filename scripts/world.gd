@@ -29,6 +29,31 @@ const SIDEWALK_INSET := 3.0    # Building-free margin inside each block
 const CELL_WIDTH     := BLOCK_WIDTH + ROAD_WIDTH
 const CELL_DEPTH     := BLOCK_DEPTH + ROAD_WIDTH
 
+# Ground-decal stacking heights. The grass ground plane sits at y=0 and every
+# painted surface (block floors, roads, lane paint, crosswalks, plaza/farm
+# detail) is a near-coplanar quad layered just above it. The original offsets
+# were only ~0.003–0.006 apart, which the isometric camera's depth buffer
+# could not reliably separate — the layers z-fought and flickered as the
+# camera moved. These wider, strictly-ordered gaps stay visually flat (all
+# under 12 cm) while giving the depth test comfortable room to sort them.
+const Y_BLOCK_GROUND := 0.03    # per-block coloured floor (park/plaza/parking)
+const Y_FARM_FIELD   := 0.036   # tilled-soil base of a farm block
+const Y_ROAD         := 0.05    # asphalt road quads
+const Y_PLAZA_STRIPE := 0.07    # plaza decorative grid tiles
+const Y_FARM_ROW     := 0.075   # farm crop rows (over the field base)
+const Y_PARKING_LINE := 0.075   # parking-stall lines (over the lot floor)
+const Y_ROAD_MARK    := 0.09    # dashed centre lane paint (over the road)
+const Y_CROSSWALK    := 0.11    # crosswalk stripes (over the road)
+const Y_PATH         := 0.12    # park cross-paths (over the park floor)
+
+# 1v1 Duel arena geometry. The playable floor is a 20 m × 20 m square
+# (ARENA_HALF on each side of the origin) ringed by solid walls, with a set of
+# barricades scattered inside for cover.
+const ARENA_HALF       := 10.0   # half-extent of the 20×20 m play area
+const ARENA_WALL_H     := 4.0
+const DUEL_BARRICADES   := 11    # cover pieces scattered around the arena
+const ARENA_FLOOR_COLOR := Color(0.30, 0.29, 0.26)
+
 ## Number of blocks per axis (NxN grid). Each block is rectangular, so the
 ## world is num_blocks * CELL_WIDTH wide × num_blocks * CELL_DEPTH deep.
 @export var num_blocks: int = 3
@@ -129,6 +154,15 @@ func _ready() -> void:
 	else:
 		_rng.seed = 98765
 	map_style = NetworkManager.map_style
+
+	# 1v1 Duel uses a hand-built arena instead of the procedural city — a
+	# single small barricaded block where two players fight. Bail out here so
+	# none of the city-grid generation runs.
+	if NetworkManager.game_mode == NetworkManager.GameMode.DUEL:
+		_generate_duel_arena()
+		FovCuller.apply_shader_to_subtree(self)
+		return
+
 	# Map size is a preset per style so the layout always has the right
 	# footprint for its content (e.g. OPEN_WORLD needs space for a clean
 	# rural→urban gradient). NetworkManager.map_size mirrors this so the
@@ -208,6 +242,152 @@ func _generate_boundary_walls() -> void:
 		add_child(sb)
 
 # ------------------------------------------------------------------
+# 1v1 Duel arena — a single 20×20 m floor ringed by walls, with cover
+# barricades scattered around. Built entirely here instead of the city grid
+# so the mode has a small, symmetric map with no buildings / missions.
+# ------------------------------------------------------------------
+
+func _generate_duel_arena() -> void:
+	# One nominal block so incidental num_blocks reads stay sane; gameplay
+	# code uses the ARENA_* extents directly, not the block grid.
+	num_blocks = 1
+	NetworkManager.map_size = 1
+
+	_generate_arena_floor()
+	_generate_arena_walls()
+	_scatter_barricades()
+	_add_sun_and_sky()
+
+func _generate_arena_floor() -> void:
+	# Paved floor slab a little larger than the play area, over an infinite
+	# ground plane collider (matches the city's ground so falls can't clip out).
+	var mi := MeshInstance3D.new()
+	var mesh := PlaneMesh.new()
+	mesh.size = Vector2(ARENA_HALF * 2.0 + 2.0, ARENA_HALF * 2.0 + 2.0)
+	mesh.material = _mat(ARENA_FLOOR_COLOR, 0.95, 0.0)
+	mi.mesh = mesh
+	mi.name = "ArenaFloor"
+	add_child(mi)
+
+	var sb := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	cs.shape = WorldBoundaryShape3D.new()
+	sb.add_child(cs)
+	add_child(sb)
+
+func _generate_arena_walls() -> void:
+	var t := 0.6                      # wall thickness
+	var e := ARENA_HALF               # inner face sits at the play-area edge
+	var span := e * 2.0 + t * 2.0
+	var wall_mat := _mat(Color(0.40, 0.38, 0.34), 0.9, 0.0)
+	# Centre, size for each of the four walls (+X, -X, +Z, -Z).
+	var walls := [
+		[Vector3(e + t * 0.5, ARENA_WALL_H * 0.5, 0.0), Vector3(t, ARENA_WALL_H, span)],
+		[Vector3(-e - t * 0.5, ARENA_WALL_H * 0.5, 0.0), Vector3(t, ARENA_WALL_H, span)],
+		[Vector3(0.0, ARENA_WALL_H * 0.5, e + t * 0.5), Vector3(span, ARENA_WALL_H, t)],
+		[Vector3(0.0, ARENA_WALL_H * 0.5, -e - t * 0.5), Vector3(span, ARENA_WALL_H, t)],
+	]
+	for w in walls:
+		var pos: Vector3 = w[0]
+		var size: Vector3 = w[1]
+		var mesh := BoxMesh.new()
+		mesh.size = size
+		mesh.material = wall_mat
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.position = pos
+		add_child(mi)
+
+		var sb := StaticBody3D.new()
+		var cs := CollisionShape3D.new()
+		var shp := BoxShape3D.new()
+		shp.size = size
+		cs.shape = shp
+		sb.position = pos
+		sb.add_child(cs)
+		add_child(sb)
+
+## Scatter cover barricades across the arena. Positions come from the shared
+## seeded RNG so every peer builds the identical layout. The two spawn corners
+## (±(ARENA_HALF-3) on X) and the very centre are kept clear so nobody spawns
+## inside cover and neither side gets a free wall.
+func _scatter_barricades() -> void:
+	var placed: Array[Vector3] = []
+	var reserved := [
+		Vector3(-(ARENA_HALF - 3.0), 0.0, 0.0),   # player A spawn
+		Vector3(ARENA_HALF - 3.0, 0.0, 0.0),      # player B spawn
+	]
+	var margin := ARENA_HALF - 1.5
+	var attempts := 0
+	while placed.size() < DUEL_BARRICADES and attempts < DUEL_BARRICADES * 20:
+		attempts += 1
+		var pos := Vector3(_rng.randf_range(-margin, margin), 0.0, _rng.randf_range(-margin, margin))
+		var ok := true
+		for r in reserved:
+			if pos.distance_to(r) < 3.0:
+				ok = false
+				break
+		if ok:
+			for p in placed:
+				if pos.distance_to(p) < 3.2:
+					ok = false
+					break
+		if not ok:
+			continue
+		placed.append(pos)
+		_create_barricade(pos)
+
+## One barricade: a low stack of crates (wood) or a sandbag mound. Both are
+## solid boxes that block movement and gunfire; heights vary so some give full
+## cover and some can be shot over.
+func _create_barricade(pos: Vector3) -> void:
+	var is_wood := _rng.randf() < 0.55
+	var w := _rng.randf_range(1.4, 2.4)
+	var d := _rng.randf_range(0.7, 1.1)
+	var h := _rng.randf_range(0.9, 1.6)
+	var yaw := _rng.randf_range(0.0, TAU)
+
+	var base_color: Color
+	if is_wood:
+		base_color = Color(0.52, 0.36, 0.20).lerp(Color(0.42, 0.28, 0.15), _rng.randf())
+	else:
+		base_color = Color(0.62, 0.58, 0.42).lerp(Color(0.52, 0.48, 0.34), _rng.randf())
+
+	var root := Node3D.new()
+	root.position = Vector3(pos.x, 0.0, pos.z)
+	root.rotation.y = yaw
+	add_child(root)
+	root.add_to_group(&"fov_cullable")
+	root.set_meta(&"fov_cull_radius", maxf(w, d) * 0.5 + 1.0)
+	root.set_meta(&"fov_cull_center", Vector2(pos.x, pos.z))
+
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(w, h, d)
+	mesh.material = _mat(base_color, 0.9, 0.0)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.position = Vector3(0.0, h * 0.5, 0.0)
+	root.add_child(mi)
+
+	# A thinner cap in a slightly different shade for a bit of readable detail.
+	var cap_mesh := BoxMesh.new()
+	cap_mesh.size = Vector3(w * 0.96, h * 0.18, d * 0.96)
+	cap_mesh.material = _mat(base_color.darkened(0.18), 0.9, 0.0)
+	var cap := MeshInstance3D.new()
+	cap.mesh = cap_mesh
+	cap.position = Vector3(0.0, h - h * 0.09, 0.0)
+	root.add_child(cap)
+
+	var sb := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shp := BoxShape3D.new()
+	shp.size = Vector3(w, h, d)
+	cs.shape = shp
+	cs.position = Vector3(0.0, h * 0.5, 0.0)
+	sb.add_child(cs)
+	root.add_child(sb)
+
+# ------------------------------------------------------------------
 # City grid
 # ------------------------------------------------------------------
 
@@ -256,7 +436,7 @@ func _create_block_ground(origin: Vector3, category: int) -> void:
 		BuildingCatalog.BlockCategory.PLAZA:
 			base_color = PLAZA_COLOR
 	_create_flat_quad(
-		Vector3(origin.x + BLOCK_WIDTH * 0.5, 0.005, origin.z + BLOCK_DEPTH * 0.5),
+		Vector3(origin.x + BLOCK_WIDTH * 0.5, Y_BLOCK_GROUND, origin.z + BLOCK_DEPTH * 0.5),
 		BLOCK_WIDTH, BLOCK_DEPTH,
 		base_color
 	)
@@ -651,8 +831,8 @@ func _populate_park(origin: Vector3) -> void:
 
 	# Cross paths
 	var path_w := 3.0
-	_create_flat_quad(Vector3(bx + w * 0.5, 0.02, bz + d * 0.5), w, path_w, PARK_PATH_COLOR)
-	_create_flat_quad(Vector3(bx + w * 0.5, 0.02, bz + d * 0.5), path_w, d, PARK_PATH_COLOR)
+	_create_flat_quad(Vector3(bx + w * 0.5, Y_PATH, bz + d * 0.5), w, path_w, PARK_PATH_COLOR)
+	_create_flat_quad(Vector3(bx + w * 0.5, Y_PATH, bz + d * 0.5), path_w, d, PARK_PATH_COLOR)
 
 	# Central fountain
 	_create_fountain(Vector3(bx + w * 0.5, 0.0, bz + d * 0.5))
@@ -697,7 +877,7 @@ func _populate_farm(origin: Vector3) -> void:
 	# Field base — a tilled-soil rectangle covering most of the block
 	var field_color := Color(0.45, 0.32, 0.20)
 	_create_flat_quad(
-		Vector3(bx + w * 0.5, 0.006, bz + d * 0.5),
+		Vector3(bx + w * 0.5, Y_FARM_FIELD, bz + d * 0.5),
 		w - 6.0, d - 6.0,
 		field_color
 	)
@@ -716,7 +896,7 @@ func _populate_farm(origin: Vector3) -> void:
 		var cx := bx + 4.0 + (r + 0.5) * row_w
 		var color: Color = crop_colors[r % crop_colors.size()]
 		_create_flat_quad(
-			Vector3(cx, 0.012, bz + d * 0.5),
+			Vector3(cx, Y_FARM_ROW, bz + d * 0.5),
 			row_w * 0.7, d - 12.0,
 			color
 		)
@@ -943,7 +1123,7 @@ func _populate_parking_lot(origin: Vector3) -> void:
 func _paint_parking_row(bx: float, z_center: float, cols: int, stall_w: float) -> void:
 	for c in range(cols + 1):
 		_emit_parking_line(
-			Vector3(bx + c * stall_w, 0.012, z_center),
+			Vector3(bx + c * stall_w, Y_PARKING_LINE, z_center),
 			0.12, 5.0
 		)
 
@@ -1018,7 +1198,7 @@ func _populate_plaza(origin: Vector3) -> void:
 	var stripe_color := PLAZA_COLOR.darkened(0.1)
 	for i in range(8):
 		var t := float(i) / 8.0
-		_create_flat_quad(Vector3(bx + w * t + w * 0.0625, 0.011, bz + d * 0.5), 0.4, d * 0.92, stripe_color)
+		_create_flat_quad(Vector3(bx + w * t + w * 0.0625, Y_PLAZA_STRIPE, bz + d * 0.5), 0.4, d * 0.92, stripe_color)
 
 	# Central fountain or pavilion
 	_create_fountain(Vector3(bx + w * 0.5, 0.0, bz + d * 0.5))
@@ -1057,26 +1237,26 @@ func _generate_road_network(origin: Vector3) -> void:
 	for col in range(num_blocks):
 		var rx := origin.x + col * CELL_WIDTH + BLOCK_WIDTH + ROAD_WIDTH * 0.5
 		var rz_center := origin.z + (num_blocks * CELL_DEPTH) * 0.5
-		_create_flat_quad(Vector3(rx, 0.008, rz_center), ROAD_WIDTH, num_blocks * CELL_DEPTH, ROAD_COLOR)
+		_create_flat_quad(Vector3(rx, Y_ROAD, rz_center), ROAD_WIDTH, num_blocks * CELL_DEPTH, ROAD_COLOR)
 		# Centre dashed yellow line
-		_paint_dashed_line(Vector3(rx, 0.014, origin.z), Vector3(rx, 0.014, origin.z + num_blocks * CELL_DEPTH), false)
+		_paint_dashed_line(Vector3(rx, Y_ROAD_MARK, origin.z), Vector3(rx, Y_ROAD_MARK, origin.z + num_blocks * CELL_DEPTH), false)
 
 	# Horizontal roads
 	for row in range(num_blocks):
 		var rz := origin.z + row * CELL_DEPTH + BLOCK_DEPTH + ROAD_WIDTH * 0.5
 		var rx_center := origin.x + (num_blocks * CELL_WIDTH) * 0.5
-		_create_flat_quad(Vector3(rx_center, 0.008, rz), num_blocks * CELL_WIDTH, ROAD_WIDTH, ROAD_COLOR)
-		_paint_dashed_line(Vector3(origin.x, 0.014, rz), Vector3(origin.x + num_blocks * CELL_WIDTH, 0.014, rz), true)
+		_create_flat_quad(Vector3(rx_center, Y_ROAD, rz), num_blocks * CELL_WIDTH, ROAD_WIDTH, ROAD_COLOR)
+		_paint_dashed_line(Vector3(origin.x, Y_ROAD_MARK, rz), Vector3(origin.x + num_blocks * CELL_WIDTH, Y_ROAD_MARK, rz), true)
 
 	# Crosswalks at each intersection (4 walks per intersection)
 	for col in range(num_blocks):
 		for row in range(num_blocks):
 			var ix := origin.x + col * CELL_WIDTH + BLOCK_WIDTH + ROAD_WIDTH * 0.5
 			var iz := origin.z + row * CELL_DEPTH + BLOCK_DEPTH + ROAD_WIDTH * 0.5
-			_create_crosswalk(Vector3(ix, 0.018, iz - ROAD_WIDTH * 0.5 - 1.2), true)
-			_create_crosswalk(Vector3(ix, 0.018, iz + ROAD_WIDTH * 0.5 + 1.2), true)
-			_create_crosswalk(Vector3(ix - ROAD_WIDTH * 0.5 - 1.2, 0.018, iz), false)
-			_create_crosswalk(Vector3(ix + ROAD_WIDTH * 0.5 + 1.2, 0.018, iz), false)
+			_create_crosswalk(Vector3(ix, Y_CROSSWALK, iz - ROAD_WIDTH * 0.5 - 1.2), true)
+			_create_crosswalk(Vector3(ix, Y_CROSSWALK, iz + ROAD_WIDTH * 0.5 + 1.2), true)
+			_create_crosswalk(Vector3(ix - ROAD_WIDTH * 0.5 - 1.2, Y_CROSSWALK, iz), false)
+			_create_crosswalk(Vector3(ix + ROAD_WIDTH * 0.5 + 1.2, Y_CROSSWALK, iz), false)
 
 func _paint_dashed_line(start_pos: Vector3, end_pos: Vector3, horizontal: bool) -> void:
 	var dash_len := 3.0
